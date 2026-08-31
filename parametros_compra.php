@@ -245,13 +245,24 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="parametros-compra-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['codigo_componente', 'moq', 'frozen_zone_dias', 'transit_time_dias', 'estoque_min_dias', 'estoque_max_dias'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'MOQ', 'Frozen Zone (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)'], ';', '"', '');
+   
     while ($linha = mysqli_fetch_assoc($resultExport)) {
-        fputcsv($saida, [
-            $linha['codigo_componente'], (int) $linha['moq'], $linha['frozen_zone_dias'],
-            $linha['transit_time_dias'], $linha['estoque_min_dias'], $linha['estoque_max_dias'],
-        ], ';', '"', '');
-    }
+
+    $moqExportado = $linha['moq'] !== null
+        ? number_format((float) $linha['moq'], 0, ',', '')
+        : '';
+
+    fputcsv($saida, [
+        $linha['codigo_componente'],
+        $moqExportado,
+        $linha['frozen_zone_dias'],
+        $linha['transit_time_dias'],
+        $linha['estoque_min_dias'],
+        $linha['estoque_max_dias'],
+    ], ';', '"', '');
+}
+
     fclose($saida);
     exit;
 }

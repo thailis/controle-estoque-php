@@ -33,6 +33,21 @@ function parseNumeroBr(string $valor): ?float
     return is_numeric($valor) ? (float) $valor : null;
 }
 
+function numeroCsvBr($valor, int $decimais = 4): string
+{
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+
+    $numero = number_format((float) $valor, $decimais, ',', '');
+
+    if ($decimais > 0) {
+        $numero = rtrim($numero, '0');
+        $numero = rtrim($numero, ',');
+    }
+
+    return $numero;
+}
 function normalizarTextoEstoque(string $texto): string
 {
     $texto = mb_strtolower(trim($texto), 'UTF-8');
@@ -343,7 +358,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
 
-    $cabecalhoCsv = ['Componente', 'Descrição'];
+    $cabecalhoCsv = ['Componente', 'Descricao'];
     foreach ($plantas as $p) { $cabecalhoCsv[] = $p; }
     if ($temSemPlanta) { $cabecalhoCsv[] = 'Sem planta'; }
     $cabecalhoCsv[] = 'Total';
@@ -354,12 +369,16 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         [, $mrpTexto] = statusMrp($linha['total_linhas'] !== null ? (int) $linha['total_linhas'] : null, $linha['tem_ativo'] !== null ? (int) $linha['tem_ativo'] : null);
         $linhaCsv = [$codigo, $linha['descricao']];
         foreach ($plantas as $p) {
-            $linhaCsv[] = $porPlantaExport[$codigo][$p] ?? '';
+            $linhaCsv[] = isset($porPlantaExport[$codigo][$p])
+          ? numeroCsvBr($porPlantaExport[$codigo][$p])
+          : '';
         }
-        if ($temSemPlanta) {
-            $linhaCsv[] = $porPlantaExport[$codigo][''] ?? '';
+       if ($temSemPlanta) {
+    $linhaCsv[] = isset($porPlantaExport[$codigo][''])
+        ? numeroCsvBr($porPlantaExport[$codigo][''])
+        : '';
         }
-        $linhaCsv[] = $linha['total'];
+        $linhaCsv[] = numeroCsvBr($linha['total']);
         $linhaCsv[] = $mrpTexto;
         fputcsv($saida, $linhaCsv, ';', '"', '');
     }

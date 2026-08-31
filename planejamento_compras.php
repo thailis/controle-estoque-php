@@ -11,6 +11,22 @@ function numeroBr($valor, int $decimais = 2): string
     return number_format((float) $valor, $decimais, ',', '.');
 }
 
+function numeroCsvBr($valor, int $decimais = 4): string
+{
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+
+    $numero = number_format((float) $valor, $decimais, ',', '');
+
+    if ($decimais > 0) {
+        $numero = rtrim($numero, '0');
+        $numero = rtrim($numero, ',');
+    }
+
+    return $numero;
+}
+
 function opcoesDistintasPlanejamento(mysqli $conn, string $coluna): array
 {
     $permitidas = ['fornecedor', 'projeto'];
@@ -295,16 +311,16 @@ try {
         fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Estoque hoje', 'Quantidade sugerida', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             $dataTexto = $r['status'] === 'urgente' ? 'URGENTE' : $r['data']->format('d/m/Y');
-            fputcsv($saida, [
-                $dataTexto,
-                $r['codigo_componente'],
-                $r['descricao'],
-                $r['fornecedores'],
-                $r['projetos'],
-                numeroBr($r['estoque_atual'], 0),
-                numeroBr($r['quantidade'], 0),
-                $r['status'] === 'urgente' ? 'Urgente' : 'Planejar',
-            ], ';', '"', '');
+           fputcsv($saida, [
+             $dataTexto,
+             $r['codigo_componente'],
+              $r['descricao'],
+              $r['fornecedores'],
+               $r['projetos'],
+             numeroCsvBr($r['estoque_atual'], 0),
+             numeroCsvBr($r['quantidade'], 0),
+             $r['status'] === 'urgente' ? 'Urgente' : 'Planejar',
+], ';', '"', '');
         }
         fclose($saida);
         exit;

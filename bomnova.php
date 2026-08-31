@@ -200,7 +200,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'MRP'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descricao', 'Consumo', 'U.M.', 'MRP'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],

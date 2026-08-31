@@ -290,7 +290,7 @@ try {
                 numeroBr($componente['estoque_atual']),
             ];
             foreach ($dias as $dia) {
-                $linhaCsv[] = numeroBr($componente['saldos'][$dia->format('Y-m-d')] ?? 0);
+                $linhaCsv[] = numeroCsvBr($componente['saldos'][$dia->format('Y-m-d')] ?? 0, 0);
             }
             fputcsv($saida, $linhaCsv, ';', '"', '');
         }
@@ -499,7 +499,7 @@ try {
                                     <td><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td><?php echo h($componente['projetos'] ?: '—'); ?></td>
                                     <td class="text-end"><?php echo h($componente['consumos'] ?: '—'); ?></td>
-                                    <td><?php echo numeroBr($componente['estoque_atual']); ?></td>
+                                    <td><?php echo numeroCsvBr($componente['estoque_atual'], 0); ?></td>
                                     <?php foreach ($dias as $dia): ?>
                                         <?php
                                             $chave = $dia->format('Y-m-d');

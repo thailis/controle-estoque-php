@@ -11,6 +11,21 @@ $erros = 0;
 $linhasProcessadas = [];
 $totalProcessadas = 0;
 $limiteExibicao = 500;
+function numeroCsvBr($valor, int $decimais = 4): string
+{
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+
+    $numero = number_format((float) $valor, $decimais, ',', '');
+
+    if ($decimais > 0) {
+        $numero = rtrim($numero, '0');
+        $numero = rtrim($numero, ',');
+    }
+
+    return $numero;
+}
 
 function registrarLinhaProcessada(
     array &$linhasProcessadas,
@@ -352,7 +367,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['pn2'], $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
-            $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
+            $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], numeroCsvBr($linhaExport['quantidade']),
             $linhaExport['ano'], $linhaExport['data_inicio'], $linhaExport['data_fim'],
         ], ';', '"', '');
     }
