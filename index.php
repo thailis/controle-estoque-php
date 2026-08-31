@@ -227,7 +227,7 @@ $busca = trim($_GET['busca'] ?? '');
 $fornecedor = trim($_GET['fornecedor'] ?? '');
 $projeto = trim($_GET['projeto'] ?? '');
 $statusFiltro = $_GET['status'] ?? 'critico';
-$statusPermitidos = ['todos', 'critico', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda'];
+$statusPermitidos = ['todos', 'critico', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda', 'acompanhar'];
 if (!in_array($statusFiltro, $statusPermitidos, true)) {
     $statusFiltro = 'critico';
 }
@@ -432,62 +432,134 @@ try {
             $hojeMrp = new DateTimeImmutable('today');
             $horizonteMrp = new DateTimeImmutable('2027-12-31');
 
-            foreach ($linhas as &$linhaRef) {
-                $codigo = $linhaRef['codigo_componente'];
-                if (!isset($parametrosCompra[$codigo])) {
-                    continue;
-                }
-                $p = $parametrosCompra[$codigo];
-                $progComp = $programacaoPorComponenteMrp[$codigo] ?? [];
-                $demComp = $demandaPorComponenteMrp[$codigo] ?? [];
+           foreach ($linhas as &$linhaRef) {
+    $codigo = $linhaRef['codigo_componente'];
 
-                // (1) Status real dentro da janela de 20 dias: crítico (saldo já ficaria
-                // negativo), atenção (abaixo do Min), excesso (acima do Max) ou ok.
-                $janela = calcularStatusJanela(
-                    $linhaRef['estoque_atual'],
-                    $progComp,
-                    $demComp,
-                    $hojeMrp,
-                    20,
-                    (int) $p['estoque_min_dias'],
-                    (int) $p['estoque_max_dias']
-                );
-                $linhaRef['status'] = $janela['status'];
+    if (!isset($parametrosCompra[$codigo])) {
+        continue;
+    }
 
-                // (2) Data/quantidade sugerida (horizonte largo), só pra mostrar quando
-                // fizer sentido (crítico ou atenção) — não muda o status, só informa.
-                $resultadoMrp = calcularDataSugeridaCompra(
-                    $linhaRef['estoque_atual'],
-                    $progComp,
-                    $demComp,
-                    $hojeMrp,
-                    $horizonteMrp,
-                    (float) $p['moq'],
-                    (int) $p['frozen_zone_dias'],
-                    (int) $p['transit_time_dias'],
-                    (int) $p['estoque_min_dias'],
-                    (int) $p['estoque_max_dias']
-                );
-                $linhaRef['mrp_status'] = $resultadoMrp['status'];
-                $linhaRef['mrp_data_sugerida'] = $resultadoMrp['data'];
-                $linhaRef['mrp_quantidade_sugerida'] = $resultadoMrp['quantidade'];
+    $p = $parametrosCompra[$codigo];
 
-                // A coluna "Comprar" passa a usar a quantidade do cálculo preciso (que
-                // considera todo o horizonte, MOQ, programação etc.) em vez do cálculo
-                // simples do período de 20 dias, que ficava zerado sempre que a necessidade
-                // real estava fora dessa janela (ex.: itens em "Planejar").
-                if ($resultadoMrp['quantidade'] > 0) {
-                    $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
-                }
+    $progComp = $programacaoPorComponenteMrp[$codigo] ?? [];
+    $demComp = $demandaPorComponenteMrp[$codigo] ?? [];
 
-                // Se dentro dos 20 dias está tudo ok, mas existe uma necessidade real mais à
-                // frente (fora da janela imediata), vira "Planejar" em vez de sumir como "ok".
-                // Uma necessidade real e imediata (crítico/atenção/excesso) sempre tem prioridade.
-                if ($linhaRef['status'] === 'ok' && $resultadoMrp['status'] === 'programada') {
-                    $linhaRef['status'] = 'planejar';
-                }
-            }
-            unset($linhaRef);
+    // ---------------------------------------------------------
+    // Verifica se existe uma entrega programada cuja janela
+    // Frozen Zone + Transit Time já começou.
+    //
+    // Exemplo:
+    // Entrega: 16/09
+    // Frozen: 7 dias
+    // Transit: 7 dias
+    // Início da janela travada: 02/09
+    //
+    // De 02/09 até 16/09 = ACOMPANHAR
+    // ---------------------------------------------------------
+    $programacaoTravada = null;
+
+    foreach ($progComp as $dataProg => $qtdProg) {
+
+        if ((float) $qtdProg <= 0) {
+            continue;
+        }
+
+        $dataEntrega = new DateTimeImmutable($dataProg);
+
+        // Ignora programação já vencida
+        if ($dataEntrega < $hojeMrp) {
+            continue;
+        }
+
+        $diasReacao =
+            (int) $p['frozen_zone_dias']
+            + (int) $p['transit_time_dias'];
+
+        $dataInicioAcompanhamento =
+            $dataEntrega->modify("-{$diasReacao} days");
+
+        // Hoje já entrou na janela congelada
+        if (
+            $hojeMrp >= $dataInicioAcompanhamento
+            && $hojeMrp <= $dataEntrega
+        ) {
+            $programacaoTravada = [
+                'data' => $dataEntrega,
+                'quantidade' => (float) $qtdProg,
+            ];
+
+            break;
+        }
+    }
+
+    // (1) Status real dentro da janela de 20 dias
+    $janela = calcularStatusJanela(
+        $linhaRef['estoque_atual'],
+        $progComp,
+        $demComp,
+        $hojeMrp,
+        20,
+        (int) $p['estoque_min_dias'],
+        (int) $p['estoque_max_dias']
+    );
+
+    $linhaRef['status'] = $janela['status'];
+
+    // (2) Data e quantidade sugerida de compra
+    $resultadoMrp = calcularDataSugeridaCompra(
+        $linhaRef['estoque_atual'],
+        $progComp,
+        $demComp,
+        $hojeMrp,
+        $horizonteMrp,
+        (float) $p['moq'],
+        (int) $p['frozen_zone_dias'],
+        (int) $p['transit_time_dias'],
+        (int) $p['estoque_min_dias'],
+        (int) $p['estoque_max_dias']
+    );
+
+    $linhaRef['mrp_status'] = $resultadoMrp['status'];
+    $linhaRef['mrp_data_sugerida'] = $resultadoMrp['data'];
+    $linhaRef['mrp_quantidade_sugerida'] = $resultadoMrp['quantidade'];
+
+    // Quantidade sugerida pelo cálculo MRP
+    if ($resultadoMrp['quantidade'] > 0) {
+        $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
+    }
+
+    // ---------------------------------------------------------
+    // NOVA REGRA: ACOMPANHAR
+    //
+    // Se já existe uma entrega programada e estamos dentro da
+    // janela Frozen + Transit, não deve aparecer como
+    // "Compra urgente".
+    //
+    // Mostra a quantidade já programada.
+    // ---------------------------------------------------------
+    if ($programacaoTravada !== null) {
+
+        $linhaRef['status'] = 'acompanhar';
+
+        $linhaRef['necessidade_compra'] =
+            $programacaoTravada['quantidade'];
+
+        $linhaRef['mrp_data_sugerida'] =
+            $programacaoTravada['data'];
+
+        $linhaRef['mrp_quantidade_sugerida'] =
+            $programacaoTravada['quantidade'];
+
+    } elseif (
+        $linhaRef['status'] === 'ok'
+        && $resultadoMrp['status'] === 'programada'
+    ) {
+
+        $linhaRef['status'] = 'planejar';
+    }
+}
+
+unset($linhaRef);
         }
     }
 
@@ -527,6 +599,7 @@ $stats = [
     'critico' => 0,
     'atencao' => 0,
     'excesso' => 0,
+    'acompanhar' => 0,
     'planejar' => 0,
     'ok' => 0,
     'sem_demanda' => 0,
@@ -574,6 +647,7 @@ $rotulosStatus = [
     'critico' => 'Compra urgente',
     'atencao' => 'Atenção',
     'excesso' => 'Excesso',
+    'acompanhar' => 'Acompanhar',
     'planejar' => 'Planejar',
     'ok' => 'Estoque OK',
     'sem_demanda' => 'Sem demanda',
