@@ -11,21 +11,6 @@ $erros = 0;
 $linhasProcessadas = [];
 $totalProcessadas = 0;
 $limiteExibicao = 500;
-function numeroCsvBr($valor, int $decimais = 4): string
-{
-    if ($valor === null || $valor === '') {
-        return '';
-    }
-
-    $numero = number_format((float) $valor, $decimais, ',', '');
-
-    if ($decimais > 0) {
-        $numero = rtrim($numero, '0');
-        $numero = rtrim($numero, ',');
-    }
-
-    return $numero;
-}
 
 function registrarLinhaProcessada(
     array &$linhasProcessadas,
@@ -54,23 +39,39 @@ function registrarLinhaProcessada(
     ];
 }
 
-function calcularPeriodoSemana(int $semana): ?array
+// Interpreta a data do EDI, aceitando os formatos mais comuns vindos de CSV/Excel
+// (dd/mm/aaaa, dd-mm-aaaa ou aaaa-mm-dd), e calcula a semana/ano ISO correspondentes.
+function parseDataEdi(string $valor): ?DateTimeImmutable
 {
-    if ($semana >= 30 && $semana <= 53) {
-        $ano = 2026;
-    } elseif ($semana >= 1 && $semana <= 29) {
-        $ano = 2027;
-    } else {
+    $valor = trim($valor);
+    if ($valor === '') {
         return null;
     }
 
-    $inicio = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
-        ->setISODate($ano, $semana, 1);
+    $formatos = ['d/m/Y', 'd-m-Y', 'Y-m-d', 'Y/m/d'];
+    foreach ($formatos as $formato) {
+        $data = DateTimeImmutable::createFromFormat('!' . $formato, $valor, new DateTimeZone('UTC'));
+        $erros = DateTimeImmutable::getLastErrors();
+        if ($data !== false && (!$erros || ($erros['warning_count'] === 0 && $erros['error_count'] === 0))) {
+            return $data;
+        }
+    }
+
+    return null;
+}
+
+function calcularPeriodoData(string $valorData): ?array
+{
+    $data = parseDataEdi($valorData);
+    if ($data === false || $data === null) {
+        return null;
+    }
 
     return [
-        'ano' => $ano,
-        'data_inicio' => $inicio->format('Y-m-d'),
-        'data_fim' => $inicio->modify('+6 days')->format('Y-m-d'),
+        'ano' => (int) $data->format('o'),   // ano ISO-8601 (bate com o número da semana)
+        'semana' => (int) $data->format('W'), // semana ISO-8601
+        'data_inicio' => $data->format('Y-m-d'),
+        'data_fim' => $data->format('Y-m-d'),
     ];
 }
 
@@ -154,8 +155,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 }
 
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
+                $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND data_inicio = ? AND evento = ?");
+                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, semana = ?, data_fim = ? WHERE material = ? AND data_inicio = ? AND evento = ?");
 
                 mysqli_autocommit($conn, false);
 
@@ -181,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $projeto = $dados['projeto'] ?? null;
                     $modelo = $dados['modelo'] ?? null;
                     $evento = $dados['evento'] ?? null;
-                    $semana = $dados['semana'] ?? null;
+                    $dataEvento = $dados['data'] ?? null;
                     $quantidadeBruta = $dados['quantidade'] ?? '';
                     $quantidade = parseQuantidadeEdi((string) $quantidadeBruta);
                     if ($quantidade === null) {
@@ -198,10 +199,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $dados['quantidade'] = $quantidade;
 
-                    $periodo = is_numeric($semana) ? calcularPeriodoSemana((int) $semana) : null;
+                    $periodo = $dataEvento !== null ? calcularPeriodoData((string) $dataEvento) : null;
                     if ($periodo === null) {
                         $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: semana '$semana' fora dos intervalos 30–53/2026 e 1–29/2027.";
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: data '$dataEvento' inválida (use dd/mm/aaaa ou aaaa-mm-dd).";
                         registrarLinhaProcessada(
                             $linhasProcessadas,
                             $totalProcessadas,
@@ -213,15 +214,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
 
                     $ano = $periodo['ano'];
+                    $semana = $periodo['semana'];
                     $data_inicio = $periodo['data_inicio'];
                     $data_fim = $periodo['data_fim'];
                     $dados['ano'] = $ano;
+                    $dados['semana'] = $semana;
                     $dados['data_inicio'] = $data_inicio;
                     $dados['data_fim'] = $data_fim;
 
                     $existe = false;
                     if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
-                        mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $semana, $evento);
+                        mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $data_inicio, $evento);
                         mysqli_stmt_execute($stmtVerifica);
                         $resVerifica = mysqli_stmt_get_result($stmtVerifica);
                         $existe = mysqli_fetch_assoc($resVerifica)['existe'] > 0;
@@ -241,9 +244,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                     if ($modo === 'atualizar' && $existe) {
                         mysqli_stmt_bind_param(
-                            $stmtUpdate, "ssssdisssss",
-                            $pn2, $marca, $projeto, $modelo, $quantidade, $ano, $data_fim, $data_inicio,
-                            $material, $semana, $evento
+                            $stmtUpdate, "ssssdiissss",
+                            $pn2, $marca, $projeto, $modelo, $quantidade, $ano, $semana, $data_fim,
+                            $material, $data_inicio, $evento
                         );
                         if (mysqli_stmt_execute($stmtUpdate)) {
                             $atualizados++;
@@ -367,7 +370,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['pn2'], $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
-            $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], numeroCsvBr($linhaExport['quantidade']),
+            $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
             $linhaExport['ano'], $linhaExport['data_inicio'], $linhaExport['data_fim'],
         ], ';', '"', '');
     }
@@ -545,8 +548,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>pn2, material, marca, projeto, modelo, evento, semana, quantidade</code><br>
-                        Ano e datas são calculados automaticamente: semanas 30–53 = 2026; semanas 1–29 = 2027. A data inicial é a segunda-feira e a data final é o domingo da semana. Separador: vírgula ou ponto e vírgula.
+                        <code>pn2, material, marca, projeto, modelo, evento, data, quantidade</code><br>
+                        A coluna <strong>data</strong> deve trazer a data do evento (formatos aceitos: dd/mm/aaaa ou aaaa-mm-dd). Semana e ano são calculados automaticamente a partir dela (padrão ISO-8601). Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
             </details>

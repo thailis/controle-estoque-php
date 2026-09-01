@@ -534,10 +534,11 @@ try {
                 $linhaRef['status'] = $janela['status'];
 
                 // (2) Data/quantidade sugerida (horizonte largo) — só roda quando realmente
-                // precisa: "crítico" (pra saber quanto comprar) ou "ok" (pra checar se existe
-                // uma necessidade futura que merece virar "Planejar"). Pra atenção/excesso/
-                // acompanhar isso não é usado, então pula e economiza a simulação mais cara.
-                if ($janela['status'] === 'critico' || $janela['status'] === 'ok') {
+                // precisa: "crítico" (pra saber quanto comprar), "ok" ou "sem_demanda" (pra
+                // checar se existe uma necessidade futura que merece virar "Planejar"). Pra
+                // atenção/excesso/acompanhar isso não é usado, então pula e economiza a
+                // simulação mais cara.
+                if ($janela['status'] === 'critico' || $janela['status'] === 'ok' || $janela['status'] === 'sem_demanda') {
                     $resultadoMrp = calcularDataSugeridaCompra(
                         $linhaRef['estoque_atual'],
                         $progComp,
@@ -558,9 +559,10 @@ try {
                         $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
                     }
 
-                    // Se dentro dos 20 dias está tudo ok, mas existe uma necessidade real mais
-                    // à frente (fora da janela imediata), vira "Planejar" em vez de "ok".
-                    if ($linhaRef['status'] === 'ok' && $resultadoMrp['status'] === 'programada') {
+                    // Se dentro dos 20 dias está tudo ok (ou "sem demanda" nos próximos 90 dias),
+                    // mas existe uma necessidade real mais à frente (achada no horizonte largo),
+                    // vira "Planejar" em vez de ficar preso em "ok"/"sem_demanda".
+                    if (($linhaRef['status'] === 'ok' || $linhaRef['status'] === 'sem_demanda') && $resultadoMrp['status'] === 'programada') {
                         $linhaRef['status'] = 'planejar';
                     }
                 } elseif ($linhaRef['status'] === 'acompanhar') {

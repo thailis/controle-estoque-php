@@ -88,6 +88,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'transit_time_dias' => ['transit_time_dias', 'transit_time', 'transittime'],
                     'estoque_min_dias' => ['estoque_min_dias', 'min', 'min_dias'],
                     'estoque_max_dias' => ['estoque_max_dias', 'max', 'max_dias'],
+                    'setup' => ['setup', 'scrap', 'percentual_perda', 'perda'],
                 ];
                 $indices = [];
                 foreach ($mapaColunas as $campo => $candidatos) {
@@ -121,10 +122,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             }, $v);
                             $linhasSql[] = '(' . implode(', ', $vals) . ')';
                         }
-                        $sql = "INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias) VALUES "
+                        $sql = "INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup) VALUES "
                             . implode(', ', $linhasSql)
                             . " ON DUPLICATE KEY UPDATE moq = VALUES(moq), frozen_zone_dias = VALUES(frozen_zone_dias), "
-                            . "transit_time_dias = VALUES(transit_time_dias), estoque_min_dias = VALUES(estoque_min_dias), estoque_max_dias = VALUES(estoque_max_dias)";
+                            . "transit_time_dias = VALUES(transit_time_dias), estoque_min_dias = VALUES(estoque_min_dias), estoque_max_dias = VALUES(estoque_max_dias), "
+                            . "setup = VALUES(setup)";
                         $sucesso = mysqli_query($conn, $sql);
                         if ($sucesso) {
                             $importados += count($lote);
@@ -134,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }
                         $resultado = $sucesso ? 'inserido' : 'erro';
                         foreach ($lote as $v) {
-                            [$codigo, $moq, $frozen, $transit, $min, $max] = $v;
+                            [$codigo, $moq, $frozen, $transit, $min, $max, $setup] = $v;
                             $totalProcessadas++;
                             if ($totalProcessadas <= $limiteExibicao) {
                                 $linhasProcessadas[] = [
@@ -145,6 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                                     'transit' => $transit,
                                     'min' => $min,
                                     'max' => $max,
+                                    'setup' => $setup,
                                 ];
                             }
                         }
@@ -178,6 +181,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $transit = $indices['transit_time_dias'] !== null ? parseNumeroBrParametros((string) ($linha[$indices['transit_time_dias']] ?? '')) : null;
                         $min = $indices['estoque_min_dias'] !== null ? parseNumeroBrParametros((string) ($linha[$indices['estoque_min_dias']] ?? '')) : null;
                         $max = $indices['estoque_max_dias'] !== null ? parseNumeroBrParametros((string) ($linha[$indices['estoque_max_dias']] ?? '')) : null;
+                        // "setup" = percentual de perda (scrap). Digite só o número (ex.: 20),
+                        // sem o símbolo "%" — mas se vier com "%" mesmo assim, removemos.
+                        $setupTexto = $indices['setup'] !== null ? str_replace('%', '', (string) ($linha[$indices['setup']] ?? '')) : '';
+                        $setup = $indices['setup'] !== null ? parseNumeroBrParametros($setupTexto) : null;
 
                         $lote[] = [
                             $codigo,
@@ -186,6 +193,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             $transit !== null ? (int) $transit : null,
                             $min !== null ? (int) $min : null,
                             $max !== null ? (int) $max : null,
+                            $setup,
                         ];
 
                         if (count($lote) >= $tamanhoLote) {
@@ -255,7 +263,7 @@ $totalCompletos = (int) (mysqli_fetch_assoc($resultCompletos)['total'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias FROM parametros_compra $where ORDER BY codigo_componente";
+    $sqlExport = "SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup FROM parametros_compra $where ORDER BY codigo_componente";
     if ($busca !== '') {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -268,12 +276,15 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="parametros-compra-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'MOQ', 'Frozen Zone (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'MOQ', 'Frozen Zone (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)', 'Setup (%)'], ';', '"', '');
    
     while ($linha = mysqli_fetch_assoc($resultExport)) {
 
     $moqExportado = $linha['moq'] !== null
         ? number_format((float) $linha['moq'], 0, ',', '')
+        : '';
+    $setupExportado = $linha['setup'] !== null
+        ? number_format((float) $linha['setup'], 2, ',', '')
         : '';
 
     fputcsv($saida, [
@@ -283,6 +294,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $linha['transit_time_dias'],
         $linha['estoque_min_dias'],
         $linha['estoque_max_dias'],
+        $setupExportado,
     ], ';', '"', '');
 }
 
@@ -290,7 +302,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias
+$sql = "SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup
         FROM parametros_compra $where
         ORDER BY codigo_componente
         LIMIT ? OFFSET ?";
@@ -381,6 +393,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         <th class="text-end">Transit Time</th>
                                         <th class="text-end">Min</th>
                                         <th class="text-end">Max</th>
+                                        <th class="text-end">Setup (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -394,6 +407,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['transit'] ?? '—')); ?></td>
                                             <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['min'] ?? '—')); ?></td>
                                             <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['max'] ?? '—')); ?></td>
+                                            <td class="text-end"><?php echo $linhaProcessada['setup'] !== null ? htmlspecialchars((string) $linhaProcessada['setup']) . '%' : '—'; ?></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -423,9 +437,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias</code><br>
-                        Todas as colunas exceto <code>codigo_componente</code> são opcionais — mas a data sugerida de compra só é calculada para componentes com <strong>todos</strong> os 5 valores preenchidos.<br>
+                        <code>codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup</code><br>
+                        Todas as colunas exceto <code>codigo_componente</code> são opcionais — mas a data sugerida de compra só é calculada para componentes com <strong>todos</strong> os 5 parâmetros principais preenchidos (MOQ, Frozen Zone, Transit Time, Min, Max).<br>
                         <code>estoque_min_dias</code>/<code>estoque_max_dias</code> = dias de cobertura de estoque desejados (não quantidade). <code>frozen_zone_dias</code> + <code>transit_time_dias</code> = tempo mínimo de reação (dias) entre decidir comprar e o material chegar.<br>
+                        <code>setup</code> = percentual de perda (scrap) do componente. Digite só o número, sem o símbolo "%" (ex.: <code>20</code> significa 20%). É opcional; se não preencher, a sugestão de compra não sofre acréscimo. A quantidade sugerida no planejamento de compras é multiplicada por <code>(1 + setup/100)</code> — ex.: sugestão de 12.000 com <code>setup=20</code> vira 14.400.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
@@ -456,12 +471,13 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-end">Transit Time (dias)</th>
                             <th class="text-end">Estoque Min (dias)</th>
                             <th class="text-end">Estoque Max (dias)</th>
+                            <th class="text-end">Setup (%)</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="7" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -476,6 +492,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end"><?php echo $row['transit_time_dias'] ?? '—'; ?></td>
                                     <td class="text-end"><?php echo $row['estoque_min_dias'] ?? '—'; ?></td>
                                     <td class="text-end"><?php echo $row['estoque_max_dias'] ?? '—'; ?></td>
+                                    <td class="text-end"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
                                     <td>
                                         <?php if ($completo): ?>
                                             <span class="badge badge-completo">Completo</span>
