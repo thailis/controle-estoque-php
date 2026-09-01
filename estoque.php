@@ -95,6 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $idxCodigo = null;
                 $idxDescricao = null;
                 $idxEstoqueTotal = null;
+                $idxMrp = null;
                 
                 foreach ([
                            'codigo_componente',
@@ -109,13 +110,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 }
                 $idxDescricao = array_search('descricao', $cabecalho, true);
                 $idxEstoqueTotal = array_search('estoque', $cabecalho, true);
+                $idxMrp = array_search('mrp', $cabecalho, true);
 
-                // Qualquer coluna que não seja codigo/descricao/estoque é tratada como
+                // Qualquer coluna que não seja codigo/descricao/estoque/mrp é tratada como
                 // uma coluna de planta (ex.: "2401", "2403"), usando o texto original
-                // do cabeçalho (sem normalizar) como identificador da planta.
+                // do cabeçalho (sem normalizar) como identificador da planta. A coluna
+                // "mrp" (se vier na planilha) é ignorada aqui — o status MRP já é mostrado
+                // na tela com base na BOM, não é algo que essa importação de estoque grava.
                 $colunasPlanta = [];
                 foreach ($cabecalhoOriginal as $indice => $nomeOriginal) {
-                    if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal) {
+                    if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal || $indice === $idxMrp) {
                         continue;
                     }
                     $nomeLimpo = trim($nomeOriginal);

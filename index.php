@@ -47,13 +47,18 @@ function calcularStatusJanela(
     $minSaldo = $saldoAnterior;
     $maxSaldo = $saldoAnterior;
     $diaPrimeiroNegativo = null;
+    $saldoNoFimDaZonaTravada = $saldoAnterior;
 
     $limiteAcao = $hoje->modify('+' . ($frozenDias + $transitDias) . ' days');
+    $limiteAcaoChave = $limiteAcao->format('Y-m-d');
 
     $cursor = $hoje;
     $fimJanela = $hoje->modify("+{$diasJanela} days");
     if ($saldoAnterior < 0) {
         $diaPrimeiroNegativo = $hoje;
+    }
+    if ($hojeChave === $limiteAcaoChave) {
+        $saldoNoFimDaZonaTravada = $saldoAnterior;
     }
     while ($cursor <= $fimJanela) {
         $chave = $cursor->format('Y-m-d');
@@ -64,6 +69,9 @@ function calcularStatusJanela(
         $maxSaldo = max($maxSaldo, $saldoAnterior);
         if ($diaPrimeiroNegativo === null && $saldoAnterior < 0) {
             $diaPrimeiroNegativo = $cursor;
+        }
+        if ($chave === $limiteAcaoChave) {
+            $saldoNoFimDaZonaTravada = $saldoAnterior;
         }
         $cursor = $cursor->modify('+1 day');
     }
@@ -89,25 +97,27 @@ function calcularStatusJanela(
 
     if ($minSaldo < 0) {
         $dentroDaZonaTravada = $diaPrimeiroNegativo !== null && $diaPrimeiroNegativo <= $limiteAcao;
-        // "Acompanhar" só vale se já existir um pedido colocado (programação) chegando
-        // dentro da zona travada (hoje até Frozen+Transit) — ou seja, já tem algo a
-        // caminho, é só monitorar. Se não tiver NADA programado nesse período, mesmo sendo
-        // tarde pra uma compra nova, continua "crítico" (é um alerta real, sem cobertura).
-        $temProgramacaoNaZonaTravada = false;
-        if ($dentroDaZonaTravada) {
-            $limiteAcaoChave = $limiteAcao->format('Y-m-d');
-            foreach ($programacaoPorData as $d => $q) {
-                if ($q > 0 && $d >= $hojeChave && $d <= $limiteAcaoChave) {
-                    $temProgramacaoNaZonaTravada = true;
-                    break;
-                }
-            }
-        }
-        $status = ($dentroDaZonaTravada && $temProgramacaoNaZonaTravada) ? 'acompanhar' : 'critico';
+        // "Acompanhar" só vale se, ATÉ O FIM da zona travada (hoje + Frozen + Transit), o
+        // que já está programado for SUFICIENTE pra zerar o déficit (saldo volta a ficar
+        // >= 0). Se tem programação mas ela não é suficiente (saldo continua negativo mesmo
+        // depois de aplicá-la), continua "crítico" — é um alerta real, ainda sem cobertura.
+        $status = ($dentroDaZonaTravada && $saldoNoFimDaZonaTravada >= 0) ? 'acompanhar' : 'critico';
     } elseif ($minSaldo < $minQtd) {
         $status = 'atencao';
     } elseif ($maxQtd > 0 && $maxSaldo > $maxQtd) {
         $status = 'excesso';
+    } elseif ($estoqueAtual <= 0) {
+        // Estoque zerado + nenhuma demanda prevista nos próximos 90 dias não é
+        // "Estoque OK" de verdade (não há nada a avaliar) — vira "Sem demanda".
+        $fim90Chave = $hoje->modify('+90 days')->format('Y-m-d');
+        $temDemanda90 = false;
+        foreach ($demandaPorData as $d => $q) {
+            if ($q > 0 && $d >= $hojeChave && $d <= $fim90Chave) {
+                $temDemanda90 = true;
+                break;
+            }
+        }
+        $status = $temDemanda90 ? 'ok' : 'sem_demanda';
     } else {
         $status = 'ok';
     }
