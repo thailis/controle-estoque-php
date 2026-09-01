@@ -46,6 +46,9 @@ function normalizarTextoParametros(string $texto): string
 $mensagens = [];
 $importados = 0;
 $erros = 0;
+$linhasProcessadas = [];
+$totalProcessadas = 0;
+$limiteExibicao = 500;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -105,8 +108,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                     $tamanhoLote = 200;
                     $lote = [];
+                    $linhasProcessadas = [];
+                    $totalProcessadas = 0;
+                    $limiteExibicao = 500;
 
-                    $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
+                    $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens, &$linhasProcessadas, &$totalProcessadas, $limiteExibicao) {
                         if (empty($lote)) return;
                         $linhasSql = [];
                         foreach ($lote as $v) {
@@ -119,11 +125,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             . implode(', ', $linhasSql)
                             . " ON DUPLICATE KEY UPDATE moq = VALUES(moq), frozen_zone_dias = VALUES(frozen_zone_dias), "
                             . "transit_time_dias = VALUES(transit_time_dias), estoque_min_dias = VALUES(estoque_min_dias), estoque_max_dias = VALUES(estoque_max_dias)";
-                        if (mysqli_query($conn, $sql)) {
+                        $sucesso = mysqli_query($conn, $sql);
+                        if ($sucesso) {
                             $importados += count($lote);
                         } else {
                             $erros += count($lote);
                             $mensagens[] = "⚠️ Erro ao inserir um lote de " . count($lote) . " linha(s): " . mysqli_error($conn);
+                        }
+                        $resultado = $sucesso ? 'inserido' : 'erro';
+                        foreach ($lote as $v) {
+                            [$codigo, $moq, $frozen, $transit, $min, $max] = $v;
+                            $totalProcessadas++;
+                            if ($totalProcessadas <= $limiteExibicao) {
+                                $linhasProcessadas[] = [
+                                    'resultado' => $resultado,
+                                    'codigo' => $codigo,
+                                    'moq' => $moq,
+                                    'frozen' => $frozen,
+                                    'transit' => $transit,
+                                    'min' => $min,
+                                    'max' => $max,
+                                ];
+                            }
                         }
                         $lote = [];
                     };
@@ -314,7 +337,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
+            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
@@ -322,6 +345,60 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php foreach ($mensagens as $msg): ?>
                             <div><?php echo htmlspecialchars($msg); ?></div>
                         <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($linhasProcessadas)): ?>
+                    <div class="mb-4">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                            <div>
+                                <h2 class="h6 mb-1">Itens processados nesta importação</h2>
+                                <p class="text-muted mb-0 small">
+                                    <?php echo number_format($totalProcessadas, 0, ',', '.'); ?> linha(s) processada(s)
+                                    (grava com "atualiza se já existir" — não dá pra separar quem era novo de quem foi atualizado)
+                                </p>
+                            </div>
+                            <div class="d-flex flex-wrap gap-2">
+                                <span class="badge text-bg-success"><?php echo $importados; ?> gravado(s)</span>
+                                <span class="badge text-bg-danger"><?php echo $erros; ?> erro(s)</span>
+                            </div>
+                        </div>
+
+                        <?php if ($totalProcessadas > $limiteExibicao): ?>
+                            <div class="alert alert-info py-2">
+                                A importação processou todas as linhas. Para manter a página rápida, a tabela abaixo mostra somente as primeiras <?php echo $limiteExibicao; ?>.
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Resultado</th>
+                                        <th>Componente</th>
+                                        <th class="text-end">MOQ</th>
+                                        <th class="text-end">Frozen Zone</th>
+                                        <th class="text-end">Transit Time</th>
+                                        <th class="text-end">Min</th>
+                                        <th class="text-end">Max</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($linhasProcessadas as $linhaProcessada): ?>
+                                        <?php $badgeCor = $linhaProcessada['resultado'] === 'inserido' ? 'success' : 'danger'; ?>
+                                        <tr>
+                                            <td><span class="badge text-bg-<?php echo $badgeCor; ?>"><?php echo $linhaProcessada['resultado'] === 'inserido' ? 'Gravado' : 'Erro'; ?></span></td>
+                                            <td><strong><?php echo htmlspecialchars($linhaProcessada['codigo']); ?></strong></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['moq'] ?? '—')); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['frozen'] ?? '—')); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['transit'] ?? '—')); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['min'] ?? '—')); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) ($linhaProcessada['max'] ?? '—')); ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                     <?php endif; ?>
 

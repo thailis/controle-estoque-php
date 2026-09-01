@@ -8,6 +8,9 @@ $importados = 0;
 $atualizados = 0;
 $ignorados = 0;
 $erros = 0;
+$linhasProcessadas = [];
+$totalProcessadas = 0;
+$limiteExibicao = 500;
 
 function parseDataProgramacao(string $valor): ?string
 {
@@ -87,15 +90,22 @@ function localizarColunaComponente(array $cabecalhoNormalizado): ?int
     return null;
 }
 
-// Detecta pares [indice_data, indice_quantidade]: qualquer coluna cujo cabeçalho contenha
-// "quantidade" é pareada com a coluna imediatamente anterior (a data daquela programação).
-// Isso cobre tanto o formato simples (codigo_componente, data, quantidade) quanto o formato
-// largo da planilha (Programação 1, Quantidade, Programação 2, Quantidade 2, ...).
+// Detecta pares [indice_data, indice_quantidade]. Cobre dois formatos:
+// - Planilha (Quantidade 1, Programação 1, Quantidade 2, Programação 2...): a
+//   quantidade vem ANTES da data, então pareia com a PRÓXIMA coluna.
+// - Simples (codigo_componente, data, quantidade): a quantidade é a última
+//   coluna, então pareia com a coluna ANTERIOR (não tem próxima coluna pra usar).
 function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 {
+    $total = count($cabecalhoNormalizado);
     $pares = [];
     foreach ($cabecalhoNormalizado as $indice => $nome) {
-        if ($indice > 0 && str_contains($nome, 'quantidade')) {
+        if (!str_contains($nome, 'quantidade')) {
+            continue;
+        }
+        if ($indice + 1 < $total && $cabecalhoNormalizado[$indice + 1] !== '' && !str_contains($cabecalhoNormalizado[$indice + 1], 'quantidade')) {
+            $pares[] = [$indice + 1, $indice];
+        } elseif ($indice > 0) {
             $pares[] = [$indice - 1, $indice];
         }
     }
@@ -148,6 +158,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 mysqli_autocommit($conn, false);
 
+                $linhasProcessadas = [];
+                $totalProcessadas = 0;
+                $limiteExibicao = 500;
+                $registrar = function (string $resultado, string $componente, string $data, $quantidade) use (&$linhasProcessadas, &$totalProcessadas, $limiteExibicao) {
+                    $totalProcessadas++;
+                    if ($totalProcessadas <= $limiteExibicao) {
+                        $linhasProcessadas[] = ['resultado' => $resultado, 'componente' => $componente, 'data' => $data, 'quantidade' => $quantidade];
+                    }
+                };
+
                 $linhaNum = 1;
                 while (($linha = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
                     $linhaNum++;
@@ -175,8 +195,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $dataBruta = trim($linha[$indiceData] ?? '');
                         $quantidadeBruta = trim($linha[$indiceQtd] ?? '');
 
-                        // Par vazio (ex.: componente não tem "Programação 3") — pula sem contar erro.
-                        if ($dataBruta === '' && $quantidadeBruta === '') {
+                        // Par vazio (ex.: componente não tem "Programação 3", ou a planilha
+                        // mostra "0" na quantidade sem data nenhuma) — pula sem contar erro.
+                        // Sem data, não tem o que registrar, então a quantidade não importa aqui.
+                        if ($dataBruta === '') {
                             continue;
                         }
 
@@ -184,13 +206,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         if ($data === null) {
                             $erros++;
                             $mensagens[] = "⚠️ Linha $linhaNum, coluna " . ($indiceData + 1) . ": data '$dataBruta' inválida (use DD/MM/AAAA ou AAAA-MM-DD).";
+                            $registrar('erro', $codigoComponente, $dataBruta, $quantidadeBruta);
                             continue;
                         }
 
-                        $quantidade = parseQuantidade($quantidadeBruta);
+                        $quantidade = $quantidadeBruta === '' ? 0.0 : parseQuantidade($quantidadeBruta);
                         if ($quantidade === null) {
                             $erros++;
                             $mensagens[] = "⚠️ Linha $linhaNum, coluna " . ($indiceQtd + 1) . ": quantidade '$quantidadeBruta' inválida.";
+                            $registrar('erro', $codigoComponente, $data, $quantidadeBruta);
                             continue;
                         }
 
@@ -205,6 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         if ($modo === 'sem_duplicar' && $idExistente !== null) {
                             $ignorados++;
+                            $registrar('ignorado', $codigoComponente, $data, $quantidade);
                             continue;
                         }
 
@@ -212,9 +237,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             mysqli_stmt_bind_param($stmtUpdate, "di", $quantidade, $idExistente);
                             if (mysqli_stmt_execute($stmtUpdate)) {
                                 $atualizados++;
+                                $registrar('atualizado', $codigoComponente, $data, $quantidade);
                             } else {
                                 $erros++;
                                 $mensagens[] = "⚠️ Erro ao atualizar linha $linhaNum: " . mysqli_stmt_error($stmtUpdate);
+                                $registrar('erro', $codigoComponente, $data, $quantidade);
                             }
                             continue;
                         }
@@ -222,9 +249,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         mysqli_stmt_bind_param($stmtInsert, "ssd", $codigoComponente, $data, $quantidade);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
+                            $registrar('inserido', $codigoComponente, $data, $quantidade);
                         } else {
                             $erros++;
                             $mensagens[] = "⚠️ Erro na linha $linhaNum: " . mysqli_stmt_error($stmtInsert);
+                            $registrar('erro', $codigoComponente, $data, $quantidade);
                         }
                     }
                 }
@@ -378,7 +407,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
+            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
@@ -386,6 +415,63 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php foreach ($mensagens as $msg): ?>
                             <div><?php echo htmlspecialchars($msg); ?></div>
                         <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($linhasProcessadas)): ?>
+                    <div class="mb-4">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                            <div>
+                                <h2 class="h6 mb-1">Itens processados nesta importação</h2>
+                                <p class="text-muted mb-0 small">
+                                    <?php echo number_format($totalProcessadas, 0, ',', '.'); ?> linha(s) processada(s)
+                                </p>
+                            </div>
+                            <div class="d-flex flex-wrap gap-2">
+                                <span class="badge text-bg-success"><?php echo $importados; ?> inserido(s)</span>
+                                <span class="badge text-bg-primary"><?php echo $atualizados; ?> atualizado(s)</span>
+                                <span class="badge text-bg-secondary"><?php echo $ignorados; ?> ignorado(s)</span>
+                                <span class="badge text-bg-danger"><?php echo $erros; ?> erro(s)</span>
+                            </div>
+                        </div>
+
+                        <?php if ($totalProcessadas > $limiteExibicao): ?>
+                            <div class="alert alert-info py-2">
+                                A importação processou todas as linhas. Para manter a página rápida, a tabela abaixo mostra somente as primeiras <?php echo $limiteExibicao; ?>.
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Resultado</th>
+                                        <th>Componente</th>
+                                        <th>Data</th>
+                                        <th class="text-end">Quantidade</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php
+                                    $badgesResultado = [
+                                        'inserido' => ['success', 'Inserido'],
+                                        'atualizado' => ['primary', 'Atualizado'],
+                                        'ignorado' => ['secondary', 'Ignorado'],
+                                        'erro' => ['danger', 'Erro'],
+                                    ];
+                                    ?>
+                                    <?php foreach ($linhasProcessadas as $linhaProcessada): ?>
+                                        <?php $badge = $badgesResultado[$linhaProcessada['resultado']]; ?>
+                                        <tr>
+                                            <td><span class="badge text-bg-<?php echo $badge[0]; ?>"><?php echo $badge[1]; ?></span></td>
+                                            <td><strong><?php echo htmlspecialchars($linhaProcessada['componente']); ?></strong></td>
+                                            <td><?php echo htmlspecialchars($linhaProcessada['data']); ?></td>
+                                            <td class="text-end"><?php echo htmlspecialchars((string) $linhaProcessada['quantidade']); ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                     <?php endif; ?>
 
@@ -433,7 +519,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <strong>Formato simples</strong> (uma programação por linha):<br>
                         <code>codigo_componente, data, quantidade</code><br><br>
                         <strong>Formato da planilha</strong> (várias programações na mesma linha, como no Excel):<br>
-                        <code>Componente, ..., Programação 1, Quantidade, Programação 2, Quantidade 2, Programação 3, Quantidade...</code><br>
+                        <code>Componente, ..., Quantidade 1, Programação 1, Quantidade 2, Programação 2, Quantidade 3, Programação 3...</code><br>
                         Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Deixe em branco as programações que não existirem.<br><br>
                         Data em DD/MM/AAAA ou AAAA-MM-DD. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>

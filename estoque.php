@@ -65,6 +65,9 @@ function normalizarTextoEstoque(string $texto): string
 $mensagens = [];
 $importados = 0;
 $erros = 0;
+$linhasProcessadas = [];
+$totalProcessadas = 0;
+$limiteExibicao = 500;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -139,8 +142,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 $tamanhoLote = 200;
                 $lote = [];
+                $linhasProcessadas = [];
+                $totalProcessadas = 0;
+                $limiteExibicao = 500;
 
-                $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
+                $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens, &$linhasProcessadas, &$totalProcessadas, $limiteExibicao) {
                     if (empty($lote)) {
                         return;
                     }
@@ -153,11 +159,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $sql = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta) VALUES " . implode(', ', $linhasSql);
 
-                    if (mysqli_query($conn, $sql)) {
+                    $sucesso = mysqli_query($conn, $sql);
+                    if ($sucesso) {
                         $importados += count($lote);
                     } else {
                         $erros += count($lote);
                         $mensagens[] = "⚠️ Erro ao inserir um lote de " . count($lote) . " linha(s): " . mysqli_error($conn);
+                    }
+                    $resultado = $sucesso ? 'inserido' : 'erro';
+                    foreach ($lote as $valores) {
+                        [$cod, $desc, $est, $planta] = $valores;
+                        $totalProcessadas++;
+                        if ($totalProcessadas <= $limiteExibicao) {
+                            $linhasProcessadas[] = ['resultado' => $resultado, 'componente' => $cod, 'descricao' => $desc, 'planta' => $planta ?? '—', 'valor' => $est];
+                        }
                     }
                     $lote = [];
                 };
@@ -456,7 +471,7 @@ if (!empty($componentes)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
+            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
@@ -465,6 +480,55 @@ if (!empty($componentes)) {
                                 <div><?php echo h($msg); ?></div>
                             <?php endforeach; ?>
                         </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($linhasProcessadas)): ?>
+                    <div class="mb-4">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                            <div>
+                                <h2 class="h6 mb-1">Itens processados nesta importação</h2>
+                                <p class="text-muted mb-0 small">
+                                    <?php echo number_format($totalProcessadas, 0, ',', '.'); ?> linha(s) processada(s)
+                                </p>
+                            </div>
+                            <div class="d-flex flex-wrap gap-2">
+                                <span class="badge text-bg-success"><?php echo $importados; ?> inserido(s)</span>
+                                <span class="badge text-bg-danger"><?php echo $erros; ?> erro(s)</span>
+                            </div>
+                        </div>
+
+                        <?php if ($totalProcessadas > $limiteExibicao): ?>
+                            <div class="alert alert-info py-2">
+                                A importação processou todas as linhas. Para manter a página rápida, a tabela abaixo mostra somente as primeiras <?php echo $limiteExibicao; ?>.
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="table-responsive">
+                            <table class="table table-hover table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Resultado</th>
+                                        <th>Componente</th>
+                                        <th>Descrição</th>
+                                        <th>Planta</th>
+                                        <th class="text-end">Estoque</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($linhasProcessadas as $linhaProcessada): ?>
+                                        <?php $badgeCor = $linhaProcessada['resultado'] === 'inserido' ? 'success' : 'danger'; ?>
+                                        <tr>
+                                            <td><span class="badge text-bg-<?php echo $badgeCor; ?>"><?php echo $linhaProcessada['resultado'] === 'inserido' ? 'Inserido' : 'Erro'; ?></span></td>
+                                            <td><strong><?php echo h($linhaProcessada['componente']); ?></strong></td>
+                                            <td><?php echo h($linhaProcessada['descricao']); ?></td>
+                                            <td><?php echo h($linhaProcessada['planta']); ?></td>
+                                            <td class="text-end"><?php echo number_format((float) $linhaProcessada['valor'], 2, ',', '.'); ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end">
