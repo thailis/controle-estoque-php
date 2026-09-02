@@ -15,6 +15,12 @@ function numeroBr($valor, int $decimais = 2): string
 // usando os limites Min/Max (em dias de cobertura) convertidos em quantidade através da
 // demanda "local" (próximos 60 dias a partir de hoje — não o horizonte inteiro, pra não
 // diluir a taxa com demanda distante e gerar alarme falso ou nunca alertar excesso).
+//
+// Estoque de segurança: piso calculado automaticamente (ver calcularEstoqueSegurancaQtd)
+// que nunca deveria ser furado em condições normais. O gatilho de "crítico" dispara
+// quando o saldo projetado cai abaixo desse piso, não só quando fica negativo — ou seja,
+// soa ANTES do estoque realmente zerar. Se o cálculo resultar em 0 (sem setup cadastrado,
+// por exemplo), o comportamento é idêntico ao de antes (piso = 0).
 function calcularStatusJanela(
     float $estoqueAtual,
     array $programacaoPorData,
@@ -22,7 +28,8 @@ function calcularStatusJanela(
     DateTimeImmutable $hoje,
     int $diasJanela,
     int $minDias,
-    int $maxDias
+    int $maxDias,
+    float $segurancaQtd = 0.0
 ): array {
     $hojeChave = $hoje->format('Y-m-d');
 
@@ -70,7 +77,7 @@ function calcularStatusJanela(
         }
     }
 
-    if ($minSaldo < 0) {
+    if ($minSaldo < $segurancaQtd) {
         $status = 'critico';
     } elseif ($minSaldo < $minQtd) {
         $status = 'atencao';
@@ -80,7 +87,48 @@ function calcularStatusJanela(
         $status = 'ok';
     }
 
-    return ['status' => $status, 'min_saldo' => $minSaldo, 'max_saldo' => $maxSaldo, 'min_qtd' => $minQtd, 'max_qtd' => $maxQtd];
+    return ['status' => $status, 'min_saldo' => $minSaldo, 'max_saldo' => $maxSaldo, 'min_qtd' => $minQtd, 'max_qtd' => $maxQtd, 'seguranca_qtd' => $segurancaQtd];
+}
+
+// Calcula o estoque de segurança automaticamente, sem exigir nenhum dia cadastrado
+// manualmente. Fórmula: Z × desvio-padrão da demanda semanal × raiz(lead time em semanas).
+//   - Demanda semanal média = soma da demanda EDI dos próximos 90 dias (já convertida por
+//     BOM.consumo, igual a $demandaPorData) dividida por 90 (média diária) × 7.
+//   - Desvio-padrão = demanda semanal média × (setup% / 100). Aqui o setup (percentual de
+//     perda/scrap já cadastrado em Parâmetros de Compra) é usado como proxy da variabilidade
+//     da demanda — quanto maior o setup, maior a oscilação considerada. Com setup = 0%,
+//     desvio-padrão = 0 e o estoque de segurança calculado é 0 (sem margem extra).
+//   - Lead time em semanas = (Lead Time + Transit Time, em dias) / 7.
+// O nível de serviço (Z) é definido uma vez em conexao.php (MRP_Z_NIVEL_SERVICO).
+function calcularEstoqueSegurancaQtd(
+    array $demandaPorData,
+    DateTimeImmutable $hoje,
+    int $frozenDias,
+    int $transitDias,
+    float $setupPercentual
+): float {
+    if ($setupPercentual <= 0 || ($frozenDias + $transitDias) <= 0) {
+        return 0.0;
+    }
+
+    $hojeChave = $hoje->format('Y-m-d');
+    $fimJanela90 = $hoje->modify('+90 days')->format('Y-m-d');
+    $demanda90Dias = 0.0;
+    foreach ($demandaPorData as $d => $q) {
+        if ($d >= $hojeChave && $d <= $fimJanela90) {
+            $demanda90Dias += $q;
+        }
+    }
+
+    $demandaSemanalMedia = ($demanda90Dias / 90) * 7;
+    if ($demandaSemanalMedia <= 0) {
+        return 0.0;
+    }
+
+    $desvioPadrao = $demandaSemanalMedia * ($setupPercentual / 100);
+    $leadTimeSemanas = ($frozenDias + $transitDias) / 7;
+
+    return MRP_Z_NIVEL_SERVICO * $desvioPadrao * sqrt($leadTimeSemanas);
 }
 
 function vincularParametros(mysqli_stmt $stmt, string $tipos, array &$parametros): void
@@ -97,9 +145,11 @@ function vincularParametros(mysqli_stmt $stmt, string $tipos, array &$parametros
 }
 
 // Simula o saldo dia a dia (estoque + programação - demanda, na ordem cronológica de cada
-// evento) e procura o primeiro dia em que o saldo FÍSICO fica negativo (estoque zeraria de
-// verdade). A data sugerida de compra é essa data de necessidade menos o tempo de reação
-// (frozen zone + transit time). Se essa data já passou, a compra está atrasada (urgente).
+// evento) e procura o primeiro dia em que o saldo fica abaixo do piso de proteção
+// (estoque de segurança, calculado automaticamente — ver calcularEstoqueSegurancaQtd —
+// ou zero se não houver setup cadastrado). A data sugerida de compra é essa data de
+// necessidade menos o tempo de reação (Lead Time + Transit Time). Se essa data já
+// passou, a compra está atrasada (urgente).
 //
 // Importante: o gatilho NÃO usa uma média de demanda diluída em todo o horizonte — isso
 // causaria alarme falso pra itens com demanda esporádica e distante (estoque atual baixo,
@@ -116,7 +166,8 @@ function calcularDataSugeridaCompra(
     int $frozenDias,
     int $transitDias,
     int $minDias,
-    int $maxDias
+    int $maxDias,
+    float $segurancaQtd = 0.0
 ): array {
     $dias = [];
     $cursor = $hoje;
@@ -152,8 +203,8 @@ function calcularDataSugeridaCompra(
         $saldoAnterior = $saldo;
     }
 
-    // Prefixo pra somar rapidamente a demanda numa janela local (usado só pra dimensionar
-    // a quantidade a comprar, não pra decidir a data do gatilho).
+    // Prefixo pra somar rapidamente a demanda numa janela local (usado tanto pra achar o
+    // piso de segurança no dia i quanto pra dimensionar a quantidade a comprar).
     $prefixo = array_fill(0, $n + 1, 0.0);
     for ($i = 0; $i < $n; $i++) {
         $prefixo[$i + 1] = $prefixo[$i] + $demandaPorDia[$i];
@@ -166,19 +217,24 @@ function calcularDataSugeridaCompra(
             continue;
         }
 
-        if ($saldoPorDia[$i] < 0) {
+        // Piso de segurança = quantidade já calculada (constante, não varia por dia —
+        // ver calcularEstoqueSegurancaQtd). Com segurancaQtd = 0 (sem setup cadastrado),
+        // o piso é sempre 0 — comportamento idêntico ao de antes (só dispara quando o
+        // saldo físico fica negativo).
+        if ($saldoPorDia[$i] < $segurancaQtd) {
             $dataNecessidade = $dias[$i];
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
             // Quantidade alvo = soma direta da demanda JÁ CONHECIDA nos próximos Max dias
             // a partir da necessidade (sem taxa diária fabricada, que distorce muito com
-            // demanda em picos). Se não houver mais demanda conhecida, cobre só o déficit.
+            // demanda em picos). Se não houver mais demanda conhecida, cobre só o déficit
+            // até o piso de segurança (ou até zero, se não houver estoque de segurança).
             $janelaLocal = min($n, $i + $maxDias);
             $demandaJanelaMax = $prefixo[$janelaLocal] - $prefixo[$i];
 
             $quantidadeAlvo = $demandaJanelaMax > 0
                 ? $demandaJanelaMax - $saldoPorDia[$i]
-                : -$saldoPorDia[$i];
+                : $segurancaQtd - $saldoPorDia[$i];
             $quantidadeSugerida = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
 
             if ($dataSugerida <= $hoje) {
@@ -375,7 +431,7 @@ try {
 
         $parametrosCompra = [];
         $stmtParam = mysqli_prepare($conn, "
-            SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias
+            SELECT codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup
             FROM parametros_compra
             WHERE TRIM(codigo_componente) IN ($placeholders)
               AND moq IS NOT NULL AND frozen_zone_dias IS NOT NULL AND transit_time_dias IS NOT NULL
@@ -443,8 +499,19 @@ try {
                 $progComp = $programacaoPorComponenteMrp[$codigo] ?? [];
                 $demComp = $demandaPorComponenteMrp[$codigo] ?? [];
 
+                // Estoque de segurança calculado automaticamente (sem dias cadastrados
+                // manualmente) — ver calcularEstoqueSegurancaQtd().
+                $segurancaQtd = calcularEstoqueSegurancaQtd(
+                    $demComp,
+                    $hojeMrp,
+                    (int) $p['frozen_zone_dias'],
+                    (int) $p['transit_time_dias'],
+                    $p['setup'] !== null ? (float) $p['setup'] : 0.0
+                );
+
                 // (1) Status real dentro da janela de 20 dias: crítico (saldo já ficaria
-                // negativo), atenção (abaixo do Min), excesso (acima do Max) ou ok.
+                // abaixo do estoque de segurança calculado, ou negativo se o cálculo der
+                // zero), atenção (abaixo do Min), excesso (acima do Max) ou ok.
                 $janela = calcularStatusJanela(
                     $linhaRef['estoque_atual'],
                     $progComp,
@@ -452,7 +519,8 @@ try {
                     $hojeMrp,
                     20,
                     (int) $p['estoque_min_dias'],
-                    (int) $p['estoque_max_dias']
+                    (int) $p['estoque_max_dias'],
+                    $segurancaQtd
                 );
                 $linhaRef['status'] = $janela['status'];
 
@@ -468,7 +536,8 @@ try {
                     (int) $p['frozen_zone_dias'],
                     (int) $p['transit_time_dias'],
                     (int) $p['estoque_min_dias'],
-                    (int) $p['estoque_max_dias']
+                    (int) $p['estoque_max_dias'],
+                    $segurancaQtd
                 );
                 $linhaRef['mrp_status'] = $resultadoMrp['status'];
                 $linhaRef['mrp_data_sugerida'] = $resultadoMrp['data'];

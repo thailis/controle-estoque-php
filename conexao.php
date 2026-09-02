@@ -3,6 +3,12 @@
 // Consulte o README.md para os nomes e um exemplo de configuração.
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
+// Nível de serviço usado no cálculo automático do estoque de segurança (fórmula:
+// Z × desvio-padrão da demanda × raiz(lead time em semanas)). Mudar aqui já reflete
+// em todas as telas que calculam estoque de segurança (dashboard, planejamento,
+// parâmetros de compra). Valores comuns de Z: 90% = 1.28, 95% = 1.65, 98% = 2.05, 99% = 2.33.
+define('MRP_Z_NIVEL_SERVICO', 1.65); // 95% de nível de serviço
+
 $host = getenv('DB_HOST') ?: '';
 $port = (int) (getenv('DB_PORT') ?: 4000);
 $dbname = getenv('DB_NAME') ?: 'controle_mrp';

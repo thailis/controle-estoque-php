@@ -39,6 +39,42 @@ function urlComPlanejamento(array $alteracoes = []): string
     return '?' . http_build_query($parametros);
 }
 
+// Calcula o estoque de segurança automaticamente (mesma lógica do dashboard, index.php):
+// Z × desvio-padrão da demanda semanal × raiz(lead time em semanas), onde o desvio-padrão
+// usa o setup% cadastrado em Parâmetros de Compra como proxy da variabilidade da demanda.
+// Sem setup cadastrado (0%), o resultado é 0 — nenhuma margem extra. Z vem de conexao.php
+// (MRP_Z_NIVEL_SERVICO).
+function calcularEstoqueSegurancaQtd(
+    array $demandaPorData,
+    DateTimeImmutable $hoje,
+    int $frozenDias,
+    int $transitDias,
+    float $setupPercentual
+): float {
+    if ($setupPercentual <= 0 || ($frozenDias + $transitDias) <= 0) {
+        return 0.0;
+    }
+
+    $hojeChave = $hoje->format('Y-m-d');
+    $fimJanela90 = $hoje->modify('+90 days')->format('Y-m-d');
+    $demanda90Dias = 0.0;
+    foreach ($demandaPorData as $d => $q) {
+        if ($d >= $hojeChave && $d <= $fimJanela90) {
+            $demanda90Dias += $q;
+        }
+    }
+
+    $demandaSemanalMedia = ($demanda90Dias / 90) * 7;
+    if ($demandaSemanalMedia <= 0) {
+        return 0.0;
+    }
+
+    $desvioPadrao = $demandaSemanalMedia * ($setupPercentual / 100);
+    $leadTimeSemanas = ($frozenDias + $transitDias) / 7;
+
+    return MRP_Z_NIVEL_SERVICO * $desvioPadrao * sqrt($leadTimeSemanas);
+}
+
 // Mesma lógica de simulação usada no dashboard (index.php): saldo dia a dia,
 // aplicando programação e demanda na data exata de cada evento, com taxa de
 // demanda média estável e trava de saldo físico negativo.
@@ -52,7 +88,9 @@ function calcularDataSugeridaCompraPlanejamento(
     int $frozenDias,
     int $transitDias,
     int $minDias,
-    int $maxDias
+    int $maxDias,
+    float $setupPercentual = 0.0,
+    float $segurancaQtd = 0.0
 ): array {
     $dias = [];
     $cursor = $hoje;
@@ -99,7 +137,10 @@ function calcularDataSugeridaCompraPlanejamento(
         if ($dias[$i] < $inicioBusca) {
             continue;
         }
-        if ($saldoPorDia[$i] < 0) {
+        // Piso de segurança = quantidade já calculada (constante — ver
+        // calcularEstoqueSegurancaQtd). Com segurancaQtd = 0 (sem setup cadastrado), o
+        // piso é sempre 0 — comportamento idêntico ao de antes.
+        if ($saldoPorDia[$i] < $segurancaQtd) {
             $dataNecessidade = $dias[$i];
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
@@ -108,13 +149,20 @@ function calcularDataSugeridaCompraPlanejamento(
 
             $quantidadeAlvo = $demandaJanelaMax > 0
                 ? $demandaJanelaMax - $saldoPorDia[$i]
-                : -$saldoPorDia[$i];
+                : $segurancaQtd - $saldoPorDia[$i];
             $quantidadeSugerida = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
 
+            // Setup (% de perda/scrap) é aplicado por último, depois de todo o cálculo de
+            // netting e arredondamento de MOQ — não interfere na simulação de saldo em si.
+            $quantidadeBase = $quantidadeSugerida;
+            $quantidadeFinal = $setupPercentual > 0
+                ? $quantidadeSugerida * (1 + $setupPercentual / 100)
+                : $quantidadeSugerida;
+
             if ($dataSugerida <= $hoje) {
-                return ['status' => 'urgente', 'data' => $hoje, 'quantidade' => $quantidadeSugerida];
+                return ['status' => 'urgente', 'data' => $hoje, 'quantidade' => $quantidadeFinal, 'quantidade_base' => $quantidadeBase, 'setup' => $setupPercentual];
             }
-            return ['status' => 'programada', 'data' => $dataSugerida, 'quantidade' => $quantidadeSugerida];
+            return ['status' => 'programada', 'data' => $dataSugerida, 'quantidade' => $quantidadeFinal, 'quantidade_base' => $quantidadeBase, 'setup' => $setupPercentual];
         }
     }
 
@@ -176,7 +224,8 @@ try {
             MAX(p.frozen_zone_dias) AS frozen_zone_dias,
             MAX(p.transit_time_dias) AS transit_time_dias,
             MAX(p.estoque_min_dias) AS estoque_min_dias,
-            MAX(p.estoque_max_dias) AS estoque_max_dias
+            MAX(p.estoque_max_dias) AS estoque_max_dias,
+            MAX(p.setup) AS setup
         FROM bomnova b
         INNER JOIN parametros_compra p
             ON TRIM(p.codigo_componente) = TRIM(b.codigo_componente)
@@ -248,6 +297,18 @@ try {
         mysqli_stmt_close($stmtDemanda);
 
         foreach ($componentes as $codigo => $comp) {
+            $setupComp = $comp['setup'] !== null ? (float) $comp['setup'] : 0.0;
+
+            // Estoque de segurança calculado automaticamente (sem dias cadastrados
+            // manualmente) — ver calcularEstoqueSegurancaQtd().
+            $segurancaQtd = calcularEstoqueSegurancaQtd(
+                $demandaPorComponente[$codigo] ?? [],
+                $hoje,
+                (int) $comp['frozen_zone_dias'],
+                (int) $comp['transit_time_dias'],
+                $setupComp
+            );
+
             $resultado = calcularDataSugeridaCompraPlanejamento(
                 (float) $comp['estoque_atual'],
                 $programacaoPorComponente[$codigo] ?? [],
@@ -258,7 +319,9 @@ try {
                 (int) $comp['frozen_zone_dias'],
                 (int) $comp['transit_time_dias'],
                 (int) $comp['estoque_min_dias'],
-                (int) $comp['estoque_max_dias']
+                (int) $comp['estoque_max_dias'],
+                $setupComp,
+                $segurancaQtd
             );
 
             // Só entra na lista se precisa de ação dentro da janela de meses escolhida
@@ -278,6 +341,9 @@ try {
                 'status' => $resultado['status'],
                 'data' => $resultado['data'],
                 'quantidade' => $resultado['quantidade'],
+                'quantidade_base' => $resultado['quantidade_base'] ?? $resultado['quantidade'],
+                'setup' => $resultado['setup'] ?? 0.0,
+                'estoque_seguranca_qtd' => $segurancaQtd,
             ];
         }
 
@@ -294,7 +360,7 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Estoque hoje', 'Quantidade sugerida', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             $dataTexto = $r['status'] === 'urgente' ? 'URGENTE' : $r['data']->format('d/m/Y');
             fputcsv($saida, [
@@ -305,6 +371,7 @@ try {
                 $r['projetos'],
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
+                $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
                 $r['status'] === 'urgente' ? 'Urgente' : 'Planejar',
             ], ';', '"', '');
         }
@@ -455,8 +522,11 @@ try {
                                     <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
-                                    <td class="text-center"><?php echo numeroBr($r['quantidade'], 0); ?></td>
-                                    <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>"><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
+                                    <td class="text-center" <?php if ($r['setup'] > 0): ?>title="Já inclui <?php echo numeroBr($r['setup'], 0); ?>% de setup/scrap (base: <?php echo numeroBr($r['quantidade_base'], 0); ?>)"<?php endif; ?>>
+                                        <?php echo numeroBr($r['quantidade'], 0); ?>
+                                        <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border ms-1">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
+                                    </td>
+                                    <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>" <?php if ($r['estoque_seguranca_qtd'] > 0): ?>title="Estoque de segurança calculado: <?php echo numeroBr($r['estoque_seguranca_qtd'], 0); ?> unidades"<?php endif; ?>><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($r['codigo_componente']); ?>">Ver evolução</a></td>
                                 </tr>
                             <?php endforeach; ?>
