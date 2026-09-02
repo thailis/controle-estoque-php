@@ -288,10 +288,10 @@ if (!in_array($statusFiltro, $statusPermitidos, true)) {
     $statusFiltro = 'critico';
 }
 
-// Janela fixa de análise: sempre de hoje até hoje + 20 dias. Não é mais um filtro
+// Janela fixa de análise: sempre de hoje até hoje + 90 dias. Não é mais um filtro
 // manual de semana — o dashboard sempre olha só pro curto prazo relevante.
 $hojeDashboard = new DateTimeImmutable('today');
-$fimJanelaDashboard = $hojeDashboard->modify('+20 days');
+$fimJanelaDashboard = $hojeDashboard->modify('+90 days');
 
 $porPagina = (int) ($_GET['por_pagina'] ?? 50);
 if (!in_array($porPagina, [25, 50, 100], true)) {
@@ -322,7 +322,7 @@ try {
     $parametros = [];
     $tipos = '';
 
-    // Janela fixa: só considera demanda com data de início entre hoje e hoje+20 dias.
+    // Janela fixa: só considera demanda com data de início entre hoje e hoje+90 dias.
     $condicoesEdi[] = 'e.data_inicio BETWEEN ? AND ?';
     $parametros[] = $hojeDashboard->format('Y-m-d');
     $parametros[] = $fimJanelaDashboard->format('Y-m-d');
@@ -419,7 +419,7 @@ try {
 
     // Verifica quais componentes têm os parâmetros de compra completos (MOQ, Frozen Zone,
     // Transit Time, Min/Max). Para esses, o status final vem da simulação precisa (dentro
-    // da janela de 20 dias), não mais do cálculo agregado simples feito acima.
+    // da janela de 90 dias), não mais do cálculo agregado simples feito acima.
     $codigosCriticos = array_values(array_unique(array_map(
         fn($l) => $l['codigo_componente'],
         $linhas
@@ -488,7 +488,7 @@ try {
             mysqli_stmt_close($stmtDemandaMrp);
 
             $hojeMrp = new DateTimeImmutable('today');
-            $horizonteMrp = new DateTimeImmutable('2027-12-31');
+            $horizonteMrp = $hojeMrp->modify('+12 months'); // horizonte rolante (sempre 12 meses à frente de hoje)
 
             foreach ($linhas as &$linhaRef) {
                 $codigo = $linhaRef['codigo_componente'];
@@ -509,7 +509,7 @@ try {
                     $p['setup'] !== null ? (float) $p['setup'] : 0.0
                 );
 
-                // (1) Status real dentro da janela de 20 dias: crítico (saldo já ficaria
+                // (1) Status real dentro da janela de 90 dias: crítico (saldo já ficaria
                 // abaixo do estoque de segurança calculado, ou negativo se o cálculo der
                 // zero), atenção (abaixo do Min), excesso (acima do Max) ou ok.
                 $janela = calcularStatusJanela(
@@ -517,7 +517,7 @@ try {
                     $progComp,
                     $demComp,
                     $hojeMrp,
-                    20,
+                    90,
                     (int) $p['estoque_min_dias'],
                     (int) $p['estoque_max_dias'],
                     $segurancaQtd
@@ -545,13 +545,13 @@ try {
 
                 // A coluna "Comprar" passa a usar a quantidade do cálculo preciso (que
                 // considera todo o horizonte, MOQ, programação etc.) em vez do cálculo
-                // simples do período de 20 dias, que ficava zerado sempre que a necessidade
+                // simples do período de 90 dias, que ficava zerado sempre que a necessidade
                 // real estava fora dessa janela (ex.: itens em "Planejar").
                 if ($resultadoMrp['quantidade'] > 0) {
                     $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
                 }
 
-                // Se dentro dos 20 dias está tudo ok, mas existe uma necessidade real mais à
+                // Se dentro dos 90 dias está tudo ok, mas existe uma necessidade real mais à
                 // frente (fora da janela imediata), vira "Planejar" em vez de sumir como "ok".
                 // Uma necessidade real e imediata (crítico/atenção/excesso) sempre tem prioridade.
                 if ($linhaRef['status'] === 'ok' && $resultadoMrp['status'] === 'programada') {
@@ -563,7 +563,7 @@ try {
     }
 
     // Filtro final: aplica o status escolhido (agora já é o status definitivo — para quem
-    // tem parâmetros, veio da janela de 20 dias; para quem não tem, do cálculo agregado).
+    // tem parâmetros, veio da janela de 90 dias; para quem não tem, do cálculo agregado).
     $linhas = array_values(array_filter($linhas, function (array $l) use ($statusFiltro): bool {
         return $statusFiltro === 'todos' || $l['status'] === $statusFiltro;
     }));
@@ -696,7 +696,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <div>
                     <span class="eyebrow text-primary">Curto prazo</span>
                     <h2 id="titulo-filtros">Filtros da análise</h2>
-                    <p class="mb-0 text-muted small">Sempre mostra a demanda de hoje (<?php echo h($hojeDashboard->format('d/m/Y')); ?>) até <?php echo h($fimJanelaDashboard->format('d/m/Y')); ?> (20 dias). Para períodos mais distantes, veja o <a href="planejamento_compras.php">Planejamento de Compras</a>.</p>
+                    <p class="mb-0 text-muted small">Sempre mostra a demanda de hoje (<?php echo h($hojeDashboard->format('d/m/Y')); ?>) até <?php echo h($fimJanelaDashboard->format('d/m/Y')); ?> (90 dias). Para períodos mais distantes, veja o <a href="planejamento_compras.php">Planejamento de Compras</a>.</p>
                 </div>
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">Limpar filtros</a>
             </div>
@@ -795,10 +795,10 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
             </div>
 
             <div class="status-legend" aria-label="Legenda de status">
-                <span><i class="dot dot-danger"></i> Urgente: saldo ficaria negativo dentro de 20 dias</span>
+                <span><i class="dot dot-danger"></i> Urgente: saldo ficaria negativo dentro de 90 dias</span>
                 <span><i class="dot dot-warning"></i> Atenção: abaixo do estoque mínimo configurado (ou até 20% de margem, sem parâmetros)</span>
                 <span><i class="dot dot-excesso"></i> Excesso: acima do estoque máximo configurado</span>
-                <span><i class="dot dot-planejar"></i> Planejar: necessidade futura fora dos 20 dias</span>
+                <span><i class="dot dot-planejar"></i> Planejar: necessidade futura fora dos 90 dias</span>
                 <span><i class="dot dot-success"></i> OK: dentro da faixa esperada</span>
                 <span><i class="dot dot-muted"></i> Sem demanda no período</span>
             </div>

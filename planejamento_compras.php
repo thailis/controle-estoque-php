@@ -76,9 +76,15 @@ function calcularEstoqueSegurancaQtd(
 }
 
 // Mesma lógica de simulação usada no dashboard (index.php): saldo dia a dia,
-// aplicando programação e demanda na data exata de cada evento, com taxa de
-// demanda média estável e trava de saldo físico negativo.
-function calcularDataSugeridaCompraPlanejamento(
+// aplicando programação e demanda na data exata de cada evento.
+//
+// Diferente de antes, NÃO para na primeira necessidade encontrada: sempre que o saldo
+// simulado fura o piso de segurança, gera uma parcela de compra, "injeta" a quantidade
+// sugerida de volta na simulação (assumindo que ela chega exatamente na data da
+// necessidade, já que a data sugerida = necessidade − lead time) e continua procurando a
+// PRÓXIMA necessidade real, até o fim do horizonte. Assim, um componente com demanda
+// contínua gera várias parcelas escalonadas em vez de uma única compra gigante.
+function calcularParcelasCompraPlanejamento(
     float $estoqueAtual,
     array $programacaoPorData,
     array $demandaPorData,
@@ -100,7 +106,7 @@ function calcularDataSugeridaCompraPlanejamento(
     }
     $n = count($dias);
     if ($n === 0) {
-        return ['status' => 'ok', 'data' => null, 'quantidade' => 0.0];
+        return [];
     }
 
     $hojeChave = $hoje->format('Y-m-d');
@@ -133,13 +139,13 @@ function calcularDataSugeridaCompraPlanejamento(
 
     $inicioBusca = $hoje->modify('+' . ($frozenDias + $transitDias) . ' days');
 
+    $parcelas = [];
     for ($i = 0; $i < $n; $i++) {
         if ($dias[$i] < $inicioBusca) {
             continue;
         }
-        // Piso de segurança = quantidade já calculada (constante — ver
-        // calcularEstoqueSegurancaQtd). Com segurancaQtd = 0 (sem setup cadastrado), o
-        // piso é sempre 0 — comportamento idêntico ao de antes.
+        // Piso de segurança = quantidade calculada automaticamente (ver
+        // calcularEstoqueSegurancaQtd). Com segurancaQtd = 0, o piso é sempre 0.
         if ($saldoPorDia[$i] < $segurancaQtd) {
             $dataNecessidade = $dias[$i];
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
@@ -147,26 +153,41 @@ function calcularDataSugeridaCompraPlanejamento(
             $janelaLocal = min($n, $i + $maxDias);
             $demandaJanelaMax = $prefixo[$janelaLocal] - $prefixo[$i];
 
-            $quantidadeAlvo = $demandaJanelaMax > 0
-                ? $demandaJanelaMax - $saldoPorDia[$i]
-                : $segurancaQtd - $saldoPorDia[$i];
-            $quantidadeSugerida = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
+            // Alvo = o maior entre a demanda conhecida na janela Max e o próprio piso de
+            // segurança — garante que a compra sempre recupera o saldo pelo menos até o
+            // estoque de segurança, mesmo quando a demanda da janela Max for pequena.
+            $alvo = max($demandaJanelaMax, $segurancaQtd);
+            $quantidadeAlvo = $alvo - $saldoPorDia[$i];
+            $quantidadeBase = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
 
-            // Setup (% de perda/scrap) é aplicado por último, depois de todo o cálculo de
-            // netting e arredondamento de MOQ — não interfere na simulação de saldo em si.
-            $quantidadeBase = $quantidadeSugerida;
+            // Setup (% de perda/scrap) aplicado por último, depois de todo o cálculo de
+            // netting e arredondamento de MOQ. A quantidade FÍSICA que chega de fato é a
+            // final (com setup) — é ela que volta pra simulação pra achar a próxima parcela.
             $quantidadeFinal = $setupPercentual > 0
-                ? $quantidadeSugerida * (1 + $setupPercentual / 100)
-                : $quantidadeSugerida;
+                ? $quantidadeBase * (1 + $setupPercentual / 100)
+                : $quantidadeBase;
 
-            if ($dataSugerida <= $hoje) {
-                return ['status' => 'urgente', 'data' => $hoje, 'quantidade' => $quantidadeFinal, 'quantidade_base' => $quantidadeBase, 'setup' => $setupPercentual];
+            $status = $dataSugerida <= $hoje ? 'urgente' : 'programada';
+
+            $parcelas[] = [
+                'status' => $status,
+                'data' => $dataSugerida <= $hoje ? $hoje : $dataSugerida,
+                'data_necessidade' => $dataNecessidade,
+                'quantidade' => $quantidadeFinal,
+                'quantidade_base' => $quantidadeBase,
+                'setup' => $setupPercentual,
+            ];
+
+            // Injeta a quantidade que chega na data da necessidade e propaga pra frente —
+            // o saldo simulado passa a refletir essa compra nos dias seguintes, permitindo
+            // achar a PRÓXIMA necessidade real em vez de parar na primeira.
+            for ($k = $i; $k < $n; $k++) {
+                $saldoPorDia[$k] += $quantidadeFinal;
             }
-            return ['status' => 'programada', 'data' => $dataSugerida, 'quantidade' => $quantidadeFinal, 'quantidade_base' => $quantidadeBase, 'setup' => $setupPercentual];
         }
     }
 
-    return ['status' => 'ok', 'data' => null, 'quantidade' => 0.0];
+    return $parcelas;
 }
 
 $busca = trim($_GET['busca'] ?? '');
@@ -179,7 +200,7 @@ if (!in_array($meses, [3, 5, 6, 12], true)) {
 
 $hoje = new DateTimeImmutable('today');
 $fimJanela = $hoje->modify("+$meses months");
-$horizonteCalculo = new DateTimeImmutable('2027-12-31'); // horizonte amplo pra achar a real data de necessidade
+$horizonteCalculo = $hoje->modify('+12 months'); // horizonte rolante (sempre 12 meses à frente de hoje) pra achar a real data de necessidade
 
 $erroPlanejamento = null;
 $resultados = [];
@@ -309,7 +330,7 @@ try {
                 $setupComp
             );
 
-            $resultado = calcularDataSugeridaCompraPlanejamento(
+            $parcelas = calcularParcelasCompraPlanejamento(
                 (float) $comp['estoque_atual'],
                 $programacaoPorComponente[$codigo] ?? [],
                 $demandaPorComponente[$codigo] ?? [],
@@ -324,27 +345,37 @@ try {
                 $segurancaQtd
             );
 
-            // Só entra na lista se precisa de ação dentro da janela de meses escolhida
-            if ($resultado['status'] === 'ok') {
-                continue;
-            }
-            if ($resultado['status'] === 'programada' && $resultado['data'] > $fimJanela) {
+            if (empty($parcelas)) {
                 continue;
             }
 
-            $resultados[] = [
-                'codigo_componente' => $codigo,
-                'descricao' => $comp['descricao'],
-                'fornecedores' => $comp['fornecedores'],
-                'projetos' => $comp['projetos'],
-                'estoque_atual' => (float) $comp['estoque_atual'],
-                'status' => $resultado['status'],
-                'data' => $resultado['data'],
-                'quantidade' => $resultado['quantidade'],
-                'quantidade_base' => $resultado['quantidade_base'] ?? $resultado['quantidade'],
-                'setup' => $resultado['setup'] ?? 0.0,
-                'estoque_seguranca_qtd' => $segurancaQtd,
-            ];
+            $totalParcelas = count($parcelas);
+
+            // Só entra na lista a parcela que precisa de ação dentro da janela de meses
+            // escolhida (urgente sempre entra, mesmo com data "sugerida" = hoje). O número
+            // da parcela (ex.: 2/5) reflete a posição dela no total do horizonte de 12
+            // meses, mesmo que só uma parte apareça filtrada na tela.
+            foreach ($parcelas as $indice => $p) {
+                if ($p['status'] !== 'urgente' && $p['data'] > $fimJanela) {
+                    continue;
+                }
+
+                $resultados[] = [
+                    'codigo_componente' => $codigo,
+                    'descricao' => $comp['descricao'],
+                    'fornecedores' => $comp['fornecedores'],
+                    'projetos' => $comp['projetos'],
+                    'estoque_atual' => (float) $comp['estoque_atual'],
+                    'status' => $p['status'],
+                    'data' => $p['data'],
+                    'quantidade' => $p['quantidade'],
+                    'quantidade_base' => $p['quantidade_base'],
+                    'setup' => $p['setup'],
+                    'estoque_seguranca_qtd' => $segurancaQtd,
+                    'parcela' => $indice + 1,
+                    'total_parcelas' => $totalParcelas,
+                ];
+            }
         }
 
         usort($resultados, function ($a, $b) {
@@ -360,7 +391,7 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             $dataTexto = $r['status'] === 'urgente' ? 'URGENTE' : $r['data']->format('d/m/Y');
             fputcsv($saida, [
@@ -369,6 +400,7 @@ try {
                 $r['descricao'],
                 $r['fornecedores'],
                 $r['projetos'],
+                $r['parcela'] . '/' . $r['total_parcelas'],
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
@@ -402,8 +434,23 @@ try {
            trava a largura das colunas de texto, com reticências para texto longo. */
         .mrp-table { min-width: 1100px; }
         .mrp-table td:nth-child(3), .mrp-table th:nth-child(3) { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
-        .mrp-table td:nth-child(4), .mrp-table th:nth-child(4) { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td:nth-child(4), .mrp-table th:nth-child(4) { max-width: 160px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
         .mrp-table td:nth-child(5), .mrp-table th:nth-child(5) { max-width: 200px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+
+        /* Quantidade sugerida: o número precisa ficar sempre na mesma posição, com ou
+           sem o badge de setup — senão a coluna centraliza o bloco inteiro (número +
+           badge) e o número "pula" de lugar entre linhas. Fixa a largura do número e
+           projeta o badge pra fora (posição absoluta), sem afetar o centro do número. */
+        .qtd-sugerida-wrap { position: relative; display: inline-block; min-width: 56px; text-align: right; }
+        .qtd-sugerida-num { display: inline-block; }
+        .qtd-sugerida-badge {
+            position: absolute;
+            left: 100%;
+            top: 50%;
+            transform: translateY(-50%);
+            margin-left: 6px;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -517,14 +564,21 @@ try {
                                 <?php endif; ?>
                                 <tr>
                                     <td><?php echo $r['status'] === 'urgente' ? '—' : h($r['data']->format('d/m/Y')); ?></td>
-                                    <td><strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong></td>
+                                    <td>
+                                        <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
+                                        <?php if ($r['total_parcelas'] > 1): ?>
+                                            <span class="badge bg-light text-secondary border ms-1" title="Este componente tem <?php echo $r['total_parcelas']; ?> pedidos escalonados no período calculado">parcela <?php echo $r['parcela']; ?>/<?php echo $r['total_parcelas']; ?></span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td title="<?php echo h($r['descricao']); ?>"><?php echo h($r['descricao']); ?></td>
                                     <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
                                     <td class="text-center" <?php if ($r['setup'] > 0): ?>title="Já inclui <?php echo numeroBr($r['setup'], 0); ?>% de setup/scrap (base: <?php echo numeroBr($r['quantidade_base'], 0); ?>)"<?php endif; ?>>
-                                        <?php echo numeroBr($r['quantidade'], 0); ?>
-                                        <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border ms-1">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
+                                        <span class="qtd-sugerida-wrap">
+                                            <span class="qtd-sugerida-num"><?php echo numeroBr($r['quantidade'], 0); ?></span>
+                                            <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border qtd-sugerida-badge">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
+                                        </span>
                                     </td>
                                     <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>" <?php if ($r['estoque_seguranca_qtd'] > 0): ?>title="Estoque de segurança calculado: <?php echo numeroBr($r['estoque_seguranca_qtd'], 0); ?> unidades"<?php endif; ?>><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($r['codigo_componente']); ?>">Ver evolução</a></td>
