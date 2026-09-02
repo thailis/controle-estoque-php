@@ -319,6 +319,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     exit;
 }
 
+// Inclusão manual de um novo evento EDI direto pelo site, sem CSV.
+// Ano/Data início/Data fim são calculados a partir da semana, igual ao import.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
+    $pn2Manual = trim($_POST['pn2_manual'] ?? '') ?: null;
+    $materialManual = trim($_POST['material_manual'] ?? '');
+    $marcaManual = trim($_POST['marca_manual'] ?? '') ?: null;
+    $projetoManual = trim($_POST['projeto_manual'] ?? '') ?: null;
+    $modeloManual = trim($_POST['modelo_manual'] ?? '') ?: null;
+    $eventoManual = trim($_POST['evento_manual'] ?? '');
+    $semanaManual = trim($_POST['semana_manual'] ?? '');
+    $quantidadeManual = parseQuantidadeEdi(trim($_POST['quantidade_manual'] ?? ''));
+    $periodoManual = ctype_digit($semanaManual) ? calcularPeriodoSemana((int) $semanaManual) : null;
+
+    $flash = 'erro_dados';
+    if ($materialManual !== '' && $eventoManual !== '' && $quantidadeManual !== null && $periodoManual !== null) {
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        mysqli_stmt_bind_param(
+            $stmtInsManual, "ssssssssiss",
+            $pn2Manual, $materialManual, $marcaManual, $projetoManual, $modeloManual, $eventoManual,
+            $semanaManual, $quantidadeManual, $periodoManual['ano'], $periodoManual['data_fim'], $periodoManual['data_inicio']
+        );
+        mysqli_stmt_execute($stmtInsManual);
+        mysqli_stmt_close($stmtInsManual);
+        $flash = 'inserido';
+    }
+
+    header('Location: edi.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'ano'    => $_POST['ano_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+        'flash'  => $flash,
+    ]));
+    exit;
+}
+
+// Edição direta de data e quantidade de um evento EDI já existente, sem CSV.
+// A data fim é recalculada automaticamente como data início + 6 dias, pra manter
+// a semana completa (mesma regra usada no cálculo original da importação).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    $idEditar = (int) ($_POST['id'] ?? 0);
+    $dataEditadaBruta = trim($_POST['data_editada'] ?? '');
+    $quantidadeEditada = parseQuantidadeEdi(trim($_POST['quantidade_editada'] ?? ''));
+    $dataEditadaObj = DateTimeImmutable::createFromFormat('!Y-m-d', $dataEditadaBruta);
+
+    $flash = 'erro_dados';
+    if ($idEditar > 0 && $dataEditadaObj instanceof DateTimeImmutable && $quantidadeEditada !== null) {
+        $novaDataInicio = $dataEditadaObj->format('Y-m-d');
+        $novaDataFim = $dataEditadaObj->modify('+6 days')->format('Y-m-d');
+
+        $stmtEditar = mysqli_prepare($conn, "UPDATE edi SET data_inicio = ?, data_fim = ?, quantidade = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtEditar, "sssi", $novaDataInicio, $novaDataFim, $quantidadeEditada, $idEditar);
+        mysqli_stmt_execute($stmtEditar);
+        mysqli_stmt_close($stmtEditar);
+        $flash = 'editado';
+    }
+
+    header('Location: edi.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'ano'    => $_POST['ano_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+        'flash'  => $flash,
+    ]));
+    exit;
+}
+
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
@@ -326,6 +393,23 @@ $offset = ($pagina - 1) * $porPagina;
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
 $anoFiltro = isset($_GET['ano']) ? trim($_GET['ano']) : ''; // '', ou um ano específico
+$editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
+$flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
+
+$flashMap = [
+    'inserido'   => ['success', '✅ Evento adicionado com sucesso.'],
+    'editado'    => ['success', '✅ Registro atualizado.'],
+    'erro_dados' => ['danger', '❌ Confira material, evento, semana (30-53/2026 ou 1-29/2027) e quantidade.'],
+];
+
+// Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
+$materiaisDisponiveis = [];
+$resMat = mysqli_query($conn, "SELECT DISTINCT TRIM(material) AS material FROM bomnova WHERE material IS NOT NULL AND TRIM(material) <> '' ORDER BY material");
+if ($resMat) {
+    while ($linhaMat = mysqli_fetch_assoc($resMat)) {
+        $materiaisDisponiveis[] = $linhaMat['material'];
+    }
+}
 
 $condicoes = [];
 $params = [];
@@ -621,6 +705,67 @@ while ($row = mysqli_fetch_assoc($result)) {
             </details>
         </div>
 
+        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
+            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
+        <?php endif; ?>
+
+        <datalist id="lista_materiais">
+            <?php foreach ($materiaisDisponiveis as $m): ?>
+                <option value="<?php echo htmlspecialchars($m); ?>">
+            <?php endforeach; ?>
+        </datalist>
+
+        <div class="card p-3 mb-4">
+            <details>
+                <summary>➕ Novo evento (entrada manual)</summary>
+                <form method="POST" class="row g-2 align-items-end mt-3">
+                    <input type="hidden" name="acao" value="inserir_manual">
+                    <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                    <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                    <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">PN2</label>
+                        <input type="text" name="pn2_manual" class="form-control form-control-sm" style="width:130px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Material *</label>
+                        <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Marca</label>
+                        <input type="text" name="marca_manual" class="form-control form-control-sm" style="width:130px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Projeto</label>
+                        <input type="text" name="projeto_manual" class="form-control form-control-sm" style="width:130px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Modelo</label>
+                        <input type="text" name="modelo_manual" class="form-control form-control-sm" style="width:150px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Evento *</label>
+                        <input type="text" name="evento_manual" class="form-control form-control-sm" style="width:120px" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Semana *</label>
+                        <input type="number" name="semana_manual" class="form-control form-control-sm" style="width:90px" min="1" max="53" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Quantidade *</label>
+                        <input type="text" name="quantidade_manual" class="form-control form-control-sm text-end" style="width:110px" required>
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
+                    </div>
+                    <div class="col-12">
+                        <small class="text-muted">Ano e datas são calculados automaticamente pela semana (30–53 = 2026; 1–29 = 2027), igual ao CSV.</small>
+                    </div>
+                </form>
+            </details>
+        </div>
+
         <div class="card p-3 mb-4">
             <form method="GET" class="row g-2 align-items-center">
                 <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
@@ -665,19 +810,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-center">Semana</th>
                             <th class="text-center">Quantidade</th>
                             <th>Data</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
-                                <?php $estaAtendido = (int) ($row['atendido'] ?? 0) === 1; ?>
+                                <?php
+                                $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
+                                $idLinha = (int) $row['id'];
+                                $emEdicao = ($editando === $idLinha);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&filtro=' . urlencode($filtro);
+                                ?>
                                 <tr>
                                     <td>
                                         <form method="POST" class="m-0">
                                             <input type="hidden" name="acao" value="alternar_atendido">
-                                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                                            <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
@@ -697,8 +848,29 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td title="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></span></td>
                                     <td><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
                                     <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
-                                    <td class="text-center"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['data_inicio'] ?? ''); ?></td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="3">
+                                            <form method="POST" class="d-flex gap-2 align-items-center flex-wrap m-0">
+                                                <input type="hidden" name="acao" value="editar_registro">
+                                                <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                                <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                                                <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                                                <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:110px" value="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" required>
+                                                <input type="date" name="data_editada" class="form-control form-control-sm" style="width:150px" value="<?php echo htmlspecialchars($row['data_inicio'] ?? ''); ?>" required>
+                                                <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                            </form>
+                                        </td>
+                                    <?php else: ?>
+                                        <td class="text-center"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
+                                        <td><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
+                                        <td>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

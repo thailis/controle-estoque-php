@@ -321,17 +321,95 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     exit;
 }
 
+// Inserção manual de uma nova programação direto pelo site, sem CSV
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
+    $componenteManual = trim($_POST['componente_manual'] ?? '');
+    $dataManual = parseDataProgramacao(trim($_POST['data_manual'] ?? ''));
+    $quantidadeManual = parseQuantidade(trim($_POST['quantidade_manual'] ?? ''));
+
+    $flash = 'erro_dados';
+    if ($componenteManual !== '' && $dataManual !== null && $quantidadeManual !== null) {
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, data, quantidade) VALUES (?, ?, ?)");
+        mysqli_stmt_bind_param($stmtInsManual, "ssd", $componenteManual, $dataManual, $quantidadeManual);
+        mysqli_stmt_execute($stmtInsManual);
+        mysqli_stmt_close($stmtInsManual);
+        $flash = 'inserido';
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+        'flash'  => $flash,
+    ]));
+    exit;
+}
+
+// Edição direta de data/quantidade de uma programação já existente, sem CSV.
+// Bloqueada se o item já estiver atendido (já virou estoque físico — editar
+// aqui deixaria a quantidade da programação e a do estoque dessincronizadas;
+// é preciso reabrir primeiro).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    $idEditar = (int) ($_POST['id'] ?? 0);
+    $dataEditada = parseDataProgramacao(trim($_POST['data_editada'] ?? ''));
+    $quantidadeEditada = parseQuantidade(trim($_POST['quantidade_editada'] ?? ''));
+
+    $flash = 'erro_dados';
+    if ($idEditar > 0 && $dataEditada !== null && $quantidadeEditada !== null) {
+        $stmtCheckAtendido = mysqli_prepare($conn, "SELECT atendido FROM programacao WHERE id = ?");
+        mysqli_stmt_bind_param($stmtCheckAtendido, 'i', $idEditar);
+        mysqli_stmt_execute($stmtCheckAtendido);
+        $itemCheck = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheckAtendido));
+        mysqli_stmt_close($stmtCheckAtendido);
+
+        if ($itemCheck && (int) $itemCheck['atendido'] === 1) {
+            $flash = 'erro_atendido';
+        } elseif ($itemCheck) {
+            $stmtEditar = mysqli_prepare($conn, "UPDATE programacao SET data = ?, quantidade = ? WHERE id = ?");
+            mysqli_stmt_bind_param($stmtEditar, "sdi", $dataEditada, $quantidadeEditada, $idEditar);
+            mysqli_stmt_execute($stmtEditar);
+            mysqli_stmt_close($stmtEditar);
+            $flash = 'editado';
+        }
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+        'flash'  => $flash,
+    ]));
+    exit;
+}
+
 function h($valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
-
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
+$editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
+$flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
+
+$flashMap = [
+    'inserido'      => ['success', '✅ Programação adicionada com sucesso.'],
+    'editado'       => ['success', '✅ Registro atualizado.'],
+    'erro_dados'    => ['danger', '❌ Componente, data ou quantidade inválidos.'],
+    'erro_atendido' => ['warning', '⚠️ Esse item já está atendido — reabra antes de editar.'],
+];
+
+// Lista de componentes existentes na BOM, pra sugerir no campo de entrada manual
+$componentesDisponiveis = [];
+$resComp = mysqli_query($conn, "SELECT DISTINCT TRIM(codigo_componente) AS codigo FROM bomnova WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> '' ORDER BY codigo");
+if ($resComp) {
+    while ($linhaComp = mysqli_fetch_assoc($resComp)) {
+        $componentesDisponiveis[] = $linhaComp['codigo'];
+    }
+}
 
 $condicoes = [];
 $params = [];
@@ -563,6 +641,41 @@ while ($row = mysqli_fetch_assoc($result)) {
             </details>
         </div>
 
+        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
+            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
+        <?php endif; ?>
+
+        <datalist id="lista_componentes">
+            <?php foreach ($componentesDisponiveis as $c): ?>
+                <option value="<?php echo h($c); ?>">
+            <?php endforeach; ?>
+        </datalist>
+
+        <div class="card p-3 mb-4">
+            <h2 class="h6 mb-3">➕ Nova programação (entrada manual)</h2>
+            <form method="POST" class="row g-2 align-items-end">
+                <input type="hidden" name="acao" value="inserir_manual">
+                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Componente</label>
+                    <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" placeholder="Ex.: 12000586" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Data</label>
+                    <input type="date" name="data_manual" class="form-control form-control-sm" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Quantidade</label>
+                    <input type="text" name="quantidade_manual" class="form-control form-control-sm text-end" placeholder="Ex.: 1500" required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
+                </div>
+            </form>
+        </div>
+
         <div class="card p-3 mb-4">
             <form method="GET" class="row g-2 align-items-center">
                 <input type="hidden" name="filtro" value="<?php echo h($filtro); ?>">
@@ -595,19 +708,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Fornecedor</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="6" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
-                                <?php $estaAtendido = (int) ($row['atendido'] ?? 0) === 1; ?>
+                                <?php
+                                $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
+                                $idLinha = (int) $row['id'];
+                                $emEdicao = ($editando === $idLinha);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro);
+                                ?>
                                 <tr>
                                     <td>
                                         <form method="POST" class="m-0">
                                             <input type="hidden" name="acao" value="alternar_atendido">
-                                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                                            <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
@@ -622,8 +741,32 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td><strong><?php echo h($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? ''); ?></span></td>
-                                    <td><?php echo $row['data'] ? h((new DateTimeImmutable($row['data']))->format('d/m/Y')) : ''; ?></td>
-                                    <td class="text-end"><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="3">
+                                            <form method="POST" class="d-flex gap-2 align-items-center flex-wrap m-0">
+                                                <input type="hidden" name="acao" value="editar_registro">
+                                                <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                                                <input type="date" name="data_editada" class="form-control form-control-sm" style="width:150px" value="<?php echo h($row['data'] ?? ''); ?>" required>
+                                                <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:120px" value="<?php echo h(number_format((float) $row['quantidade'], 2, ',', '')); ?>" required>
+                                                <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                            </form>
+                                        </td>
+                                    <?php else: ?>
+                                        <td><?php echo $row['data'] ? h((new DateTimeImmutable($row['data']))->format('d/m/Y')) : ''; ?></td>
+                                        <td class="text-end"><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
+                                        <td>
+                                            <?php if ($estaAtendido): ?>
+                                                <span class="text-muted small" title="Reabra o item antes de editar">—</span>
+                                            <?php else: ?>
+                                                <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                            <?php endif; ?>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
