@@ -1,12 +1,12 @@
 <?php
 require_once 'conexao.php';
 
-function h(mixed $valor): string
+function h($valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
 
-function numeroBr(mixed $valor, int $decimais = 2): string
+function numeroBr($valor, int $decimais = 2): string
 {
     return number_format((float) $valor, $decimais, ',', '.');
 }
@@ -15,12 +15,6 @@ function numeroBr(mixed $valor, int $decimais = 2): string
 // usando os limites Min/Max (em dias de cobertura) convertidos em quantidade através da
 // demanda "local" (próximos 60 dias a partir de hoje — não o horizonte inteiro, pra não
 // diluir a taxa com demanda distante e gerar alarme falso ou nunca alertar excesso).
-//
-// Distingue "crítico" (o saldo fica negativo, mas ainda há tempo de reagir com uma compra
-// nova antes que aconteça — ou seja, o dia do problema é depois de hoje+Frozen+Transit) de
-// "acompanhar" (o saldo já fica negativo DENTRO da zona travada — uma compra nova não
-// chegaria a tempo de qualquer forma, então não é uma decisão de compra, é só monitorar
-// o que já está programado).
 function calcularStatusJanela(
     float $estoqueAtual,
     array $programacaoPorData,
@@ -28,9 +22,7 @@ function calcularStatusJanela(
     DateTimeImmutable $hoje,
     int $diasJanela,
     int $minDias,
-    int $maxDias,
-    int $frozenDias,
-    int $transitDias
+    int $maxDias
 ): array {
     $hojeChave = $hoje->format('Y-m-d');
 
@@ -46,20 +38,9 @@ function calcularStatusJanela(
     $saldoAnterior = $estoqueAtual + $entradaAtrasada - $saidaAtrasada;
     $minSaldo = $saldoAnterior;
     $maxSaldo = $saldoAnterior;
-    $diaPrimeiroNegativo = null;
-    $saldoNoFimDaZonaTravada = $saldoAnterior;
-
-    $limiteAcao = $hoje->modify('+' . ($frozenDias + $transitDias) . ' days');
-    $limiteAcaoChave = $limiteAcao->format('Y-m-d');
 
     $cursor = $hoje;
     $fimJanela = $hoje->modify("+{$diasJanela} days");
-    if ($saldoAnterior < 0) {
-        $diaPrimeiroNegativo = $hoje;
-    }
-    if ($hojeChave === $limiteAcaoChave) {
-        $saldoNoFimDaZonaTravada = $saldoAnterior;
-    }
     while ($cursor <= $fimJanela) {
         $chave = $cursor->format('Y-m-d');
         $entrada = $programacaoPorData[$chave] ?? 0.0;
@@ -67,12 +48,6 @@ function calcularStatusJanela(
         $saldoAnterior = $saldoAnterior + $entrada - $saida;
         $minSaldo = min($minSaldo, $saldoAnterior);
         $maxSaldo = max($maxSaldo, $saldoAnterior);
-        if ($diaPrimeiroNegativo === null && $saldoAnterior < 0) {
-            $diaPrimeiroNegativo = $cursor;
-        }
-        if ($chave === $limiteAcaoChave) {
-            $saldoNoFimDaZonaTravada = $saldoAnterior;
-        }
         $cursor = $cursor->modify('+1 day');
     }
 
@@ -96,33 +71,16 @@ function calcularStatusJanela(
     }
 
     if ($minSaldo < 0) {
-        $dentroDaZonaTravada = $diaPrimeiroNegativo !== null && $diaPrimeiroNegativo <= $limiteAcao;
-        // "Acompanhar" só vale se, ATÉ O FIM da zona travada (hoje + Frozen + Transit), o
-        // que já está programado for SUFICIENTE pra zerar o déficit (saldo volta a ficar
-        // >= 0). Se tem programação mas ela não é suficiente (saldo continua negativo mesmo
-        // depois de aplicá-la), continua "crítico" — é um alerta real, ainda sem cobertura.
-        $status = ($dentroDaZonaTravada && $saldoNoFimDaZonaTravada >= 0) ? 'acompanhar' : 'critico';
+        $status = 'critico';
     } elseif ($minSaldo < $minQtd) {
         $status = 'atencao';
     } elseif ($maxQtd > 0 && $maxSaldo > $maxQtd) {
         $status = 'excesso';
-    } elseif ($estoqueAtual <= 0) {
-        // Estoque zerado + nenhuma demanda prevista nos próximos 90 dias não é
-        // "Estoque OK" de verdade (não há nada a avaliar) — vira "Sem demanda".
-        $fim90Chave = $hoje->modify('+90 days')->format('Y-m-d');
-        $temDemanda90 = false;
-        foreach ($demandaPorData as $d => $q) {
-            if ($q > 0 && $d >= $hojeChave && $d <= $fim90Chave) {
-                $temDemanda90 = true;
-                break;
-            }
-        }
-        $status = $temDemanda90 ? 'ok' : 'sem_demanda';
     } else {
         $status = 'ok';
     }
 
-    return ['status' => $status, 'min_saldo' => $minSaldo, 'max_saldo' => $maxSaldo, 'min_qtd' => $minQtd, 'max_qtd' => $maxQtd, 'deficit' => max(0, -$minSaldo)];
+    return ['status' => $status, 'min_saldo' => $minSaldo, 'max_saldo' => $maxSaldo, 'min_qtd' => $minQtd, 'max_qtd' => $maxQtd];
 }
 
 function vincularParametros(mysqli_stmt $stmt, string $tipos, array &$parametros): void
@@ -269,7 +227,7 @@ $busca = trim($_GET['busca'] ?? '');
 $fornecedor = trim($_GET['fornecedor'] ?? '');
 $projeto = trim($_GET['projeto'] ?? '');
 $statusFiltro = $_GET['status'] ?? 'critico';
-$statusPermitidos = ['todos', 'critico', 'acompanhar', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda'];
+$statusPermitidos = ['todos', 'critico', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda'];
 if (!in_array($statusFiltro, $statusPermitidos, true)) {
     $statusFiltro = 'critico';
 }
@@ -297,41 +255,14 @@ $linhas = [];
 $fornecedores = [];
 $projetos = [];
 
-// Diagnóstico de performance: acrescente ?debug_tempo=1 na URL pra ver quanto tempo
-// cada etapa está levando. Imprime E ENVIA cada linha na hora (flush), assim, mesmo
-// que uma etapa trave/dê timeout depois, a última linha que aparecer na tela já
-// aponta exatamente qual consulta é o gargalo.
-$debugTempo = isset($_GET['debug_tempo']);
-$temposDebugInicio = microtime(true);
-$temposDebugAnterior = $temposDebugInicio;
-if ($debugTempo) {
-    echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Diagnóstico</title></head><body style='font-family: monospace; padding: 20px;'>";
-    echo "<h2>⏱️ Diagnóstico de tempo — index.php</h2><pre>";
-    if (function_exists('ob_implicit_flush')) { ob_implicit_flush(true); }
-    if (ob_get_level() > 0) { @ob_end_flush(); }
-    flush();
-}
-$marcarTempo = function (string $rotulo) use (&$temposDebugAnterior, $temposDebugInicio, $debugTempo) {
-    if (!$debugTempo) return;
-    $agora = microtime(true);
-    $duracao = $agora - $temposDebugAnterior;
-    $acumulado = $agora - $temposDebugInicio;
-    echo sprintf("[%s] %-45s  etapa: %6.3fs   acumulado: %6.3fs\n", date('H:i:s'), $rotulo, $duracao, $acumulado);
-    @ob_flush();
-    flush();
-    $temposDebugAnterior = $agora;
-};
-$marcarTempo('início');
-
 try {
     mysqli_query($conn, 'SET SESSION group_concat_max_len = 8192');
 
     $fornecedores = opcoesDistintas($conn, 'fornecedor');
     $projetos = opcoesDistintas($conn, 'projeto');
-    $marcarTempo('fornecedores/projetos');
 
     $condicoesBom = ["b.codigo_componente IS NOT NULL", "TRIM(b.codigo_componente) <> ''", "(b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')"];
-    $condicoesEdi = ["CAST(e.quantidade AS DECIMAL(18,4)) > 0"];
+    $condicoesEdi = ["CAST(e.quantidade AS DECIMAL(18,4)) > 0", "(e.atendido = 0 OR e.atendido IS NULL)"];
     $parametros = [];
     $tipos = '';
 
@@ -429,7 +360,6 @@ try {
         $linhas[] = $linha;
     }
     mysqli_stmt_close($stmt);
-    $marcarTempo('query principal (bomnova+edi+estoque)');
 
     // Verifica quais componentes têm os parâmetros de compra completos (MOQ, Frozen Zone,
     // Transit Time, Min/Max). Para esses, o status final vem da simulação precisa (dentro
@@ -458,7 +388,6 @@ try {
             $parametrosCompra[trim($p['codigo_componente'])] = $p;
         }
         mysqli_stmt_close($stmtParam);
-        $marcarTempo('query parametros_compra (' . count($parametrosCompra) . ' componentes)');
 
         if (!empty($parametrosCompra)) {
             $codigosComParametros = array_keys($parametrosCompra);
@@ -470,6 +399,7 @@ try {
                 SELECT TRIM(codigo_componente) AS codigo_componente, data, SUM(quantidade) AS quantidade
                 FROM programacao
                 WHERE TRIM(codigo_componente) IN ($placeholdersP)
+                  AND (atendido = 0 OR atendido IS NULL)
                 GROUP BY TRIM(codigo_componente), data
             ");
             mysqli_stmt_bind_param($stmtProgMrp, $tiposCodigosP, ...$codigosComParametros);
@@ -490,6 +420,7 @@ try {
                 FROM bomnova b
                 JOIN edi e ON TRIM(b.material) = TRIM(e.material)
                 WHERE TRIM(b.codigo_componente) IN ($placeholdersP) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+                  AND (e.atendido = 0 OR e.atendido IS NULL)
                 GROUP BY TRIM(b.codigo_componente), e.data_inicio
             ");
             mysqli_stmt_bind_param($stmtDemandaMrp, $tiposCodigosP, ...$codigosComParametros);
@@ -499,13 +430,9 @@ try {
                 $demandaPorComponenteMrp[$linhaDem['codigo_componente']][$linhaDem['data']] = (float) $linhaDem['quantidade'];
             }
             mysqli_stmt_close($stmtDemandaMrp);
-            $marcarTempo('queries programação/demanda (MRP)');
 
             $hojeMrp = new DateTimeImmutable('today');
-            // Horizonte reduzido (6 meses) só aqui no dashboard, que roda a cada visita.
-            // O Planejamento de Compras (tela separada, sob demanda) continua com o
-            // horizonte completo até dez/2027.
-            $horizonteMrp = $hojeMrp->modify('+180 days');
+            $horizonteMrp = new DateTimeImmutable('2027-12-31');
 
             foreach ($linhas as &$linhaRef) {
                 $codigo = $linhaRef['codigo_componente'];
@@ -517,9 +444,7 @@ try {
                 $demComp = $demandaPorComponenteMrp[$codigo] ?? [];
 
                 // (1) Status real dentro da janela de 20 dias: crítico (saldo já ficaria
-                // negativo E ainda dá tempo de reagir), acompanhar (já ficaria negativo mas
-                // dentro da zona travada — não dá tempo de uma compra nova ajudar), atenção
-                // (abaixo do Min), excesso (acima do Max) ou ok.
+                // negativo), atenção (abaixo do Min), excesso (acima do Max) ou ok.
                 $janela = calcularStatusJanela(
                     $linhaRef['estoque_atual'],
                     $progComp,
@@ -527,54 +452,46 @@ try {
                     $hojeMrp,
                     20,
                     (int) $p['estoque_min_dias'],
-                    (int) $p['estoque_max_dias'],
-                    (int) $p['frozen_zone_dias'],
-                    (int) $p['transit_time_dias']
+                    (int) $p['estoque_max_dias']
                 );
                 $linhaRef['status'] = $janela['status'];
 
-                // (2) Data/quantidade sugerida (horizonte largo) — só roda quando realmente
-                // precisa: "crítico" (pra saber quanto comprar), "ok" ou "sem_demanda" (pra
-                // checar se existe uma necessidade futura que merece virar "Planejar"). Pra
-                // atenção/excesso/acompanhar isso não é usado, então pula e economiza a
-                // simulação mais cara.
-                if ($janela['status'] === 'critico' || $janela['status'] === 'ok' || $janela['status'] === 'sem_demanda') {
-                    $resultadoMrp = calcularDataSugeridaCompra(
-                        $linhaRef['estoque_atual'],
-                        $progComp,
-                        $demComp,
-                        $hojeMrp,
-                        $horizonteMrp,
-                        (float) $p['moq'],
-                        (int) $p['frozen_zone_dias'],
-                        (int) $p['transit_time_dias'],
-                        (int) $p['estoque_min_dias'],
-                        (int) $p['estoque_max_dias']
-                    );
-                    $linhaRef['mrp_status'] = $resultadoMrp['status'];
-                    $linhaRef['mrp_data_sugerida'] = $resultadoMrp['data'];
-                    $linhaRef['mrp_quantidade_sugerida'] = $resultadoMrp['quantidade'];
+                // (2) Data/quantidade sugerida (horizonte largo), só pra mostrar quando
+                // fizer sentido (crítico ou atenção) — não muda o status, só informa.
+                $resultadoMrp = calcularDataSugeridaCompra(
+                    $linhaRef['estoque_atual'],
+                    $progComp,
+                    $demComp,
+                    $hojeMrp,
+                    $horizonteMrp,
+                    (float) $p['moq'],
+                    (int) $p['frozen_zone_dias'],
+                    (int) $p['transit_time_dias'],
+                    (int) $p['estoque_min_dias'],
+                    (int) $p['estoque_max_dias']
+                );
+                $linhaRef['mrp_status'] = $resultadoMrp['status'];
+                $linhaRef['mrp_data_sugerida'] = $resultadoMrp['data'];
+                $linhaRef['mrp_quantidade_sugerida'] = $resultadoMrp['quantidade'];
 
-                    if ($resultadoMrp['quantidade'] > 0) {
-                        $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
-                    }
+                // A coluna "Comprar" passa a usar a quantidade do cálculo preciso (que
+                // considera todo o horizonte, MOQ, programação etc.) em vez do cálculo
+                // simples do período de 20 dias, que ficava zerado sempre que a necessidade
+                // real estava fora dessa janela (ex.: itens em "Planejar").
+                if ($resultadoMrp['quantidade'] > 0) {
+                    $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
+                }
 
-                    // Se dentro dos 20 dias está tudo ok (ou "sem demanda" nos próximos 90 dias),
-                    // mas existe uma necessidade real mais à frente (achada no horizonte largo),
-                    // vira "Planejar" em vez de ficar preso em "ok"/"sem_demanda".
-                    if (($linhaRef['status'] === 'ok' || $linhaRef['status'] === 'sem_demanda') && $resultadoMrp['status'] === 'programada') {
-                        $linhaRef['status'] = 'planejar';
-                    }
-                } elseif ($linhaRef['status'] === 'acompanhar') {
-                    // Não precisa da simulação longa: mostra o tamanho do buraco já calculado
-                    // pela janela de 20 dias (uma compra nova não ajudaria de qualquer forma).
-                    $linhaRef['necessidade_compra'] = $janela['deficit'];
+                // Se dentro dos 20 dias está tudo ok, mas existe uma necessidade real mais à
+                // frente (fora da janela imediata), vira "Planejar" em vez de sumir como "ok".
+                // Uma necessidade real e imediata (crítico/atenção/excesso) sempre tem prioridade.
+                if ($linhaRef['status'] === 'ok' && $resultadoMrp['status'] === 'programada') {
+                    $linhaRef['status'] = 'planejar';
                 }
             }
             unset($linhaRef);
         }
     }
-    $marcarTempo('loop de cálculo MRP (janela + data sugerida)');
 
     // Filtro final: aplica o status escolhido (agora já é o status definitivo — para quem
     // tem parâmetros, veio da janela de 20 dias; para quem não tem, do cálculo agregado).
@@ -584,17 +501,6 @@ try {
 } catch (Throwable $erro) {
     error_log('Erro no dashboard MRP: ' . $erro->getMessage());
     $erroDashboard = 'Não foi possível carregar os dados do MRP. Verifique a conexão e a estrutura das tabelas.';
-}
-
-if ($debugTempo) {
-    echo "\n";
-    if ($erroDashboard !== null) {
-        echo "❌ ERRO: " . $erroDashboard . "\n";
-    } else {
-        echo "✅ TUDO CARREGOU — " . count($linhas) . " linha(s) no resultado final.\n";
-    }
-    echo "</pre></body></html>";
-    exit;
 }
 
 $mapaOrdenacao = [
@@ -621,7 +527,6 @@ usort($linhas, function (array $a, array $b) use ($campoOrdenacao, $direcao): in
 $stats = [
     'total' => count($linhas),
     'critico' => 0,
-    'acompanhar' => 0,
     'atencao' => 0,
     'excesso' => 0,
     'planejar' => 0,
@@ -669,7 +574,6 @@ $linhasPagina = array_slice($linhas, ($pagina - 1) * $porPagina, $porPagina);
 
 $rotulosStatus = [
     'critico' => 'Compra urgente',
-    'acompanhar' => 'Acompanhar',
     'atencao' => 'Atenção',
     'excesso' => 'Excesso',
     'planejar' => 'Planejar',
@@ -755,7 +659,6 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                     <select class="form-select" id="status" name="status">
                         <option value="todos" <?php echo $statusFiltro === 'todos' ? 'selected' : ''; ?>>Todos</option>
                         <option value="critico" <?php echo $statusFiltro === 'critico' ? 'selected' : ''; ?>>Urgente</option>
-                        <option value="acompanhar" <?php echo $statusFiltro === 'acompanhar' ? 'selected' : ''; ?>>Acompanhar</option>
                         <option value="atencao" <?php echo $statusFiltro === 'atencao' ? 'selected' : ''; ?>>Atenção</option>
                         <option value="excesso" <?php echo $statusFiltro === 'excesso' ? 'selected' : ''; ?>>Excesso</option>
                         <option value="planejar" <?php echo $statusFiltro === 'planejar' ? 'selected' : ''; ?>>Planejar</option>
@@ -779,11 +682,6 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <span class="metric-label">Compra urgente</span>
                 <strong><?php echo numeroBr($stats['critico'], 0); ?></strong>
                 <small>Saldo projetado negativo</small>
-            </article>
-            <article class="metric-card metric-acompanhar">
-                <span class="metric-label">Acompanhar</span>
-                <strong><?php echo numeroBr($stats['acompanhar'], 0); ?></strong>
-                <small>Negativo, mas dentro da zona travada</small>
             </article>
             <article class="metric-card metric-warning">
                 <span class="metric-label">Em atenção</span>
@@ -828,8 +726,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
             </div>
 
             <div class="status-legend" aria-label="Legenda de status">
-                <span><i class="dot dot-danger"></i> Urgente: saldo ficaria negativo e ainda dá tempo de reagir com uma compra nova</span>
-                <span><i class="dot dot-acompanhar"></i> Acompanhar: saldo já ficaria negativo dentro da zona travada (Frozen Zone + Transit Time) — uma compra nova não chegaria a tempo</span>
+                <span><i class="dot dot-danger"></i> Urgente: saldo ficaria negativo dentro de 20 dias</span>
                 <span><i class="dot dot-warning"></i> Atenção: abaixo do estoque mínimo configurado (ou até 20% de margem, sem parâmetros)</span>
                 <span><i class="dot dot-excesso"></i> Excesso: acima do estoque máximo configurado</span>
                 <span><i class="dot dot-planejar"></i> Planejar: necessidade futura fora dos 20 dias</span>

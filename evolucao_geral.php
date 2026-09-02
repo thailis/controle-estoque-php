@@ -1,6 +1,6 @@
 <?php
 require_once 'conexao.php';
-$temEdiPorDia = [];
+
 function h($valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
@@ -9,22 +9,6 @@ function h($valor): string
 function numeroBr($valor, int $decimais = 0): string
 {
     return number_format((float) $valor, $decimais, ',', '.');
-}
-
-function numeroCsvBr($valor, int $decimais = 4): string
-{
-    if ($valor === null || $valor === '') {
-        return '';
-    }
-
-    $numero = number_format((float) $valor, $decimais, ',', '');
-
-    if ($decimais > 0) {
-        $numero = rtrim($numero, '0');
-        $numero = rtrim($numero, ',');
-    }
-
-    return $numero;
 }
 
 function opcoesDistintasGeral(mysqli $conn, string $coluna): array
@@ -158,6 +142,7 @@ try {
             SELECT TRIM(codigo_componente) AS codigo_componente, data, SUM(quantidade) AS quantidade
             FROM programacao
             WHERE TRIM(codigo_componente) IN ($placeholders)
+              AND (atendido = 0 OR atendido IS NULL)
             GROUP BY TRIM(codigo_componente), data
         ");
         mysqli_stmt_bind_param($stmtProg, $tiposCodigos, ...$codigosCalculo);
@@ -178,6 +163,7 @@ try {
             FROM bomnova b
             JOIN edi e ON TRIM(b.material) = TRIM(e.material)
             WHERE TRIM(b.codigo_componente) IN ($placeholders) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+              AND (e.atendido = 0 OR e.atendido IS NULL)
             GROUP BY TRIM(b.codigo_componente), e.data_inicio
         ");
         mysqli_stmt_bind_param($stmtDemanda, $tiposCodigos, ...$codigosCalculo);
@@ -198,6 +184,7 @@ try {
                 FROM bomnova b
                 JOIN edi e ON TRIM(b.material) = TRIM(e.material)
                 WHERE TRIM(b.codigo_componente) IN ($placeholders) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+                  AND (e.atendido = 0 OR e.atendido IS NULL)
             ) AS materiais_distintos
             GROUP BY data
         ");
@@ -354,68 +341,12 @@ try {
             background: #fff;
         }
         .evolucao-table thead th:nth-child(-n+6) { background: #f5f8fb; z-index: 4; }
-        .evolucao-table th:nth-child(1),
-        .evolucao-table td:nth-child(1) {
-            left: 0;
-            width: 110px;
-            min-width: 110px;
-            max-width: 110px;
-            z-index: 3;
-        }
-
-        .evolucao-table th:nth-child(2),
-        .evolucao-table td:nth-child(2) {
-            left: 110px;
-            width: 220px;
-            min-width: 220px;
-            max-width: 220px;
-            z-index: 3;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .evolucao-table th:nth-child(3),
-        .evolucao-table td:nth-child(3) {
-            left: 330px;
-            width: 140px;
-            min-width: 140px;
-            max-width: 140px;
-            z-index: 3;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .evolucao-table th:nth-child(4),
-        .evolucao-table td:nth-child(4) {
-            left: 470px;
-            width: 260px;
-            min-width: 260px;
-            max-width: 260px;
-            z-index: 3;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .evolucao-table th:nth-child(5),
-        .evolucao-table td:nth-child(5) {
-            left: 730px;
-            width: 100px;
-            min-width: 100px;
-            max-width: 100px;
-            z-index: 3;
-            text-align: right;
-        }
-
-        .evolucao-table th:nth-child(6),
-        .evolucao-table td:nth-child(6) {
-            left: 830px;
-            width: 110px;
-            min-width: 110px;
-            max-width: 110px;
-            z-index: 3;
-            text-align: right;
-            box-shadow: 2px 0 0 #dce4ec;
-        }
+        .evolucao-table th:nth-child(1), .evolucao-table td:nth-child(1) { left: 0; min-width: 110px; z-index: 3; }
+        .evolucao-table th:nth-child(2), .evolucao-table td:nth-child(2) { left: 110px; min-width: 220px; z-index: 3; }
+        .evolucao-table th:nth-child(3), .evolucao-table td:nth-child(3) { left: 330px; min-width: 140px; z-index: 3; }
+        .evolucao-table th:nth-child(4), .evolucao-table td:nth-child(4) { left: 470px; min-width: 150px; z-index: 3; }
+        .evolucao-table th:nth-child(5), .evolucao-table td:nth-child(5) { left: 620px; min-width: 100px; z-index: 3; text-align: right; }
+        .evolucao-table th:nth-child(6), .evolucao-table td:nth-child(6) { left: 720px; min-width: 100px; z-index: 3; text-align: right; box-shadow: 2px 0 0 #dce4ec; }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
         .saldo-negativo { color: #c53535; font-weight: 750; }
@@ -571,7 +502,7 @@ try {
                                     <td><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td><?php echo h($componente['projetos'] ?: '—'); ?></td>
                                     <td class="text-end"><?php echo h($componente['consumos'] ?: '—'); ?></td>
-                                    <td><?php echo numeroCsvBr($componente['estoque_atual'], 0); ?></td>
+                                    <td><?php echo numeroBr($componente['estoque_atual']); ?></td>
                                     <?php foreach ($dias as $dia): ?>
                                         <?php
                                             $chave = $dia->format('Y-m-d');

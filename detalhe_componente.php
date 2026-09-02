@@ -59,6 +59,7 @@ try {
         SELECT data, SUM(quantidade) AS quantidade
         FROM programacao
         WHERE TRIM(codigo_componente) = ?
+          AND (atendido = 0 OR atendido IS NULL)
         GROUP BY data
     ");
     mysqli_stmt_bind_param($stmtProg, 's', $codigo);
@@ -79,6 +80,7 @@ try {
         FROM bomnova b
         JOIN edi e ON TRIM(b.material) = TRIM(e.material)
         WHERE TRIM(b.codigo_componente) = ? AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+          AND (e.atendido = 0 OR e.atendido IS NULL)
         GROUP BY e.data_inicio
     ");
     mysqli_stmt_bind_param($stmtDemanda, 's', $codigo);

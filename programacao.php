@@ -8,9 +8,6 @@ $importados = 0;
 $atualizados = 0;
 $ignorados = 0;
 $erros = 0;
-$linhasProcessadas = [];
-$totalProcessadas = 0;
-$limiteExibicao = 500;
 
 function parseDataProgramacao(string $valor): ?string
 {
@@ -90,22 +87,15 @@ function localizarColunaComponente(array $cabecalhoNormalizado): ?int
     return null;
 }
 
-// Detecta pares [indice_data, indice_quantidade]. Cobre dois formatos:
-// - Planilha (Quantidade 1, Programação 1, Quantidade 2, Programação 2...): a
-//   quantidade vem ANTES da data, então pareia com a PRÓXIMA coluna.
-// - Simples (codigo_componente, data, quantidade): a quantidade é a última
-//   coluna, então pareia com a coluna ANTERIOR (não tem próxima coluna pra usar).
+// Detecta pares [indice_data, indice_quantidade]: qualquer coluna cujo cabeçalho contenha
+// "quantidade" é pareada com a coluna imediatamente anterior (a data daquela programação).
+// Isso cobre tanto o formato simples (codigo_componente, data, quantidade) quanto o formato
+// largo da planilha (Programação 1, Quantidade, Programação 2, Quantidade 2, ...).
 function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 {
-    $total = count($cabecalhoNormalizado);
     $pares = [];
     foreach ($cabecalhoNormalizado as $indice => $nome) {
-        if (!str_contains($nome, 'quantidade')) {
-            continue;
-        }
-        if ($indice + 1 < $total && $cabecalhoNormalizado[$indice + 1] !== '' && !str_contains($cabecalhoNormalizado[$indice + 1], 'quantidade')) {
-            $pares[] = [$indice + 1, $indice];
-        } elseif ($indice > 0) {
+        if ($indice > 0 && str_contains($nome, 'quantidade')) {
             $pares[] = [$indice - 1, $indice];
         }
     }
@@ -158,16 +148,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 mysqli_autocommit($conn, false);
 
-                $linhasProcessadas = [];
-                $totalProcessadas = 0;
-                $limiteExibicao = 500;
-                $registrar = function (string $resultado, string $componente, string $data, $quantidade) use (&$linhasProcessadas, &$totalProcessadas, $limiteExibicao) {
-                    $totalProcessadas++;
-                    if ($totalProcessadas <= $limiteExibicao) {
-                        $linhasProcessadas[] = ['resultado' => $resultado, 'componente' => $componente, 'data' => $data, 'quantidade' => $quantidade];
-                    }
-                };
-
                 $linhaNum = 1;
                 while (($linha = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
                     $linhaNum++;
@@ -195,10 +175,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $dataBruta = trim($linha[$indiceData] ?? '');
                         $quantidadeBruta = trim($linha[$indiceQtd] ?? '');
 
-                        // Par vazio (ex.: componente não tem "Programação 3", ou a planilha
-                        // mostra "0" na quantidade sem data nenhuma) — pula sem contar erro.
-                        // Sem data, não tem o que registrar, então a quantidade não importa aqui.
-                        if ($dataBruta === '') {
+                        // Par vazio (ex.: componente não tem "Programação 3") — pula sem contar erro.
+                        if ($dataBruta === '' && $quantidadeBruta === '') {
                             continue;
                         }
 
@@ -206,15 +184,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         if ($data === null) {
                             $erros++;
                             $mensagens[] = "⚠️ Linha $linhaNum, coluna " . ($indiceData + 1) . ": data '$dataBruta' inválida (use DD/MM/AAAA ou AAAA-MM-DD).";
-                            $registrar('erro', $codigoComponente, $dataBruta, $quantidadeBruta);
                             continue;
                         }
 
-                        $quantidade = $quantidadeBruta === '' ? 0.0 : parseQuantidade($quantidadeBruta);
+                        $quantidade = parseQuantidade($quantidadeBruta);
                         if ($quantidade === null) {
                             $erros++;
                             $mensagens[] = "⚠️ Linha $linhaNum, coluna " . ($indiceQtd + 1) . ": quantidade '$quantidadeBruta' inválida.";
-                            $registrar('erro', $codigoComponente, $data, $quantidadeBruta);
                             continue;
                         }
 
@@ -229,7 +205,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         if ($modo === 'sem_duplicar' && $idExistente !== null) {
                             $ignorados++;
-                            $registrar('ignorado', $codigoComponente, $data, $quantidade);
                             continue;
                         }
 
@@ -237,11 +212,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             mysqli_stmt_bind_param($stmtUpdate, "di", $quantidade, $idExistente);
                             if (mysqli_stmt_execute($stmtUpdate)) {
                                 $atualizados++;
-                                $registrar('atualizado', $codigoComponente, $data, $quantidade);
                             } else {
                                 $erros++;
                                 $mensagens[] = "⚠️ Erro ao atualizar linha $linhaNum: " . mysqli_stmt_error($stmtUpdate);
-                                $registrar('erro', $codigoComponente, $data, $quantidade);
                             }
                             continue;
                         }
@@ -249,11 +222,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         mysqli_stmt_bind_param($stmtInsert, "ssd", $codigoComponente, $data, $quantidade);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
-                            $registrar('inserido', $codigoComponente, $data, $quantidade);
                         } else {
                             $erros++;
                             $mensagens[] = "⚠️ Erro na linha $linhaNum: " . mysqli_stmt_error($stmtInsert);
-                            $registrar('erro', $codigoComponente, $data, $quantidade);
                         }
                     }
                 }
@@ -277,6 +248,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     }
 }
 
+// Alternar o status "atendido" de uma programação. Ao marcar como atendido, a
+// quantidade é somada automaticamente ao estoque físico (nova linha em "estoque",
+// vinculada via origem_programacao_id). Ao reabrir, a mesma linha de estoque é
+// removida — desfaz a entrada sem deixar resíduo, mesmo que o estoque tenha
+// mudado depois por outros motivos.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
+    $idAlternar = (int) ($_POST['id'] ?? 0);
+
+    if ($idAlternar > 0) {
+        $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, atendido FROM programacao WHERE id = ?");
+        mysqli_stmt_bind_param($stmtBuscaItem, 'i', $idAlternar);
+        mysqli_stmt_execute($stmtBuscaItem);
+        $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
+        mysqli_stmt_close($stmtBuscaItem);
+
+        if ($itemProg) {
+            $jaAtendido = (int) $itemProg['atendido'] === 1;
+
+            mysqli_begin_transaction($conn);
+            try {
+                if ($jaAtendido) {
+                    // Reabrir: remove a linha de estoque que essa programação gerou
+                    $stmtDelEstoque = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_programacao_id = ?");
+                    mysqli_stmt_bind_param($stmtDelEstoque, 'i', $idAlternar);
+                    mysqli_stmt_execute($stmtDelEstoque);
+                    mysqli_stmt_close($stmtDelEstoque);
+
+                    $stmtProgOff = mysqli_prepare($conn, "UPDATE programacao SET atendido = 0 WHERE id = ?");
+                    mysqli_stmt_bind_param($stmtProgOff, 'i', $idAlternar);
+                    mysqli_stmt_execute($stmtProgOff);
+                    mysqli_stmt_close($stmtProgOff);
+                } else {
+                    // Marcar atendido: soma a quantidade recebida no estoque físico
+                    $codigoComponente = trim((string) $itemProg['codigo_componente']);
+                    $quantidadeRecebida = (float) $itemProg['quantidade'];
+
+                    $stmtDesc = mysqli_prepare($conn, "
+                        SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao
+                        FROM bomnova
+                        WHERE TRIM(codigo_componente) = ?
+                    ");
+                    mysqli_stmt_bind_param($stmtDesc, 's', $codigoComponente);
+                    mysqli_stmt_execute($stmtDesc);
+                    $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
+                    mysqli_stmt_close($stmtDesc);
+
+                    $plantaRecebimento = 'Recebido (Programação)';
+                    $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
+                    mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
+                    mysqli_stmt_execute($stmtInsEstoque);
+                    mysqli_stmt_close($stmtInsEstoque);
+
+                    $stmtProgOn = mysqli_prepare($conn, "UPDATE programacao SET atendido = 1 WHERE id = ?");
+                    mysqli_stmt_bind_param($stmtProgOn, 'i', $idAlternar);
+                    mysqli_stmt_execute($stmtProgOn);
+                    mysqli_stmt_close($stmtProgOn);
+                }
+                mysqli_commit($conn);
+            } catch (Throwable $erroToggle) {
+                mysqli_rollback($conn);
+                error_log('Erro ao alternar atendido na programação: ' . $erroToggle->getMessage());
+            }
+        }
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+    ]));
+    exit;
+}
+
 function h($valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
@@ -286,21 +330,30 @@ $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
-$busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
 
-$where = '';
+$condicoes = [];
 $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $where = "WHERE codigo_componente LIKE ?";
+    $condicoes[] = "p.codigo_componente LIKE ?";
     $buscaLike = "%$busca%";
-    $params = [$buscaLike];
-    $tipos = 's';
+    $params[] = $buscaLike;
+    $tipos .= 's';
 }
 
-$sqlTotal = "SELECT COUNT(*) AS total FROM programacao $where";
-if ($busca !== '') {
+if ($filtro === 'pendente') {
+    $condicoes[] = "(p.atendido = 0 OR p.atendido IS NULL)";
+} elseif ($filtro === 'atendido') {
+    $condicoes[] = "p.atendido = 1";
+}
+
+$where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
+
+$sqlTotal = "SELECT COUNT(*) AS total FROM programacao p $where";
+if (!empty($params)) {
     $stmtTotal = mysqli_prepare($conn, $sqlTotal);
     mysqli_stmt_bind_param($stmtTotal, $tipos, ...$params);
     mysqli_stmt_execute($stmtTotal);
@@ -311,8 +364,8 @@ if ($busca !== '') {
 $total = mysqli_fetch_assoc($resultTotal)['total'];
 $totalPaginas = max(1, ceil($total / $porPagina));
 
-$sqlSoma = "SELECT SUM(COALESCE(CAST(quantidade AS DECIMAL(18,4)), 0)) AS soma FROM programacao $where";
-if ($busca !== '') {
+$sqlSoma = "SELECT SUM(COALESCE(CAST(p.quantidade AS DECIMAL(18,4)), 0)) AS soma FROM programacao p $where";
+if (!empty($params)) {
     $stmtSoma = mysqli_prepare($conn, $sqlSoma);
     mysqli_stmt_bind_param($stmtSoma, $tipos, ...$params);
     mysqli_stmt_execute($stmtSoma);
@@ -324,8 +377,8 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT codigo_componente, data, quantidade FROM programacao $where ORDER BY data, codigo_componente";
-    if ($busca !== '') {
+    $sqlExport = "SELECT p.codigo_componente, p.data, p.quantidade, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
+    if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
         mysqli_stmt_execute($stmtExport);
@@ -337,7 +390,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'Data', 'Quantidade'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'Data', 'Quantidade', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
        
@@ -350,7 +403,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 
 fputcsv(
     $saida,
-    [$linha['codigo_componente'], $data, $quantidadeExportada],
+    [$linha['codigo_componente'], $data, $quantidadeExportada, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
     ';',
     '"',
     ''
@@ -360,13 +413,22 @@ fputcsv(
     exit;
 }
 
-$sql = "SELECT codigo_componente, data, quantidade
-        FROM programacao $where
-        ORDER BY data, codigo_componente
+$sql = "SELECT p.id, p.codigo_componente, p.data, p.quantidade, p.atendido,
+               bg.descricao, bg.fornecedores
+        FROM programacao p
+        LEFT JOIN (
+            SELECT TRIM(codigo_componente) AS codigo_componente,
+                   MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao,
+                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores
+            FROM bomnova
+            GROUP BY TRIM(codigo_componente)
+        ) bg ON bg.codigo_componente = TRIM(p.codigo_componente)
+        $where
+        ORDER BY p.data, p.codigo_componente
         LIMIT ? OFFSET ?";
 
 $stmt = mysqli_prepare($conn, $sql);
-if ($busca !== '') {
+if (!empty($params)) {
     mysqli_stmt_bind_param($stmt, $tipos . 'ii', ...array_merge($params, [$porPagina, $offset]));
 } else {
     mysqli_stmt_bind_param($stmt, 'ii', $porPagina, $offset);
@@ -390,14 +452,45 @@ while ($row = mysqli_fetch_assoc($result)) {
         .card { border-radius: 15px; box-shadow: 0 2px 20px rgba(0,0,0,0.08); }
         .bg-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; }
         .table th { background: #f8f9fa; white-space: nowrap; }
-        .table td { white-space: nowrap; }
+        .table td { white-space: nowrap; vertical-align: middle; }
         .form-check { padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px; }
         .form-check:hover { background: #f8f9fa; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
+
+        .situacao-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border: none;
+            border-radius: 999px;
+            font-size: .74rem;
+            font-weight: 700;
+            line-height: 1.2;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: filter .15s ease, transform .05s ease;
+        }
+        .situacao-toggle:hover { filter: brightness(0.94); }
+        .situacao-toggle:active { transform: scale(0.97); }
+        .situacao-toggle .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+        .situacao-toggle.is-pendente { background: #fff3cd; color: #a96600; }
+        .situacao-toggle.is-pendente .dot { background: #d88b0b; }
+        .situacao-toggle.is-atendido { background: #eaf8f0; color: #247a4d; }
+        .situacao-toggle.is-atendido .dot { background: #247a4d; }
+
+        .text-truncate-cell {
+            display: inline-block;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
-    <div class="container" style="max-width: 900px;">
+    <div class="container" style="max-width: 1180px;">
         <div class="card bg-primary text-white p-4 mb-4">
             <h1>📅 Programação de Entradas</h1>
             <p class="mb-0">
@@ -407,7 +500,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
+            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
@@ -415,63 +508,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php foreach ($mensagens as $msg): ?>
                             <div><?php echo htmlspecialchars($msg); ?></div>
                         <?php endforeach; ?>
-                    </div>
-                    <?php endif; ?>
-
-                    <?php if (!empty($linhasProcessadas)): ?>
-                    <div class="mb-4">
-                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                            <div>
-                                <h2 class="h6 mb-1">Itens processados nesta importação</h2>
-                                <p class="text-muted mb-0 small">
-                                    <?php echo number_format($totalProcessadas, 0, ',', '.'); ?> linha(s) processada(s)
-                                </p>
-                            </div>
-                            <div class="d-flex flex-wrap gap-2">
-                                <span class="badge text-bg-success"><?php echo $importados; ?> inserido(s)</span>
-                                <span class="badge text-bg-primary"><?php echo $atualizados; ?> atualizado(s)</span>
-                                <span class="badge text-bg-secondary"><?php echo $ignorados; ?> ignorado(s)</span>
-                                <span class="badge text-bg-danger"><?php echo $erros; ?> erro(s)</span>
-                            </div>
-                        </div>
-
-                        <?php if ($totalProcessadas > $limiteExibicao): ?>
-                            <div class="alert alert-info py-2">
-                                A importação processou todas as linhas. Para manter a página rápida, a tabela abaixo mostra somente as primeiras <?php echo $limiteExibicao; ?>.
-                            </div>
-                        <?php endif; ?>
-
-                        <div class="table-responsive">
-                            <table class="table table-hover table-sm mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Resultado</th>
-                                        <th>Componente</th>
-                                        <th>Data</th>
-                                        <th class="text-end">Quantidade</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php
-                                    $badgesResultado = [
-                                        'inserido' => ['success', 'Inserido'],
-                                        'atualizado' => ['primary', 'Atualizado'],
-                                        'ignorado' => ['secondary', 'Ignorado'],
-                                        'erro' => ['danger', 'Erro'],
-                                    ];
-                                    ?>
-                                    <?php foreach ($linhasProcessadas as $linhaProcessada): ?>
-                                        <?php $badge = $badgesResultado[$linhaProcessada['resultado']]; ?>
-                                        <tr>
-                                            <td><span class="badge text-bg-<?php echo $badge[0]; ?>"><?php echo $badge[1]; ?></span></td>
-                                            <td><strong><?php echo htmlspecialchars($linhaProcessada['componente']); ?></strong></td>
-                                            <td><?php echo htmlspecialchars($linhaProcessada['data']); ?></td>
-                                            <td class="text-end"><?php echo htmlspecialchars((string) $linhaProcessada['quantidade']); ?></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
                     </div>
                     <?php endif; ?>
 
@@ -519,7 +555,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <strong>Formato simples</strong> (uma programação por linha):<br>
                         <code>codigo_componente, data, quantidade</code><br><br>
                         <strong>Formato da planilha</strong> (várias programações na mesma linha, como no Excel):<br>
-                        <code>Componente, ..., Quantidade 1, Programação 1, Quantidade 2, Programação 2, Quantidade 3, Programação 3...</code><br>
+                        <code>Componente, ..., Programação 1, Quantidade, Programação 2, Quantidade 2, Programação 3, Quantidade...</code><br>
                         Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Deixe em branco as programações que não existirem.<br><br>
                         Data em DD/MM/AAAA ou AAAA-MM-DD. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
@@ -528,14 +564,22 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <form method="GET" class="row g-2">
+            <form method="GET" class="row g-2 align-items-center">
+                <input type="hidden" name="filtro" value="<?php echo h($filtro); ?>">
                 <div class="col-auto flex-grow-1">
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
+                    <div class="btn-group" role="group">
+                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                    </div>
+                </div>
+                <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="programacao.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -545,18 +589,39 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <table class="table table-hover table-sm">
                     <thead>
                         <tr>
+                            <th>Situação</th>
                             <th>Componente</th>
+                            <th>Descrição</th>
+                            <th>Fornecedor</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="3" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="6" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
+                                <?php $estaAtendido = (int) ($row['atendido'] ?? 0) === 1; ?>
                                 <tr>
+                                    <td>
+                                        <form method="POST" class="m-0">
+                                            <input type="hidden" name="acao" value="alternar_atendido">
+                                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                                            <button type="submit"
+                                                    class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
+                                                    title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque)'; ?>">
+                                                <span class="dot"></span>
+                                                <?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?>
+                                            </button>
+                                        </form>
+                                    </td>
                                     <td><strong><?php echo h($row['codigo_componente'] ?? ''); ?></strong></td>
+                                    <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
+                                    <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? ''); ?></span></td>
                                     <td><?php echo $row['data'] ? h((new DateTimeImmutable($row['data']))->format('d/m/Y')) : ''; ?></td>
                                     <td class="text-end"><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
                                 </tr>
@@ -570,13 +635,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>

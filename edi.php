@@ -39,39 +39,23 @@ function registrarLinhaProcessada(
     ];
 }
 
-// Interpreta a data do EDI, aceitando os formatos mais comuns vindos de CSV/Excel
-// (dd/mm/aaaa, dd-mm-aaaa ou aaaa-mm-dd), e calcula a semana/ano ISO correspondentes.
-function parseDataEdi(string $valor): ?DateTimeImmutable
+function calcularPeriodoSemana(int $semana): ?array
 {
-    $valor = trim($valor);
-    if ($valor === '') {
+    if ($semana >= 30 && $semana <= 53) {
+        $ano = 2026;
+    } elseif ($semana >= 1 && $semana <= 29) {
+        $ano = 2027;
+    } else {
         return null;
     }
 
-    $formatos = ['d/m/Y', 'd-m-Y', 'Y-m-d', 'Y/m/d'];
-    foreach ($formatos as $formato) {
-        $data = DateTimeImmutable::createFromFormat('!' . $formato, $valor, new DateTimeZone('UTC'));
-        $erros = DateTimeImmutable::getLastErrors();
-        if ($data !== false && (!$erros || ($erros['warning_count'] === 0 && $erros['error_count'] === 0))) {
-            return $data;
-        }
-    }
-
-    return null;
-}
-
-function calcularPeriodoData(string $valorData): ?array
-{
-    $data = parseDataEdi($valorData);
-    if ($data === false || $data === null) {
-        return null;
-    }
+    $inicio = (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+        ->setISODate($ano, $semana, 1);
 
     return [
-        'ano' => (int) $data->format('o'),   // ano ISO-8601 (bate com o número da semana)
-        'semana' => (int) $data->format('W'), // semana ISO-8601
-        'data_inicio' => $data->format('Y-m-d'),
-        'data_fim' => $data->format('Y-m-d'),
+        'ano' => $ano,
+        'data_inicio' => $inicio->format('Y-m-d'),
+        'data_fim' => $inicio->modify('+6 days')->format('Y-m-d'),
     ];
 }
 
@@ -155,8 +139,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 }
 
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND data_inicio = ? AND evento = ?");
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, semana = ?, data_fim = ? WHERE material = ? AND data_inicio = ? AND evento = ?");
+                $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
+                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
 
                 mysqli_autocommit($conn, false);
 
@@ -182,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $projeto = $dados['projeto'] ?? null;
                     $modelo = $dados['modelo'] ?? null;
                     $evento = $dados['evento'] ?? null;
-                    $dataEvento = $dados['data'] ?? null;
+                    $semana = $dados['semana'] ?? null;
                     $quantidadeBruta = $dados['quantidade'] ?? '';
                     $quantidade = parseQuantidadeEdi((string) $quantidadeBruta);
                     if ($quantidade === null) {
@@ -199,10 +183,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $dados['quantidade'] = $quantidade;
 
-                    $periodo = $dataEvento !== null ? calcularPeriodoData((string) $dataEvento) : null;
+                    $periodo = is_numeric($semana) ? calcularPeriodoSemana((int) $semana) : null;
                     if ($periodo === null) {
                         $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: data '$dataEvento' inválida (use dd/mm/aaaa ou aaaa-mm-dd).";
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: semana '$semana' fora dos intervalos 30–53/2026 e 1–29/2027.";
                         registrarLinhaProcessada(
                             $linhasProcessadas,
                             $totalProcessadas,
@@ -214,17 +198,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
 
                     $ano = $periodo['ano'];
-                    $semana = $periodo['semana'];
                     $data_inicio = $periodo['data_inicio'];
                     $data_fim = $periodo['data_fim'];
                     $dados['ano'] = $ano;
-                    $dados['semana'] = $semana;
                     $dados['data_inicio'] = $data_inicio;
                     $dados['data_fim'] = $data_fim;
 
                     $existe = false;
                     if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
-                        mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $data_inicio, $evento);
+                        mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $semana, $evento);
                         mysqli_stmt_execute($stmtVerifica);
                         $resVerifica = mysqli_stmt_get_result($stmtVerifica);
                         $existe = mysqli_fetch_assoc($resVerifica)['existe'] > 0;
@@ -244,9 +226,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                     if ($modo === 'atualizar' && $existe) {
                         mysqli_stmt_bind_param(
-                            $stmtUpdate, "ssssdiissss",
-                            $pn2, $marca, $projeto, $modelo, $quantidade, $ano, $semana, $data_fim,
-                            $material, $data_inicio, $evento
+                            $stmtUpdate, "ssssdisssss",
+                            $pn2, $marca, $projeto, $modelo, $quantidade, $ano, $data_fim, $data_inicio,
+                            $material, $semana, $evento
                         );
                         if (mysqli_stmt_execute($stmtUpdate)) {
                             $atualizados++;
@@ -318,26 +300,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     }
 }
 
+// Alternar o status "atendido" de um evento EDI, sem apagar a linha
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
+    $idAlternar = (int) ($_POST['id'] ?? 0);
+    if ($idAlternar > 0) {
+        $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
+        mysqli_stmt_execute($stmtToggle);
+        mysqli_stmt_close($stmtToggle);
+    }
+
+    header('Location: edi.php?' . http_build_query([
+        'pagina' => $_POST['pagina_atual'] ?? 1,
+        'busca'  => $_POST['busca_atual'] ?? '',
+        'ano'    => $_POST['ano_atual'] ?? '',
+        'filtro' => $_POST['filtro_atual'] ?? '',
+    ]));
+    exit;
+}
+
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
-$busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
+$anoFiltro = isset($_GET['ano']) ? trim($_GET['ano']) : ''; // '', ou um ano específico
 
-$where = '';
+$condicoes = [];
 $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $where = "WHERE material LIKE ? OR pn2 LIKE ? OR projeto LIKE ?";
+    $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ?)";
     $buscaLike = "%$busca%";
-    $params = [$buscaLike, $buscaLike, $buscaLike];
-    $tipos = 'sss';
+    array_push($params, $buscaLike, $buscaLike, $buscaLike);
+    $tipos .= 'sss';
+}
+
+if ($filtro === 'pendente') {
+    $condicoes[] = "(atendido = 0 OR atendido IS NULL)";
+} elseif ($filtro === 'atendido') {
+    $condicoes[] = "atendido = 1";
+}
+
+if ($anoFiltro !== '' && ctype_digit($anoFiltro)) {
+    $condicoes[] = "ano = ?";
+    $params[] = (int) $anoFiltro;
+    $tipos .= 'i';
+}
+
+$where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
+
+// Anos disponíveis na base, pra montar o combo de filtro dinamicamente
+$anosDisponiveis = [];
+$resAnos = mysqli_query($conn, "SELECT DISTINCT ano FROM edi WHERE ano IS NOT NULL ORDER BY ano DESC");
+if ($resAnos) {
+    while ($linhaAno = mysqli_fetch_assoc($resAnos)) {
+        $anosDisponiveis[] = $linhaAno['ano'];
+    }
 }
 
 // Total de registros (para calcular número de páginas)
 $sqlTotal = "SELECT COUNT(*) AS total FROM edi $where";
-if ($busca !== '') {
+if (!empty($params)) {
     $stmtTotal = mysqli_prepare($conn, $sqlTotal);
     mysqli_stmt_bind_param($stmtTotal, $tipos, ...$params);
     mysqli_stmt_execute($stmtTotal);
@@ -350,10 +376,10 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim
+    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido
                   FROM edi $where
                   ORDER BY ano DESC, semana DESC";
-    if ($busca !== '') {
+    if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
         mysqli_stmt_execute($stmtExport);
@@ -366,12 +392,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['PN2', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data início', 'Data fim'], ';', '"', '');
+    fputcsv($saida, ['PN2', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data início', 'Data fim', 'Atendido'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['pn2'], $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
             $linhaExport['ano'], $linhaExport['data_inicio'], $linhaExport['data_fim'],
+            ((int) ($linhaExport['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
         ], ';', '"', '');
     }
     fclose($saida);
@@ -379,13 +406,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 }
 
 // Busca os dados da página atual
-$sql = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim 
+$sql = "SELECT _tidb_rowid AS id, pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido 
         FROM edi $where 
         ORDER BY ano DESC, semana DESC 
         LIMIT ? OFFSET ?";
 
 $stmt = mysqli_prepare($conn, $sql);
-if ($busca !== '') {
+if (!empty($params)) {
     mysqli_stmt_bind_param($stmt, $tipos . 'ii', ...array_merge($params, [$porPagina, $offset]));
 } else {
     mysqli_stmt_bind_param($stmt, 'ii', $porPagina, $offset);
@@ -409,13 +436,52 @@ while ($row = mysqli_fetch_assoc($result)) {
         .card { border-radius: 15px; box-shadow: 0 2px 20px rgba(0,0,0,0.08); }
         .bg-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; }
         .table th { background: #f8f9fa; white-space: nowrap; }
-        .table td { white-space: nowrap; }
+        .table td { white-space: nowrap; vertical-align: middle; }
         .form-check { padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px; }
         .form-check:hover { background: #f8f9fa; }
         .resultado-table th { white-space: nowrap; background: #f8f9fa; }
         .resultado-table td { vertical-align: middle; }
         .codigo-material { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
+
+        /* Badge-botão de situação: um único elemento clicável, sem quebrar linha */
+        .situacao-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border: none;
+            border-radius: 999px;
+            font-size: .74rem;
+            font-weight: 700;
+            line-height: 1.2;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: filter .15s ease, transform .05s ease;
+        }
+        .situacao-toggle:hover { filter: brightness(0.94); }
+        .situacao-toggle:active { transform: scale(0.97); }
+        .situacao-toggle .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+        .situacao-toggle.is-pendente { background: #fff3cd; color: #a96600; }
+        .situacao-toggle.is-pendente .dot { background: #d88b0b; }
+        .situacao-toggle.is-atendido { background: #eaf8f0; color: #247a4d; }
+        .situacao-toggle.is-atendido .dot { background: #247a4d; }
+
+        .table-hover tbody tr:hover > * { background: #f7faff; }
+
+        /* Tabela principal: fonte e espaçamento mais compactos pra caber mais colunas sem sobrepor */
+        .edi-table { font-size: .8rem; }
+        .edi-table th,
+        .edi-table td { padding: 8px 10px; }
+        .edi-table th { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: #536578; }
+        .text-truncate-cell {
+            display: inline-block;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
@@ -548,61 +614,91 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>pn2, material, marca, projeto, modelo, evento, data, quantidade</code><br>
-                        A coluna <strong>data</strong> deve trazer a data do evento (formatos aceitos: dd/mm/aaaa ou aaaa-mm-dd). Semana e ano são calculados automaticamente a partir dela (padrão ISO-8601). Separador: vírgula ou ponto e vírgula.
+                        <code>pn2, material, marca, projeto, modelo, evento, semana, quantidade</code><br>
+                        Ano e datas são calculados automaticamente: semanas 30–53 = 2026; semanas 1–29 = 2027. A data inicial é a segunda-feira e a data final é o domingo da semana. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
             </details>
         </div>
 
         <div class="card p-3 mb-4">
-            <form method="GET" class="row g-2">
+            <form method="GET" class="row g-2 align-items-center">
+                <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
                 <div class="col-auto flex-grow-1">
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por material, PN ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
                 <div class="col-auto">
+                    <select name="ano" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os anos</option>
+                        <?php foreach ($anosDisponiveis as $anoOpcao): ?>
+                            <option value="<?php echo (int) $anoOpcao; ?>" <?php echo ((string) $anoFiltro === (string) $anoOpcao) ? 'selected' : ''; ?>><?php echo (int) $anoOpcao; ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <div class="btn-group" role="group">
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                    </div>
+                </div>
+                <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="edi.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
 
         <div class="card">
             <div class="card-body table-responsive">
-                <table class="table table-hover table-sm">
+                <table class="table table-hover table-sm edi-table">
                     <thead>
                         <tr>
+                            <th>Situação</th>
                             <th>PN2</th>
                             <th>Material</th>
                             <th>Marca</th>
                             <th>Projeto</th>
                             <th>Modelo</th>
                             <th>Evento</th>
-                            <th>Semana</th>
-                            <th>Quantidade</th>
-                            <th>Ano</th>
-                            <th>Início</th>
-                            <th>Fim</th>
+                            <th class="text-center">Semana</th>
+                            <th class="text-center">Quantidade</th>
+                            <th>Data</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
+                                <?php $estaAtendido = (int) ($row['atendido'] ?? 0) === 1; ?>
                                 <tr>
+                                    <td>
+                                        <form method="POST" class="m-0">
+                                            <input type="hidden" name="acao" value="alternar_atendido">
+                                            <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                                            <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                                            <button type="submit"
+                                                    class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
+                                                    title="<?php echo $estaAtendido ? 'Clique para reabrir' : 'Clique para marcar como atendido'; ?>">
+                                                <span class="dot"></span>
+                                                <?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?>
+                                            </button>
+                                        </form>
+                                    </td>
                                     <td><?php echo htmlspecialchars($row['pn2'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
+                                    <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
+                                    <td title="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></span></td>
                                     <td><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['ano'] ?? ''); ?></td>
+                                    <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
+                                    <td class="text-center"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['data_inicio'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['data_fim'] ?? ''); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -614,13 +710,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
