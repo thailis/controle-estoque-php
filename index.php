@@ -1,7 +1,7 @@
 <?php
 require_once 'conexao.php';
 
-function h($valor): string
+function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }

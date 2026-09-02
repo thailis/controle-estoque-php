@@ -1,7 +1,7 @@
 <?php
 require_once 'conexao.php';
 
-function h($valor): string
+function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
@@ -62,6 +62,8 @@ $totalComponentes = 0;
 $fornecedores = [];
 $projetos = [];
 $dias = [];
+$temEdiPorDia = [];
+$demandaEdiBrutaPorDia = [];
 
 try {
     $fornecedores = opcoesDistintasGeral($conn, 'fornecedor');
@@ -339,14 +341,16 @@ try {
             position: sticky;
             text-align: left;
             background: #fff;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .evolucao-table thead th:nth-child(-n+6) { background: #f5f8fb; z-index: 4; }
-        .evolucao-table th:nth-child(1), .evolucao-table td:nth-child(1) { left: 0; min-width: 110px; z-index: 3; }
-        .evolucao-table th:nth-child(2), .evolucao-table td:nth-child(2) { left: 110px; min-width: 220px; z-index: 3; }
-        .evolucao-table th:nth-child(3), .evolucao-table td:nth-child(3) { left: 330px; min-width: 140px; z-index: 3; }
-        .evolucao-table th:nth-child(4), .evolucao-table td:nth-child(4) { left: 470px; min-width: 150px; z-index: 3; }
-        .evolucao-table th:nth-child(5), .evolucao-table td:nth-child(5) { left: 620px; min-width: 100px; z-index: 3; text-align: right; }
-        .evolucao-table th:nth-child(6), .evolucao-table td:nth-child(6) { left: 720px; min-width: 100px; z-index: 3; text-align: right; box-shadow: 2px 0 0 #dce4ec; }
+        .evolucao-table th:nth-child(1), .evolucao-table td:nth-child(1) { left: 0; width: 110px; min-width: 110px; max-width: 110px; z-index: 3; }
+        .evolucao-table th:nth-child(2), .evolucao-table td:nth-child(2) { left: 110px; width: 220px; min-width: 220px; max-width: 220px; z-index: 3; }
+        .evolucao-table th:nth-child(3), .evolucao-table td:nth-child(3) { left: 330px; width: 140px; min-width: 140px; max-width: 140px; z-index: 3; }
+        .evolucao-table th:nth-child(4), .evolucao-table td:nth-child(4) { left: 470px; width: 150px; min-width: 150px; max-width: 150px; z-index: 3; }
+        .evolucao-table th:nth-child(5), .evolucao-table td:nth-child(5) { left: 620px; width: 100px; min-width: 100px; max-width: 100px; z-index: 3; text-align: right; }
+        .evolucao-table th:nth-child(6), .evolucao-table td:nth-child(6) { left: 720px; width: 100px; min-width: 100px; max-width: 100px; z-index: 3; text-align: right; box-shadow: 2px 0 0 #dce4ec; }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
         .saldo-negativo { color: #c53535; font-weight: 750; }
@@ -371,8 +375,13 @@ try {
                 <p class="mb-0">Saldo projetado dia a dia, vários componentes lado a lado</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
-                <a class="btn btn-light btn-sm" href="index.php">Dashboard</a>
+                <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
+                <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
+                <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>
+                <a class="btn btn-outline-light btn-sm" href="bomnova.php">BOM</a>
                 <a class="btn btn-outline-light btn-sm" href="programacao.php">Programação</a>
+                <a class="btn btn-outline-light btn-sm" href="parametros_compra.php">Parâmetros</a>
+                <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
                 <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             </nav>
         </div>
@@ -498,9 +507,9 @@ try {
                             <?php foreach ($componentesPagina as $componente): ?>
                                 <tr>
                                     <td><strong class="component-code"><?php echo h($componente['codigo_componente']); ?></strong></td>
-                                    <td><?php echo h($componente['descricao']); ?></td>
-                                    <td><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
-                                    <td><?php echo h($componente['projetos'] ?: '—'); ?></td>
+                                    <td title="<?php echo h($componente['descricao']); ?>"><?php echo h($componente['descricao']); ?></td>
+                                    <td title="<?php echo h($componente['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
+                                    <td title="<?php echo h($componente['projetos'] ?: '—'); ?>"><?php echo h($componente['projetos'] ?: '—'); ?></td>
                                     <td class="text-end"><?php echo h($componente['consumos'] ?: '—'); ?></td>
                                     <td><?php echo numeroBr($componente['estoque_atual']); ?></td>
                                     <?php foreach ($dias as $dia): ?>

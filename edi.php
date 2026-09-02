@@ -570,6 +570,16 @@ while ($row = mysqli_fetch_assoc($result)) {
 </head>
 <body>
     <div class="container" style="max-width: 1180px;">
+        <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
+            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
+            <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
+            <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>
+            <a class="btn btn-outline-secondary btn-sm" href="programacao.php">Programação</a>
+            <a class="btn btn-outline-secondary btn-sm" href="parametros_compra.php">Parâmetros</a>
+            <a class="btn btn-outline-secondary btn-sm" href="evolucao_geral.php">Evolução geral</a>
+            <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+        </nav>
         <div class="card bg-primary text-white p-4 mb-4">
             <h1>📋 EDI</h1>
             <p class="mb-0"><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</p>

@@ -1,7 +1,7 @@
 <?php
 require_once 'conexao.php';
 
-function h($valor): string
+function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
@@ -196,10 +196,14 @@ if ($erroDetalhe === null) {
                 <p class="mb-0">Saldo projetado dia a dia até 31/03/2027</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
-                <a class="btn btn-light btn-sm" href="index.php">Voltar ao Dashboard</a>
+                <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
+                <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
+                <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>
+                <a class="btn btn-outline-light btn-sm" href="bomnova.php">BOM</a>
+                <a class="btn btn-outline-light btn-sm" href="programacao.php">Programação</a>
+                <a class="btn btn-outline-light btn-sm" href="parametros_compra.php">Parâmetros</a>
                 <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
                 <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
-                <a class="btn btn-outline-light btn-sm" href="programacao.php">Programação</a>
             </nav>
         </div>
     </header>

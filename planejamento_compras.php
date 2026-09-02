@@ -1,7 +1,7 @@
 <?php
 require_once 'conexao.php';
 
-function h($valor): string
+function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
@@ -328,6 +328,15 @@ try {
         .status-urgente { color: #c53535; background: #fff0f0; }
         .status-programada { color: #a96600; background: #fff7df; }
         .mes-divisor td { background: #f5f8fb; font-weight: 750; color: #405164; }
+
+        /* Esta tela tem menos colunas que o dashboard principal, então a largura
+           mínima de 1460px herdada de .mrp-table sobra e vira um vão vazio na tela.
+           Reduz só aqui (sem alterar dashboard.css, usado também no Dashboard) e
+           trava a largura das colunas de texto, com reticências para texto longo. */
+        .mrp-table { min-width: 1100px; }
+        .mrp-table td:nth-child(3), .mrp-table th:nth-child(3) { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td:nth-child(4), .mrp-table th:nth-child(4) { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td:nth-child(5), .mrp-table th:nth-child(5) { max-width: 200px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
     </style>
 </head>
 <body>
@@ -339,8 +348,14 @@ try {
                 <p class="mb-0">Calendário de compras sugeridas com base nos parâmetros cadastrados</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
-                <a class="btn btn-light btn-sm" href="index.php">Dashboard</a>
+                <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
+                <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
+                <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>
+                <a class="btn btn-outline-light btn-sm" href="bomnova.php">BOM</a>
+                <a class="btn btn-outline-light btn-sm" href="programacao.php">Programação</a>
                 <a class="btn btn-outline-light btn-sm" href="parametros_compra.php">Parâmetros</a>
+                <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
+                <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             </nav>
         </div>
     </header>
@@ -414,9 +429,9 @@ try {
                             <th>Descrição</th>
                             <th>Fornecedor</th>
                             <th>Projeto</th>
-                            <th class="text-end">Estoque hoje</th>
-                            <th class="text-end">Quantidade sugerida</th>
-                            <th>Status</th>
+                            <th class="text-center">Estoque hoje</th>
+                            <th class="text-center">Quantidade sugerida</th>
+                            <th class="text-center">Status</th>
                             <th>Evolução</th>
                         </tr>
                     </thead>
@@ -436,12 +451,12 @@ try {
                                 <tr>
                                     <td><?php echo $r['status'] === 'urgente' ? '—' : h($r['data']->format('d/m/Y')); ?></td>
                                     <td><strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong></td>
-                                    <td><?php echo h($r['descricao']); ?></td>
-                                    <td><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
-                                    <td><?php echo h($r['projetos'] ?: '—'); ?></td>
-                                    <td class="text-end"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
-                                    <td class="text-end"><?php echo numeroBr($r['quantidade'], 0); ?></td>
-                                    <td><span class="status-badge status-<?php echo h($r['status']); ?>"><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
+                                    <td title="<?php echo h($r['descricao']); ?>"><?php echo h($r['descricao']); ?></td>
+                                    <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
+                                    <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
+                                    <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
+                                    <td class="text-center"><?php echo numeroBr($r['quantidade'], 0); ?></td>
+                                    <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>"><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($r['codigo_componente']); ?>">Ver evolução</a></td>
                                 </tr>
                             <?php endforeach; ?>

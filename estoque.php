@@ -33,21 +33,6 @@ function parseNumeroBr(string $valor): ?float
     return is_numeric($valor) ? (float) $valor : null;
 }
 
-function numeroCsvBr($valor, int $decimais = 4): string
-{
-    if ($valor === null || $valor === '') {
-        return '';
-    }
-
-    $numero = number_format((float) $valor, $decimais, ',', '');
-
-    if ($decimais > 0) {
-        $numero = rtrim($numero, '0');
-        $numero = rtrim($numero, ',');
-    }
-
-    return $numero;
-}
 function normalizarTextoEstoque(string $texto): string
 {
     $texto = mb_strtolower(trim($texto), 'UTF-8');
@@ -65,9 +50,6 @@ function normalizarTextoEstoque(string $texto): string
 $mensagens = [];
 $importados = 0;
 $erros = 0;
-$linhasProcessadas = [];
-$totalProcessadas = 0;
-$limiteExibicao = 500;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -98,7 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $idxCodigo = null;
                 $idxDescricao = null;
                 $idxEstoqueTotal = null;
-                $idxMrp = null;
                 
                 foreach ([
                            'codigo_componente',
@@ -113,16 +94,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 }
                 $idxDescricao = array_search('descricao', $cabecalho, true);
                 $idxEstoqueTotal = array_search('estoque', $cabecalho, true);
-                $idxMrp = array_search('mrp', $cabecalho, true);
 
-                // Qualquer coluna que não seja codigo/descricao/estoque/mrp é tratada como
+                // Qualquer coluna que não seja codigo/descricao/estoque é tratada como
                 // uma coluna de planta (ex.: "2401", "2403"), usando o texto original
-                // do cabeçalho (sem normalizar) como identificador da planta. A coluna
-                // "mrp" (se vier na planilha) é ignorada aqui — o status MRP já é mostrado
-                // na tela com base na BOM, não é algo que essa importação de estoque grava.
+                // do cabeçalho (sem normalizar) como identificador da planta.
                 $colunasPlanta = [];
                 foreach ($cabecalhoOriginal as $indice => $nomeOriginal) {
-                    if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal || $indice === $idxMrp) {
+                    if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal) {
                         continue;
                     }
                     $nomeLimpo = trim($nomeOriginal);
@@ -142,11 +120,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 $tamanhoLote = 200;
                 $lote = [];
-                $linhasProcessadas = [];
-                $totalProcessadas = 0;
-                $limiteExibicao = 500;
 
-                $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens, &$linhasProcessadas, &$totalProcessadas, $limiteExibicao) {
+                $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
                     if (empty($lote)) {
                         return;
                     }
@@ -159,20 +134,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $sql = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta) VALUES " . implode(', ', $linhasSql);
 
-                    $sucesso = mysqli_query($conn, $sql);
-                    if ($sucesso) {
+                    if (mysqli_query($conn, $sql)) {
                         $importados += count($lote);
                     } else {
                         $erros += count($lote);
                         $mensagens[] = "⚠️ Erro ao inserir um lote de " . count($lote) . " linha(s): " . mysqli_error($conn);
-                    }
-                    $resultado = $sucesso ? 'inserido' : 'erro';
-                    foreach ($lote as $valores) {
-                        [$cod, $desc, $est, $planta] = $valores;
-                        $totalProcessadas++;
-                        if ($totalProcessadas <= $limiteExibicao) {
-                            $linhasProcessadas[] = ['resultado' => $resultado, 'componente' => $cod, 'descricao' => $desc, 'planta' => $planta ?? '—', 'valor' => $est];
-                        }
                     }
                     $lote = [];
                 };
@@ -246,7 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     }
 }
 
-function h($valor): string
+function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
@@ -377,7 +343,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
 
-    $cabecalhoCsv = ['Componente', 'Descricao'];
+    $cabecalhoCsv = ['Componente', 'Descrição'];
     foreach ($plantas as $p) { $cabecalhoCsv[] = $p; }
     if ($temSemPlanta) { $cabecalhoCsv[] = 'Sem planta'; }
     $cabecalhoCsv[] = 'Total';
@@ -388,16 +354,12 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         [, $mrpTexto] = statusMrp($linha['total_linhas'] !== null ? (int) $linha['total_linhas'] : null, $linha['tem_ativo'] !== null ? (int) $linha['tem_ativo'] : null);
         $linhaCsv = [$codigo, $linha['descricao']];
         foreach ($plantas as $p) {
-            $linhaCsv[] = isset($porPlantaExport[$codigo][$p])
-          ? numeroCsvBr($porPlantaExport[$codigo][$p])
-          : '';
+            $linhaCsv[] = $porPlantaExport[$codigo][$p] ?? '';
         }
-       if ($temSemPlanta) {
-    $linhaCsv[] = isset($porPlantaExport[$codigo][''])
-        ? numeroCsvBr($porPlantaExport[$codigo][''])
-        : '';
+        if ($temSemPlanta) {
+            $linhaCsv[] = $porPlantaExport[$codigo][''] ?? '';
         }
-        $linhaCsv[] = numeroCsvBr($linha['total']);
+        $linhaCsv[] = $linha['total'];
         $linhaCsv[] = $mrpTexto;
         fputcsv($saida, $linhaCsv, ';', '"', '');
     }
@@ -462,6 +424,16 @@ if (!empty($componentes)) {
 </head>
 <body>
     <div class="container-fluid" style="max-width: 1400px;">
+        <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
+            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
+            <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
+            <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>
+            <a class="btn btn-outline-secondary btn-sm" href="programacao.php">Programação</a>
+            <a class="btn btn-outline-secondary btn-sm" href="parametros_compra.php">Parâmetros</a>
+            <a class="btn btn-outline-secondary btn-sm" href="evolucao_geral.php">Evolução geral</a>
+            <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+        </nav>
         <div class="card bg-primary text-white p-4 mb-4">
             <h1>🏷️ Estoque</h1>
             <p class="mb-0">
@@ -471,7 +443,7 @@ if (!empty($componentes)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
+            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
@@ -480,55 +452,6 @@ if (!empty($componentes)) {
                                 <div><?php echo h($msg); ?></div>
                             <?php endforeach; ?>
                         </div>
-                    <?php endif; ?>
-
-                    <?php if (!empty($linhasProcessadas)): ?>
-                    <div class="mb-4">
-                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                            <div>
-                                <h2 class="h6 mb-1">Itens processados nesta importação</h2>
-                                <p class="text-muted mb-0 small">
-                                    <?php echo number_format($totalProcessadas, 0, ',', '.'); ?> linha(s) processada(s)
-                                </p>
-                            </div>
-                            <div class="d-flex flex-wrap gap-2">
-                                <span class="badge text-bg-success"><?php echo $importados; ?> inserido(s)</span>
-                                <span class="badge text-bg-danger"><?php echo $erros; ?> erro(s)</span>
-                            </div>
-                        </div>
-
-                        <?php if ($totalProcessadas > $limiteExibicao): ?>
-                            <div class="alert alert-info py-2">
-                                A importação processou todas as linhas. Para manter a página rápida, a tabela abaixo mostra somente as primeiras <?php echo $limiteExibicao; ?>.
-                            </div>
-                        <?php endif; ?>
-
-                        <div class="table-responsive">
-                            <table class="table table-hover table-sm mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Resultado</th>
-                                        <th>Componente</th>
-                                        <th>Descrição</th>
-                                        <th>Planta</th>
-                                        <th class="text-end">Estoque</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($linhasProcessadas as $linhaProcessada): ?>
-                                        <?php $badgeCor = $linhaProcessada['resultado'] === 'inserido' ? 'success' : 'danger'; ?>
-                                        <tr>
-                                            <td><span class="badge text-bg-<?php echo $badgeCor; ?>"><?php echo $linhaProcessada['resultado'] === 'inserido' ? 'Inserido' : 'Erro'; ?></span></td>
-                                            <td><strong><?php echo h($linhaProcessada['componente']); ?></strong></td>
-                                            <td><?php echo h($linhaProcessada['descricao']); ?></td>
-                                            <td><?php echo h($linhaProcessada['planta']); ?></td>
-                                            <td class="text-end"><?php echo number_format((float) $linhaProcessada['valor'], 2, ',', '.'); ?></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end">
