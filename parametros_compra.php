@@ -81,11 +81,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'codigo_do_componente'
                 ],
                     'moq' => ['moq'],
-                    'frozen_zone_dias' => ['frozen_zone_dias', 'frozen_zone', 'frozenzone'],
-                    'transit_time_dias' => ['transit_time_dias', 'transit_time', 'transittime'],
-                    'estoque_min_dias' => ['estoque_min_dias', 'min', 'min_dias'],
-                    'estoque_max_dias' => ['estoque_max_dias', 'max', 'max_dias'],
-                    'setup' => ['setup', 'scrap', 'percentual_perda', 'perda'],
+                    'frozen_zone_dias' => ['frozen_zone_dias', 'frozen_zone', 'frozenzone', 'lead_time_(dias)', 'lead_time'],
+                    'transit_time_dias' => ['transit_time_dias', 'transit_time', 'transittime', 'transit_time_(dias)'],
+                    'estoque_min_dias' => ['estoque_min_dias', 'min', 'min_dias', 'estoque_min_(dias)'],
+                    'estoque_max_dias' => ['estoque_max_dias', 'max', 'max_dias', 'estoque_max_(dias)'],
+                    'setup' => ['setup', 'scrap', 'percentual_perda', 'perda', 'setup_(%)'],
                 ];
                 $indices = [];
                 foreach ($mapaColunas as $campo => $candidatos) {
@@ -387,11 +387,19 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="parametros-compra-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['codigo_componente', 'moq', 'frozen_zone_dias', 'transit_time_dias', 'estoque_min_dias', 'estoque_max_dias', 'setup'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'MOQ', 'Lead Time (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)', 'Setup (%)'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
+        // MOQ e setup vêm do banco com ponto decimal (ex.: 500.0000, 20.00). O Excel em
+        // português espera vírgula decimal e lê o ponto como separador de milhar,
+        // concatenando os dígitos (500.0000 vira 5.000.000). Formatando aqui com vírgula
+        // e sem separador de milhar, o Excel-BR lê certo. frozen/transit/min/max já são
+        // inteiros puros no banco (sem parte decimal), então não têm esse problema.
+        $moqFormatado = $linha['moq'] !== null ? number_format((float) $linha['moq'], 0, ',', '') : '';
+        $setupFormatado = $linha['setup'] !== null ? number_format((float) $linha['setup'], 2, ',', '') : '';
+
         fputcsv($saida, [
-            $linha['codigo_componente'], $linha['moq'], $linha['frozen_zone_dias'],
-            $linha['transit_time_dias'], $linha['estoque_min_dias'], $linha['estoque_max_dias'], $linha['setup'],
+            $linha['codigo_componente'], $moqFormatado, $linha['frozen_zone_dias'],
+            $linha['transit_time_dias'], $linha['estoque_min_dias'], $linha['estoque_max_dias'], $setupFormatado,
         ], ';', '"', '');
     }
     fclose($saida);
@@ -595,6 +603,7 @@ if (!empty($rows)) {
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup</code><br>
+                        (O CSV exportado pela tela usa títulos amigáveis — "MOQ", "Lead Time (dias)" etc. — e pode ser reimportado normalmente; os dois formatos de cabeçalho são aceitos.)<br>
                         Todas as colunas exceto <code>codigo_componente</code> são opcionais — mas a data sugerida de compra só é calculada para componentes com <strong>todos</strong> os 5 parâmetros principais preenchidos (MOQ, Lead Time, Transit Time, Min, Max).<br>
                         <code>estoque_min_dias</code>/<code>estoque_max_dias</code> = dias de cobertura de estoque desejados (não quantidade). <code>frozen_zone_dias</code> + <code>transit_time_dias</code> = tempo mínimo de reação (dias) entre decidir comprar e o material chegar.<br>
                         <code>setup</code> = percentual de perda (scrap) do componente. Digite só o número, sem o símbolo "%" (ex.: <code>20</code> significa 20%). É opcional; se não preencher, a sugestão de compra não sofre acréscimo. No planejamento de compras, a quantidade sugerida é multiplicada por <code>(1 + setup/100)</code> — ex.: sugestão de 12.000 com <code>setup=20</code> vira 14.400.<br>

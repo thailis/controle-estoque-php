@@ -460,7 +460,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido
+    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, atendido
                   FROM edi $where
                   ORDER BY ano DESC, semana DESC";
     if (!empty($params)) {
@@ -476,12 +476,12 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['PN2', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data início', 'Data fim', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['PN2', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['pn2'], $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
-            $linhaExport['ano'], $linhaExport['data_inicio'], $linhaExport['data_fim'],
+            $linhaExport['ano'], formatarDataBr($linhaExport['data_inicio']),
             ((int) ($linhaExport['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
         ], ';', '"', '');
     }

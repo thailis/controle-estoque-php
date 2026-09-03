@@ -353,13 +353,19 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     foreach ($componentesExport as $codigo => $linha) {
         [, $mrpTexto] = statusMrp($linha['total_linhas'] !== null ? (int) $linha['total_linhas'] : null, $linha['tem_ativo'] !== null ? (int) $linha['tem_ativo'] : null);
         $linhaCsv = [$codigo, $linha['descricao']];
+        // Estoque vem do banco com ponto decimal (ex.: 1234.5600). O Excel em português
+        // espera vírgula decimal e lê o ponto como separador de milhar, concatenando os
+        // dígitos (1234.5600 vira 12.345.600). Formatando aqui com vírgula e sem
+        // separador de milhar, o Excel-BR lê certo.
         foreach ($plantas as $p) {
-            $linhaCsv[] = $porPlantaExport[$codigo][$p] ?? '';
+            $valorPlanta = $porPlantaExport[$codigo][$p] ?? null;
+            $linhaCsv[] = $valorPlanta !== null ? number_format($valorPlanta, 2, ',', '') : '';
         }
         if ($temSemPlanta) {
-            $linhaCsv[] = $porPlantaExport[$codigo][''] ?? '';
+            $valorSemPlanta = $porPlantaExport[$codigo][''] ?? null;
+            $linhaCsv[] = $valorSemPlanta !== null ? number_format($valorSemPlanta, 2, ',', '') : '';
         }
-        $linhaCsv[] = $linha['total'];
+        $linhaCsv[] = number_format((float) $linha['total'], 2, ',', '');
         $linhaCsv[] = $mrpTexto;
         fputcsv($saida, $linhaCsv, ';', '"', '');
     }
