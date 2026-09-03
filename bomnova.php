@@ -39,6 +39,42 @@ $mensagens = [];
 $importados = 0;
 $erros = 0;
 
+// Alterna o MRP (S/N) de uma linha específica da BOM. Como a tabela "bomnova" não tem
+// coluna id (confirmado via SHOW COLUMNS), a linha é identificada pela combinação de
+// TODOS os outros campos ao mesmo tempo — não existe outro jeito de apontar "essa linha
+// exata" sem um identificador único. COALESCE(...,'') trata NULL e string vazia como
+// equivalentes na comparação, pra não depender de acertar exatamente NULL vs '' na
+// hora de casar o valor. LIMIT 1 garante que, mesmo em um cenário raro de duas linhas
+// idênticas em tudo, só uma é afetada por clique (não trava a página, só limita o
+// alcance do clique único).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
+    $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginais = [];
+    foreach ($campos as $campo) {
+        $valoresOriginais[] = (string) ($_POST['orig_' . $campo] ?? '');
+    }
+
+    $mrpAtual = strtoupper(trim((string) ($_POST['mrp_atual'] ?? '')));
+    $novoMrp = ($mrpAtual === 'N') ? 'S' : 'N';
+
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $sqlToggle = "UPDATE bomnova SET mrp = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
+
+    $stmtToggle = mysqli_prepare($conn, $sqlToggle);
+    $tiposToggle = str_repeat('s', 1 + count($campos));
+    $parametrosToggle = array_merge([$novoMrp], $valoresOriginais);
+    mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
+    mysqli_stmt_execute($stmtToggle);
+    $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
+    mysqli_stmt_close($stmtToggle);
+
+    $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+    $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+    $flag = $linhasAfetadas > 0 ? 'mrp_ok' : 'mrp_erro';
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '=1');
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
 
@@ -245,6 +281,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table td { white-space: nowrap; }
         .badge-mrp-s { background: #eaf8f0; color: #247a4d; }
         .badge-mrp-n { background: #fff0f0; color: #c53535; }
+        .mrp-toggle-btn {
+            cursor: pointer;
+            font: inherit;
+            transition: opacity 0.15s, transform 0.1s;
+        }
+        .mrp-toggle-btn:hover { opacity: 0.75; }
+        .mrp-toggle-btn:active { transform: scale(0.95); }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
     </style>
 </head>
@@ -264,6 +307,18 @@ while ($row = mysqli_fetch_assoc($result)) {
             <h1>📦 BOM</h1>
             <p class="mb-0"><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</p>
         </div>
+
+        <?php if (isset($_GET['mrp_ok'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ✅ MRP atualizado.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['mrp_erro'])): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                ⚠️ Não encontrei essa linha exata pra atualizar (os dados podem ter mudado desde que a página carregou — recarregue e tente de novo).
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php endif; ?>
 
         <div class="card p-3 mb-4">
             <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
@@ -299,7 +354,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp</code><br>
-                        A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo.<br>
+                        A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
@@ -358,7 +413,27 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
                                     <td class="text-end"><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
-                                    <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo htmlspecialchars($badgeTexto); ?></span></td>
+                                    <td>
+                                        <form method="POST" class="d-inline m-0">
+                                            <input type="hidden" name="acao" value="toggle_mrp">
+                                            <input type="hidden" name="mrp_atual" value="<?php echo htmlspecialchars($mrp); ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_tipo" value="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_fornecedor" value="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_codigo_componente" value="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_pn" value="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_descricao" value="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_consumo" value="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_um" value="<?php echo htmlspecialchars($row['um'] ?? ''); ?>">
+                                            <button type="submit" class="badge border-0 mrp-toggle-btn <?php echo $badgeClasse; ?>" title="Clique pra alternar entre S (conta no cálculo) e N (só histórico, fica de fora do estoque/planejamento/evolução)">
+                                                <?php echo htmlspecialchars($badgeTexto); ?>
+                                            </button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -385,5 +460,6 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
