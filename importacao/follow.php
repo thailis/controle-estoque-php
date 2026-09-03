@@ -105,8 +105,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <p class="mb-0"><?php echo numeroBr($total); ?> embarque(s) na base • <?php echo numeroBr($totalPendentes); ?> pendente(s) de integração com o MRP</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
-                <a class="btn btn-light btn-sm" href="#">Processos</a>
                 <a class="btn btn-light btn-sm" href="follow.php">Follow</a>
+                <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-outline-light btn-sm" href="#">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
             </nav>
