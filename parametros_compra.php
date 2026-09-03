@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'codigo_do_componente'
                 ],
                     'moq' => ['moq'],
-                    'frozen_zone_dias' => ['frozen_zone_dias', 'frozen_zone', 'frozenzone', 'lead_time_(dias)', 'lead_time'],
+                    'frozen_zone_dias' => ['frozen_zone_dias', 'lead_time_dias', 'frozen_zone', 'frozenzone', 'lead_time_(dias)', 'lead_time'],
                     'transit_time_dias' => ['transit_time_dias', 'transit_time', 'transittime', 'transit_time_(dias)'],
                     'estoque_min_dias' => ['estoque_min_dias', 'min', 'min_dias', 'estoque_min_(dias)'],
                     'estoque_max_dias' => ['estoque_max_dias', 'max', 'max_dias', 'estoque_max_(dias)'],
@@ -97,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 }
 
                 if ($indices['codigo_componente'] === null) {
-                    $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'codigo_componente' no cabeçalho.";
+                    $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'codigo_componente' ou 'componente' no cabeçalho.";
                 } else {
                     if (isset($_POST['limpar_tabela'])) {
                         mysqli_query($conn, "TRUNCATE TABLE parametros_compra");
@@ -602,12 +602,17 @@ if (!empty($rows)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup</code><br>
+                        <code>codigo_componente, moq, lead_time_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup</code><br>
+                        (A coluna do componente também aceita o cabeçalho <code>componente</code>, igual nas outras telas de importação do sistema.)<br>
                         (O CSV exportado pela tela usa títulos amigáveis — "MOQ", "Lead Time (dias)" etc. — e pode ser reimportado normalmente; os dois formatos de cabeçalho são aceitos.)<br>
                         Todas as colunas exceto <code>codigo_componente</code> são opcionais — mas a data sugerida de compra só é calculada para componentes com <strong>todos</strong> os 5 parâmetros principais preenchidos (MOQ, Lead Time, Transit Time, Min, Max).<br>
-                        <code>estoque_min_dias</code>/<code>estoque_max_dias</code> = dias de cobertura de estoque desejados (não quantidade). <code>frozen_zone_dias</code> + <code>transit_time_dias</code> = tempo mínimo de reação (dias) entre decidir comprar e o material chegar.<br>
+                        <code>estoque_min_dias</code>/<code>estoque_max_dias</code> = dias de cobertura de estoque desejados (não quantidade). <code>lead_time_dias</code> + <code>transit_time_dias</code> = tempo mínimo de reação (dias) entre decidir comprar e o material chegar.<br>
                         <code>setup</code> = percentual de perda (scrap) do componente. Digite só o número, sem o símbolo "%" (ex.: <code>20</code> significa 20%). É opcional; se não preencher, a sugestão de compra não sofre acréscimo. No planejamento de compras, a quantidade sugerida é multiplicada por <code>(1 + setup/100)</code> — ex.: sugestão de 12.000 com <code>setup=20</code> vira 14.400.<br>
-                        <strong>Estoque de segurança:</strong> não é mais um campo pra preencher — o sistema calcula sozinho, componente por componente, usando a fórmula Z × desvio-padrão da demanda semanal × raiz(lead time em semanas). A demanda semanal vem da média dos próximos 90 dias de EDI; o desvio-padrão usa o <code>setup</code> como proxy de variabilidade (sem setup cadastrado, o cálculo dá 0 — nenhuma margem extra); o lead time é <code>frozen_zone_dias + transit_time_dias</code>. O resultado aparece na coluna "Estoque Segurança (un)" abaixo.<br>
+                        <strong>Estoque de segurança:</strong> não é mais um campo pra preencher — o sistema calcula sozinho, componente por componente, usando a fórmula Z × desvio-padrão da demanda semanal × raiz(lead time em semanas). A demanda semanal vem da média dos próximos 90 dias de EDI; o desvio-padrão usa o <code>setup</code> como proxy de variabilidade; o lead time é <code>lead_time_dias + transit_time_dias</code>. O resultado aparece na coluna "Estoque Segurança (un)" abaixo, com três estados possíveis:<br>
+                        &nbsp;&nbsp;• <strong>Um número</strong> = calculado normalmente.<br>
+                        &nbsp;&nbsp;• <strong>"0"</strong> = setup em 0% (sem variabilidade configurada) ou Lead Time + Transit Time em 0 (sem tempo de reação pra projetar) — configuração válida, não é dado faltando.<br>
+                        &nbsp;&nbsp;• <strong>"sem demanda"</strong> = setup e Lead Time preenchidos, mas não há demanda EDI cadastrada nos próximos 90 dias pra calcular a variabilidade em cima — aqui sim é dado faltando, vale checar o EDI do componente.<br>
+                        Esse valor calculado também é usado como piso na simulação do Dashboard e do Planejamento de Compras: "Compra urgente" passa a disparar quando o saldo projetado cai abaixo desse piso, não mais só quando fica negativo — ou seja, a compra é sinalizada mais cedo.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
