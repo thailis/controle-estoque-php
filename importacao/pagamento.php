@@ -136,136 +136,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['to
     }
 }
 
-// ---------- Importação de CSV ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
-    if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
-        $mensagens[] = '❌ Falha no envio do arquivo.';
-    } else {
-        $caminho = $_FILES['arquivo_csv']['tmp_name'];
-        $handle = fopen($caminho, 'r');
-        if ($handle) {
-            if (!empty($_POST['limpar_tabela'])) {
-                mysqli_query($conn, 'TRUNCATE TABLE pagamento');
-            }
-
-            $primeiraLinha = fgets($handle);
-            $separador = substr_count($primeiraLinha, ';') >= substr_count($primeiraLinha, ',') ? ';' : ',';
-            rewind($handle);
-
-            $cabecalhoOriginal = fgetcsv($handle, 0, $separador);
-            if ($cabecalhoOriginal === false) {
-                $mensagens[] = '❌ Não consegui ler o cabeçalho do arquivo.';
-            } else {
-                $cabecalho = array_map('normalizarTextoPagamento', $cabecalhoOriginal);
-
-                $mapaColunas = [
-                    'processo' => ['processo'],
-                    'status' => ['status'],
-                    'po' => ['po'],
-                    'fornecedor' => ['fornecedor'],
-                    'moeda' => ['moeda'],
-                    'total' => ['total'],
-                    'advanced1' => ['advanced1'],
-                    'advanced2' => ['advanced2'],
-                    'balance' => ['balance'],
-                    'liquidacao_or' => ['liquidacao_or'],
-                    'despachante' => ['despachante'],
-                    'numerario_inicial' => ['numerario_inicial'],
-                    'valor_inicial' => ['valor_inicial'],
-                    'numerario_final' => ['numerario_final'],
-                    'valor_final' => ['valor_final'],
-                    'diferenca' => ['diferenca'],
-                    'liquidacao_na' => ['liquidacao_na'],
-                    'rb' => ['rb'],
-                    'oa' => ['oa'],
-                ];
-
-                $indices = [];
-                foreach ($mapaColunas as $campo => $candidatos) {
-                    $indices[$campo] = null;
-                    foreach ($candidatos as $c) {
-                        $pos = array_search($c, $cabecalho, true);
-                        if ($pos !== false) { $indices[$campo] = $pos; break; }
-                    }
-                }
-
-                if ($indices['processo'] === null) {
-                    $mensagens[] = "❌ Não encontrei a coluna do processo. Use 'processo' no cabeçalho.";
-                } else {
-                    $lote = [];
-                    $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
-                        if (empty($lote)) return;
-                        $campos = ['processo', 'status', 'po', 'fornecedor', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa'];
-                        $linhasSql = [];
-                        $todosValores = [];
-                        foreach ($lote as $linhaLote) {
-                            $linhasSql[] = '(' . implode(',', array_fill(0, count($campos), '?')) . ')';
-                            foreach ($linhaLote as $v) { $todosValores[] = $v; }
-                        }
-                        $sql = 'INSERT INTO pagamento (' . implode(',', $campos) . ') VALUES ' . implode(', ', $linhasSql);
-                        $stmt = mysqli_prepare($conn, $sql);
-                        $tipos = str_repeat('s', count($todosValores));
-                        mysqli_stmt_bind_param($stmt, $tipos, ...$todosValores);
-                        if (mysqli_stmt_execute($stmt)) {
-                            $importados += count($lote);
-                        } else {
-                            $erros += count($lote);
-                            $mensagens[] = '❌ Erro ao gravar lote: ' . mysqli_stmt_error($stmt);
-                        }
-                        mysqli_stmt_close($stmt);
-                        $lote = [];
-                    };
-
-                    while (($linha = fgetcsv($handle, 0, $separador)) !== false) {
-                        if (count(array_filter($linha, fn($v) => trim((string) $v) !== '')) === 0) {
-                            continue;
-                        }
-                        $get = fn($campo) => $indices[$campo] !== null ? trim((string) ($linha[$indices[$campo]] ?? '')) : '';
-
-                        $processo = $get('processo');
-                        if ($processo === '') { continue; }
-
-                        $lote[] = [
-                            $processo,
-                            $get('status') ?: null,
-                            $get('po') ?: null,
-                            $get('fornecedor') ?: null,
-                            $get('moeda') ?: null,
-                            parseNumeroBrPagamento($get('total')),
-                            parseNumeroBrPagamento($get('advanced1')),
-                            parseNumeroBrPagamento($get('advanced2')),
-                            parseNumeroBrPagamento($get('balance')),
-                            $get('liquidacao_or') ?: null,
-                            $get('despachante') ?: null,
-                            parseDataPagamento($get('numerario_inicial')),
-                            parseNumeroBrPagamento($get('valor_inicial')),
-                            parseDataPagamento($get('numerario_final')),
-                            parseNumeroBrPagamento($get('valor_final')),
-                            parseNumeroBrPagamento($get('diferenca')),
-                            $get('liquidacao_na') ?: null,
-                            $get('rb') ?: null,
-                            $get('oa') ?: null,
-                        ];
-
-                        if (count($lote) >= 200) {
-                            $flushLote();
-                        }
-                    }
-                    $flushLote();
-
-                    if ($importados > 0) {
-                        $mensagens[] = "✅ $importados linha(s) importada(s) com sucesso.";
-                    }
-                    if ($erros > 0) {
-                        $mensagens[] = "⚠️ $erros linha(s) com erro.";
-                    }
-                }
-            }
-            fclose($handle);
-        }
-    }
-}
-
 // ---------- Cadastro manual ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual') {
     $processo = trim($_POST['processo_manual'] ?? '');
@@ -379,11 +249,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
                 $valorInicialEd, $numerarioFinalEd, $valorFinalEd, $diferencaEd, $rbEd, $oaEd, $idEditar
             );
             if (mysqli_stmt_execute($stmtEditar)) {
-                $mensagens[] = '✅ Pagamento atualizado (Balance e Diferença recalculados).';
+                mysqli_stmt_close($stmtEditar);
+                $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+                $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+                header('Location: pagamento.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
+                exit;
             } else {
                 $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+                mysqli_stmt_close($stmtEditar);
             }
-            mysqli_stmt_close($stmtEditar);
         }
     }
 }
@@ -508,6 +382,10 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
 
     <main class="container-fluid dashboard-container py-4">
 
+        <?php if (isset($_GET['editado'])): ?>
+            <div class="alert alert-success">✅ Pagamento atualizado com sucesso (Balance e Diferença recalculados).</div>
+        <?php endif; ?>
+
         <?php if (!empty($mensagens)): ?>
             <div class="alert alert-info">
                 <?php foreach ($mensagens as $msg): ?>
@@ -515,32 +393,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>
-
-        <section class="filter-panel mb-4">
-            <details>
-                <summary class="fw-bold" style="cursor:pointer;">📤 Importar novo arquivo CSV</summary>
-                <form method="POST" enctype="multipart/form-data" class="row g-3 align-items-end mt-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Arquivo CSV</label>
-                        <input type="file" name="arquivo_csv" class="form-control" accept=".csv" required>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="form-check mt-4">
-                            <input type="checkbox" name="limpar_tabela" id="limpar_tabela" class="form-check-input">
-                            <label class="form-check-label" for="limpar_tabela">Limpar tabela antes de importar</label>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <button type="submit" class="btn btn-primary w-100">Importar</button>
-                    </div>
-                </form>
-                <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
-                    Colunas esperadas (primeira linha = cabeçalho, qualquer ordem):<br>
-                    <code>processo, status, po, fornecedor, moeda, total, advanced1, advanced2, balance, liquidacao_or, despachante, numerario_inicial, valor_inicial, numerario_final, valor_final, diferenca, liquidacao_na, rb, oa</code><br>
-                    Só <code>processo</code> é obrigatório. Datas em <code>dd/mm/aaaa</code>. Separador: vírgula ou ponto e vírgula.
-                </p>
-            </details>
-        </section>
 
         <section class="filter-panel mb-4">
             <details>
@@ -722,6 +574,8 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_pagamento">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Advanced 1</label>
                                                     <input type="text" name="advanced1_editado" class="form-control form-control-sm" value="<?php echo $r['advanced1'] !== null ? numeroBr($r['advanced1']) : ''; ?>">

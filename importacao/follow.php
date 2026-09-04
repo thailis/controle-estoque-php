@@ -142,11 +142,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
             $pickupEd, $etdEd, $etaEd, $previstaEd, $efetivaEd, $requerenteEd, $condicaoEd, $idEditar
         );
         if (mysqli_stmt_execute($stmtEditar)) {
-            $mensagens[] = '✅ Embarque atualizado.';
+            mysqli_stmt_close($stmtEditar);
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'todos');
+            header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&editado=1');
+            exit;
         } else {
             $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+            mysqli_stmt_close($stmtEditar);
         }
-        mysqli_stmt_close($stmtEditar);
     }
 }
 
@@ -247,6 +252,10 @@ while ($row = mysqli_fetch_assoc($result)) {
     </header>
 
     <main class="container-fluid dashboard-container py-4">
+
+        <?php if (isset($_GET['editado'])): ?>
+            <div class="alert alert-success">✅ Embarque atualizado com sucesso.</div>
+        <?php endif; ?>
 
         <?php if (!empty($mensagens)): ?>
             <div class="alert alert-info">
@@ -421,6 +430,9 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_follow">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Origem</label>
                                                     <input type="text" name="origem_editado" class="form-control form-control-sm" value="<?php echo h($r['origem'] ?? ''); ?>">

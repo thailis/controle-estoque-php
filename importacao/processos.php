@@ -306,11 +306,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
             $moedaEd, $tipoEd, $ffwEd, $obsEd, $idEditar
         );
         if (mysqli_stmt_execute($stmtEditar)) {
-            $mensagens[] = '✅ Registro atualizado.';
+            mysqli_stmt_close($stmtEditar);
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
+            exit;
         } else {
             $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+            mysqli_stmt_close($stmtEditar);
         }
-        mysqli_stmt_close($stmtEditar);
     }
 }
 
@@ -403,6 +407,15 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
            padrão do dashboard.css (12px) fica meio apertado nessa tela. */
         #tabela-processos td, #tabela-processos th { padding: 14px 16px; }
         #tabela-processos td { font-size: .85rem; }
+        /* Descrição e Obs podem vir com texto longo sem espaço nenhum (ex.: uma
+           palavra gigante) — sem isso, o texto "vaza" por cima da célula vizinha
+           (o botão Editar, no caso) em vez de truncar com reticências. */
+        #tabela-processos .description-cell {
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -423,6 +436,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     </header>
 
     <main class="container-fluid dashboard-container py-4">
+
+        <?php if (isset($_GET['editado'])): ?>
+            <div class="alert alert-success">✅ Registro atualizado com sucesso.</div>
+        <?php endif; ?>
 
         <?php if (!empty($mensagens)): ?>
             <div class="alert alert-info">
@@ -614,6 +631,8 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_registro">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Solicitação</label>
                                                     <input type="text" name="solicitacao_editado" class="form-control form-control-sm" value="<?php echo h($r['solicitacao'] ? dataBr($r['solicitacao']) : ''); ?>" placeholder="dd/mm/aaaa">

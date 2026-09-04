@@ -201,13 +201,28 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Confirmar entrega | Controle de Importação</title>
+    <title>Confirmar Entrega | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/dashboard.css" rel="stylesheet">
 </head>
-<body class="bg-light">
-    <main class="container py-4">
-        <h1 class="h3 mb-1">Confirmar entrega</h1>
-        <p class="text-muted mb-4">Ao confirmar, o componente é validado contra o MRP antes de alimentar o estoque — se não for encontrado, a integração é bloqueada e nada é gravado.</p>
+<body>
+    <header class="topbar">
+        <div class="container-fluid dashboard-container d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="eyebrow">Controle de Importação • Integração com o MRP</span>
+                <h1>Confirmar Entrega</h1>
+                <p class="mb-0"><?php echo count($pendentes); ?> embarque(s) pendente(s) de integração</p>
+            </div>
+            <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
+                <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
+                <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
+                <a class="btn btn-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container-fluid dashboard-container py-4">
 
         <?php if ($mensagem): ?>
             <div class="alert alert-success"><?php echo h($mensagem); ?></div>
@@ -216,45 +231,68 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
             <div class="alert alert-danger"><?php echo h($erro); ?></div>
         <?php endif; ?>
 
-        <div class="card">
-            <div class="card-body">
-                <h2 class="h5">Embarques pendentes de integração</h2>
-                <?php if (empty($pendentes)): ?>
-                    <p class="text-muted mb-0">Nenhum embarque pendente — tudo integrado.</p>
-                <?php else: ?>
-                    <table class="table table-sm align-middle">
-                        <thead>
-                            <tr>
-                                <th>Processo</th>
-                                <th>Componente</th>
-                                <th>Descrição</th>
-                                <th class="text-end">Quantidade</th>
-                                <th>Data efetiva</th>
-                                <th>Confirmar</th>
-                            </tr>
-                        </thead>
-                        <tbody>
+        <section class="filter-panel mb-4">
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow text-primary">Como funciona</span>
+                    <h2>Validação antes de alimentar o MRP</h2>
+                </div>
+            </div>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de alimentar o estoque — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A descrição usada no estoque vem direto da BOM do MRP, não do texto digitado no processo. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento.</p>
+        </section>
+
+        <section class="table-card">
+            <div class="table-toolbar">
+                <div>
+                    <span class="eyebrow text-primary">Resultado</span>
+                    <h2>Embarques pendentes de integração</h2>
+                    <p><?php echo count($pendentes); ?> encontrado(s)</p>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table mrp-table mb-0">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Processo</th>
+                            <th>Componente</th>
+                            <th>Descrição</th>
+                            <th>Quantidade</th>
+                            <th>Data efetiva</th>
+                            <th>Confirmar</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($pendentes)): ?>
+                            <tr><td colspan="7" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
+                        <?php else: ?>
                             <?php foreach ($pendentes as $p): ?>
+                                <?php $formId = 'form-confirmar-' . (int) $p['id']; ?>
                                 <tr>
-                                    <td><strong><?php echo h($p['processo']); ?></strong></td>
+                                    <td><span class="status-badge status-atencao"><?php echo ucfirst($p['status'] ?: 'aberto'); ?></span></td>
+                                    <td><span class="component-code"><?php echo h($p['processo']); ?></span></td>
                                     <td><?php echo h($p['codigo_componente'] ?? '—'); ?></td>
-                                    <td><?php echo h($p['descricao'] ?? '—'); ?></td>
-                                    <td class="text-end"><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
+                                    <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
+                                    <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
                                     <td>
-                                        <form method="POST" class="d-flex gap-2 align-items-center">
+                                        <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
                                             <input type="hidden" name="acao" value="confirmar_entrega">
                                             <input type="hidden" name="follow_id" value="<?php echo (int) $p['id']; ?>">
                                             <input type="date" name="data_efetiva" class="form-control form-control-sm" value="<?php echo h($p['efetiva'] ?? date('Y-m-d')); ?>" required>
-                                            <button type="submit" class="btn btn-success btn-sm">Confirmar entrega</button>
                                         </form>
+                                    </td>
+                                    <td>
+                                        <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm">Confirmar</button>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php endif; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
             </div>
-        </div>
+        </section>
+
+        <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
 </body>
 </html>
