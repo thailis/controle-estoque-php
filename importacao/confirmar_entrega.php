@@ -155,15 +155,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                     mysqli_stmt_close($stmtEstoque);
                     mysqli_close($connMrp);
 
-                    // Marca o follow como entregue e integrado — trava contra duplicar
+                    // Marca o follow como entregue, integrado e FECHADO — o status do
+                    // Follow só vira "fechado" neste momento exato, nunca é digitado
+                    // manualmente. Também trava contra duplicar (integrado_mrp = 1).
                     $stmtUpdate = mysqli_prepare($conn, "
                         UPDATE follow
-                        SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW()
+                        SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
                         WHERE id = ?
                     ");
                     mysqli_stmt_bind_param($stmtUpdate, 'si', $dataEfetiva, $followId);
                     mysqli_stmt_execute($stmtUpdate);
                     mysqli_stmt_close($stmtUpdate);
+
+                    // O status do Processo segue o mesmo gatilho: nasce "aberto",
+                    // e só vira "finalizado" neste exato momento — nunca digitado.
+                    $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
+                    mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
+                    mysqli_stmt_execute($stmtProcessoStatus);
+                    mysqli_stmt_close($stmtProcessoStatus);
 
                     $mensagem = "✅ Entrega confirmada e estoque do MRP atualizado — componente {$linha['codigo_componente']}, quantidade " . number_format((float) $linha['quantidade'], 0, ',', '.') . ".";
                 }

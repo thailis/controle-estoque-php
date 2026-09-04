@@ -26,12 +26,145 @@ function dataBr(?string $data): string
     return $obj ? $obj->format('d/m/Y') : $data;
 }
 
+// Aceita dd/mm/aaaa (o que o usuário digita) ou aaaa-mm-dd (formato nativo do
+// <input type="date">). Devolve sempre aaaa-mm-dd (formato que o banco espera).
+function parseDataFollow(string $valor): ?string
+{
+    $valor = trim($valor);
+    if ($valor === '') {
+        return null;
+    }
+    foreach (['Y-m-d', 'd/m/Y'] as $formato) {
+        $obj = DateTimeImmutable::createFromFormat('!' . $formato, $valor);
+        if ($obj !== false) {
+            return $obj->format('Y-m-d');
+        }
+    }
+    return null;
+}
+
+$mensagens = [];
+
+// ---------- Cadastro manual de embarque ----------
+// Só permite vincular a um processo JÁ EXISTENTE em "processos" — não dá pra
+// criar um Follow "solto". O componente/descrição NUNCA são digitados aqui:
+// são sempre puxados ao vivo da tabela processos (por isso nem aparecem como
+// campo de formulário — só como preview, via JS, e reconferidos no servidor).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual_follow') {
+    $processoEscolhido = trim($_POST['processo_manual'] ?? '');
+
+    if ($processoEscolhido === '') {
+        $mensagens[] = '❌ Escolha um processo já cadastrado em Processos.';
+    } else {
+        // Confirma no servidor que o processo existe de verdade — nunca confia
+        // só no que veio do <select> do navegador.
+        $stmtCheck = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos WHERE processo = ?");
+        mysqli_stmt_bind_param($stmtCheck, 's', $processoEscolhido);
+        mysqli_stmt_execute($stmtCheck);
+        $existeProcesso = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck))['total'] > 0;
+        mysqli_stmt_close($stmtCheck);
+
+        if (!$existeProcesso) {
+            $mensagens[] = "❌ O processo \"$processoEscolhido\" não existe em Processos. Cadastre ele lá primeiro.";
+        } else {
+            $stmt = mysqli_prepare($conn, "
+                INSERT INTO follow (processo, origem, destino, transit_dias, ft_dias, armador, trk, pickup, etd, eta, prevista, efetiva, requerente, condicao, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $origem = trim($_POST['origem_manual'] ?? '') ?: null;
+            $destino = trim($_POST['destino_manual'] ?? '') ?: null;
+            $transitDias = trim($_POST['transit_dias_manual'] ?? '');
+            $transitDias = $transitDias !== '' ? (int) $transitDias : null;
+            $ftDias = trim($_POST['ft_dias_manual'] ?? '');
+            $ftDias = $ftDias !== '' ? (int) $ftDias : null;
+            $armador = trim($_POST['armador_manual'] ?? '') ?: null;
+            $trk = trim($_POST['trk_manual'] ?? '') ?: null;
+            $pickup = parseDataFollow($_POST['pickup_manual'] ?? '');
+            $etd = parseDataFollow($_POST['etd_manual'] ?? '');
+            $eta = parseDataFollow($_POST['eta_manual'] ?? '');
+            $prevista = parseDataFollow($_POST['prevista_manual'] ?? '');
+            $efetiva = parseDataFollow($_POST['efetiva_manual'] ?? '');
+            $requerente = trim($_POST['requerente_manual'] ?? '') ?: null;
+            $condicao = trim($_POST['condicao_manual'] ?? '') ?: null;
+            // Status não é mais digitado — todo embarque novo nasce "aberto".
+            // Só vira "fechado" quando confirmado na tela confirmar_entrega.php
+            // (que também alimenta o estoque do MRP nesse momento).
+            $status = 'aberto';
+
+            mysqli_stmt_bind_param(
+                $stmt, 'sssiisssssssss',
+                $processoEscolhido, $origem, $destino, $transitDias, $ftDias, $armador, $trk,
+                $pickup, $etd, $eta, $prevista, $efetiva, $requerente, $condicao, $status
+            );
+            if (mysqli_stmt_execute($stmt)) {
+                $mensagens[] = "✅ Embarque do processo \"$processoEscolhido\" cadastrado.";
+            } else {
+                $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
+            }
+            mysqli_stmt_close($stmt);
+        }
+    }
+}
+
+// ---------- Edição ----------
+// Não permite editar "processo" (é o vínculo com Processos, não deve mudar)
+// nem "status" (é sempre calculado pelo confirmar_entrega.php, nunca digitado).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_follow') {
+    $idEditar = (int) ($_POST['id_editar'] ?? 0);
+    if ($idEditar <= 0) {
+        $mensagens[] = '❌ Registro inválido pra edição.';
+    } else {
+        $stmtEditar = mysqli_prepare($conn, "
+            UPDATE follow
+            SET origem = ?, destino = ?, transit_dias = ?, ft_dias = ?, armador = ?, trk = ?,
+                pickup = ?, etd = ?, eta = ?, prevista = ?, efetiva = ?, requerente = ?, condicao = ?
+            WHERE id = ?
+        ");
+        $origemEd = trim($_POST['origem_editado'] ?? '') ?: null;
+        $destinoEd = trim($_POST['destino_editado'] ?? '') ?: null;
+        $transitDiasEd = trim($_POST['transit_dias_editado'] ?? '');
+        $transitDiasEd = $transitDiasEd !== '' ? (int) $transitDiasEd : null;
+        $ftDiasEd = trim($_POST['ft_dias_editado'] ?? '');
+        $ftDiasEd = $ftDiasEd !== '' ? (int) $ftDiasEd : null;
+        $armadorEd = trim($_POST['armador_editado'] ?? '') ?: null;
+        $trkEd = trim($_POST['trk_editado'] ?? '') ?: null;
+        $pickupEd = parseDataFollow($_POST['pickup_editado'] ?? '');
+        $etdEd = parseDataFollow($_POST['etd_editado'] ?? '');
+        $etaEd = parseDataFollow($_POST['eta_editado'] ?? '');
+        $previstaEd = parseDataFollow($_POST['prevista_editado'] ?? '');
+        $efetivaEd = parseDataFollow($_POST['efetiva_editado'] ?? '');
+        $requerenteEd = trim($_POST['requerente_editado'] ?? '') ?: null;
+        $condicaoEd = trim($_POST['condicao_editado'] ?? '') ?: null;
+
+        mysqli_stmt_bind_param(
+            $stmtEditar, 'ssiisssssssssi',
+            $origemEd, $destinoEd, $transitDiasEd, $ftDiasEd, $armadorEd, $trkEd,
+            $pickupEd, $etdEd, $etaEd, $previstaEd, $efetivaEd, $requerenteEd, $condicaoEd, $idEditar
+        );
+        if (mysqli_stmt_execute($stmtEditar)) {
+            $mensagens[] = '✅ Embarque atualizado.';
+        } else {
+            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+        }
+        mysqli_stmt_close($stmtEditar);
+    }
+}
+
+// Lista de processos existentes, pra popular o <select> do cadastro manual —
+// já traz componente/descrição junto, pro preview automático via JS.
+$processosDisponiveis = [];
+$resProcessos = mysqli_query($conn, "SELECT processo, codigo_componente, descricao FROM processos ORDER BY processo");
+while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
+    $processosDisponiveis[] = $linhaProc;
+}
+
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int) $_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'todos'; // todos | pendente | integrado
+$editandoId = (int) ($_GET['editar'] ?? 0);
 
 $condicoes = [];
 $params = [];
@@ -102,18 +235,119 @@ while ($row = mysqli_fetch_assoc($result)) {
             <div>
                 <span class="eyebrow">Controle de Importação • Rastreio logístico</span>
                 <h1>Follow</h1>
-                <p class="mb-0"><?php echo numeroBr($total); ?> embarque(s) na base • <?php echo numeroBr($totalPendentes); ?> pendente(s) de integração com o MRP</p>
+                <p class="mb-0">IAP - Importação Avançada em Planilhas</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-light btn-sm" href="follow.php">Follow</a>
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
-                <a class="btn btn-outline-light btn-sm" href="#">Pagamento</a>
+                <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
             </nav>
         </div>
     </header>
 
     <main class="container-fluid dashboard-container py-4">
+
+        <?php if (!empty($mensagens)): ?>
+            <div class="alert alert-info">
+                <?php foreach ($mensagens as $msg): ?>
+                    <div><?php echo h($msg); ?></div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <section class="filter-panel mb-4">
+            <details>
+                <summary class="fw-bold" style="cursor:pointer;">➕ Novo embarque (cadastro manual)</summary>
+                <form method="POST" class="row g-3 mt-3">
+                    <input type="hidden" name="acao" value="cadastro_manual_follow">
+
+                    <div class="col-md-4">
+                        <label class="form-label">Processo *</label>
+                        <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcesso()">
+                            <option value="">Escolha um processo já cadastrado...</option>
+                            <?php foreach ($processosDisponiveis as $p): ?>
+                                <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['codigo_componente'] ?? ''); ?>" data-descricao="<?php echo h($p['descricao'] ?? ''); ?>">
+                                    <?php echo h($p['processo']); ?><?php echo $p['codigo_componente'] ? ' — ' . h($p['codigo_componente']) : ''; ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <?php if (empty($processosDisponiveis)): ?>
+                            <small class="text-danger">Nenhum processo cadastrado ainda — <a href="processos.php">cadastre um processo primeiro</a>.</small>
+                        <?php endif; ?>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Componente (puxado do processo)</label>
+                        <input type="text" id="preview_componente" class="form-control" disabled placeholder="—">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Descrição (puxado do processo)</label>
+                        <input type="text" id="preview_descricao" class="form-control" disabled placeholder="—">
+                    </div>
+
+                    <div class="col-12"><hr class="my-1"></div>
+
+                    <div class="col-md-3">
+                        <label class="form-label">Origem</label>
+                        <input type="text" name="origem_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Destino</label>
+                        <input type="text" name="destino_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Transit (dias)</label>
+                        <input type="text" name="transit_dias_manual" id="transit_dias_manual" class="form-control" oninput="calcularDatasFollow()">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">FT (dias)</label>
+                        <input type="text" name="ft_dias_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Armador</label>
+                        <input type="text" name="armador_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Rastreio (TRK)</label>
+                        <input type="text" name="trk_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Requerente</label>
+                        <input type="text" name="requerente_manual" class="form-control">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Pickup</label>
+                        <input type="date" name="pickup_manual" class="form-control">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">ETD</label>
+                        <input type="date" name="etd_manual" id="etd_manual" class="form-control" onchange="calcularDatasFollow()">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">ETA <small class="text-muted">(ETD + transit)</small></label>
+                        <input type="text" id="eta_manual_display" class="form-control" readonly placeholder="—">
+                        <input type="hidden" name="eta_manual" id="eta_manual">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Prevista <small class="text-muted">(ETA + 7d)</small></label>
+                        <input type="text" id="prevista_manual_display" class="form-control" readonly placeholder="—">
+                        <input type="hidden" name="prevista_manual" id="prevista_manual">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Efetiva <small class="text-muted">(só quando chegar)</small></label>
+                        <input type="date" name="efetiva_manual" class="form-control">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Condição</label>
+                        <input type="text" name="condicao_manual" class="form-control" placeholder="Ex.: em tempo">
+                    </div>
+
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-primary w-100">Salvar</button>
+                    </div>
+                </form>
+            </details>
+        </section>
 
         <section class="filter-panel mb-4">
             <div class="section-heading">
@@ -151,7 +385,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0">
+                <table class="table mrp-table mb-0" style="min-width: 1700px;">
                     <thead>
                         <tr>
                             <th>Processo</th>
@@ -165,33 +399,110 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Prevista</th>
                             <th>Efetiva</th>
                             <th>Requerente</th>
-                            <th>Status MRP</th>
+                            <th>Status</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="12" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="13" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
+                                <?php
+                                    $emEdicao = $editandoId === (int) $r['id'];
+                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&status=' . urlencode($filtroStatus);
+                                ?>
                                 <tr>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?? '—'); ?></td>
-                                    <td><?php echo h($r['origem'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['destino'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['armador'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['trk'] ?: '—'); ?></td>
-                                    <td><?php echo dataBr($r['etd']); ?></td>
-                                    <td><?php echo dataBr($r['eta']); ?></td>
-                                    <td><?php echo dataBr($r['prevista']); ?></td>
-                                    <td><?php echo dataBr($r['efetiva']); ?></td>
-                                    <td><?php echo h($r['requerente'] ?: '—'); ?></td>
-                                    <td>
-                                        <?php if ((int) $r['integrado_mrp'] === 1): ?>
-                                            <span class="status-badge status-ok" title="Integrado em <?php echo h($r['integrado_em'] ?? ''); ?>">Integrado</span>
-                                        <?php else: ?>
-                                            <span class="status-badge status-atencao">Pendente</span>
-                                        <?php endif; ?>
-                                    </td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="10">
+                                            <form method="POST" class="row g-2 align-items-end py-2">
+                                                <input type="hidden" name="acao" value="editar_follow">
+                                                <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Origem</label>
+                                                    <input type="text" name="origem_editado" class="form-control form-control-sm" value="<?php echo h($r['origem'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Destino</label>
+                                                    <input type="text" name="destino_editado" class="form-control form-control-sm" value="<?php echo h($r['destino'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Transit</label>
+                                                    <input type="text" name="transit_dias_editado" class="form-control form-control-sm" value="<?php echo h($r['transit_dias'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">FT</label>
+                                                    <input type="text" name="ft_dias_editado" class="form-control form-control-sm" value="<?php echo h($r['ft_dias'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Armador</label>
+                                                    <input type="text" name="armador_editado" class="form-control form-control-sm" value="<?php echo h($r['armador'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Rastreio</label>
+                                                    <input type="text" name="trk_editado" class="form-control form-control-sm" value="<?php echo h($r['trk'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Requerente</label>
+                                                    <input type="text" name="requerente_editado" class="form-control form-control-sm" value="<?php echo h($r['requerente'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Condição</label>
+                                                    <input type="text" name="condicao_editado" class="form-control form-control-sm" value="<?php echo h($r['condicao'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Pickup</label>
+                                                    <input type="date" name="pickup_editado" class="form-control form-control-sm" value="<?php echo h($r['pickup'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">ETD</label>
+                                                    <input type="date" name="etd_editado" class="form-control form-control-sm" value="<?php echo h($r['etd'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">ETA</label>
+                                                    <input type="date" name="eta_editado" class="form-control form-control-sm" value="<?php echo h($r['eta'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Prevista</label>
+                                                    <input type="date" name="prevista_editado" class="form-control form-control-sm" value="<?php echo h($r['prevista'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Efetiva</label>
+                                                    <input type="date" name="efetiva_editado" class="form-control form-control-sm" value="<?php echo h($r['efetiva'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-12 d-flex gap-2 mt-1">
+                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                    <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                </div>
+                                            </form>
+                                        </td>
+                                        <td></td>
+                                        <td></td>
+                                    <?php else: ?>
+                                        <td><?php echo h($r['origem'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['destino'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['armador'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['trk'] ?: '—'); ?></td>
+                                        <td><?php echo dataBr($r['etd']); ?></td>
+                                        <td><?php echo dataBr($r['eta']); ?></td>
+                                        <td><?php echo dataBr($r['prevista']); ?></td>
+                                        <td><?php echo dataBr($r['efetiva']); ?></td>
+                                        <td><?php echo h($r['requerente'] ?: '—'); ?></td>
+                                        <td>
+                                            <?php $statusFollow = $r['status'] ?: 'aberto'; ?>
+                                            <?php if ($statusFollow === 'fechado'): ?>
+                                                <span class="status-badge status-ok" title="Fechado e integrado ao MRP em <?php echo h($r['integrado_em'] ?? ''); ?>">Fechado</span>
+                                            <?php else: ?>
+                                                <span class="status-badge status-atencao" title="Fecha automaticamente ao confirmar a entrega">Aberto</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -217,5 +528,54 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
+    <script>
+        // Ao escolher um processo no <select>, mostra o componente/descrição
+        // que já estão cadastrados nele — não precisa (nem dá) pra redigitar.
+        function atualizarPreviewProcesso() {
+            const select = document.getElementById('processo_manual');
+            const opcao = select.options[select.selectedIndex];
+            document.getElementById('preview_componente').value = opcao.dataset.componente || '—';
+            document.getElementById('preview_descricao').value = opcao.dataset.descricao || '—';
+        }
+
+        function formatarDataBrJs(iso) {
+            const [y, m, d] = iso.split('-');
+            return `${d}/${m}/${y}`;
+        }
+
+        // ETA = ETD + Transit (dias). Prevista = ETA + 7 dias. Os dois são
+        // sempre calculados — nunca digitados diretamente pelo usuário.
+        function calcularDatasFollow() {
+            const etdValor = document.getElementById('etd_manual').value; // aaaa-mm-dd
+            const transitValor = parseInt(document.getElementById('transit_dias_manual').value, 10) || 0;
+
+            const campoEtaOculto = document.getElementById('eta_manual');
+            const campoEtaVisivel = document.getElementById('eta_manual_display');
+            const campoPrevistaOculto = document.getElementById('prevista_manual');
+            const campoPrevistaVisivel = document.getElementById('prevista_manual_display');
+
+            if (!etdValor) {
+                campoEtaOculto.value = '';
+                campoEtaVisivel.value = '';
+                campoPrevistaOculto.value = '';
+                campoPrevistaVisivel.value = '';
+                return;
+            }
+
+            const etdData = new Date(etdValor + 'T00:00:00');
+
+            const etaData = new Date(etdData);
+            etaData.setDate(etaData.getDate() + transitValor);
+            const etaIso = etaData.toISOString().slice(0, 10);
+            campoEtaOculto.value = etaIso;
+            campoEtaVisivel.value = formatarDataBrJs(etaIso);
+
+            const previstaData = new Date(etaData);
+            previstaData.setDate(previstaData.getDate() + 7);
+            const previstaIso = previstaData.toISOString().slice(0, 10);
+            campoPrevistaOculto.value = previstaIso;
+            campoPrevistaVisivel.value = formatarDataBrJs(previstaIso);
+        }
+    </script>
 </body>
 </html>

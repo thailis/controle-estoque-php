@@ -107,7 +107,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 $mapaColunas = [
                     'processo' => ['processo'],
-                    'status' => ['status'],
                     'solicitacao' => ['solicitacao'],
                     'categoria' => ['categoria'],
                     'planta' => ['planta'],
@@ -179,7 +178,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         $lote[] = [
                             $processo,
-                            $get('status') ?: null,
+                            'aberto', // status nunca vem do CSV — só o confirmar_entrega.php fecha ele
                             $solicitacao,
                             $get('categoria') ?: null,
                             $get('planta') ?: null,
@@ -228,7 +227,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
-        $status = trim($_POST['status_manual'] ?? '') ?: null;
+        $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
         $solicitacao = parseDataProcessos(trim($_POST['solicitacao_manual'] ?? ''));
         $categoria = trim($_POST['categoria_manual'] ?? '') ?: null;
         $planta = trim($_POST['planta_manual'] ?? '') ?: null;
@@ -261,6 +260,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
         }
         mysqli_stmt_close($stmt);
+    }
+}
+
+// ---------- Edição ----------
+// Identifica a linha por "id" (não por "processo"), já que um mesmo processo
+// pode ter mais de uma linha (vários componentes/itens no mesmo embarque).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    $idEditar = (int) ($_POST['id_editar'] ?? 0);
+    if ($idEditar <= 0) {
+        $mensagens[] = '❌ Registro inválido pra edição.';
+    } else {
+        $stmtEditar = mysqli_prepare($conn, "
+            UPDATE processos
+            SET solicitacao = ?, categoria = ?, planta = ?, po = ?, modal = ?, codigo_componente = ?,
+                descricao = ?, quantidade = ?, hscode = ?, ncm = ?, fornecedor = ?, preco = ?, total = ?,
+                moeda = ?, tipo = ?, ffw = ?, obs = ?
+            WHERE id = ?
+        ");
+        $solicitacaoEd = parseDataProcessos(trim($_POST['solicitacao_editado'] ?? ''));
+        $categoriaEd = trim($_POST['categoria_editado'] ?? '') ?: null;
+        $plantaEd = trim($_POST['planta_editado'] ?? '') ?: null;
+        $poEd = trim($_POST['po_editado'] ?? '') ?: null;
+        $modalEd = trim($_POST['modal_editado'] ?? '') ?: null;
+        $codigoComponenteEd = trim($_POST['codigo_componente_editado'] ?? '') ?: null;
+        $descricaoEd = trim($_POST['descricao_editado'] ?? '') ?: null;
+        $quantidadeEd = parseNumeroBrProcessos(trim($_POST['quantidade_editado'] ?? ''));
+        $hscodeEd = trim($_POST['hscode_editado'] ?? '') ?: null;
+        $ncmEd = trim($_POST['ncm_editado'] ?? '') ?: null;
+        $fornecedorEd = trim($_POST['fornecedor_editado'] ?? '') ?: null;
+        $precoEd = parseNumeroBrProcessos(trim($_POST['preco_editado'] ?? ''));
+        $totalEd = parseNumeroBrProcessos(trim($_POST['total_editado'] ?? ''));
+        $moedaEd = trim($_POST['moeda_editado'] ?? '') ?: null;
+        $tipoEd = trim($_POST['tipo_editado'] ?? '') ?: null;
+        $ffwEd = trim($_POST['ffw_editado'] ?? '') ?: null;
+        $obsEd = trim($_POST['obs_editado'] ?? '') ?: null;
+
+        // Tipos: solicitacao(s) categoria(s) planta(s) po(s) modal(s) codigo_componente(s)
+        // descricao(s) quantidade(d) hscode(s) ncm(s) fornecedor(s) preco(d) total(d)
+        // moeda(s) tipo(s) ffw(s) obs(s) id(i)
+        mysqli_stmt_bind_param(
+            $stmtEditar, 'sssssssdsssddssssi',
+            $solicitacaoEd, $categoriaEd, $plantaEd, $poEd, $modalEd, $codigoComponenteEd,
+            $descricaoEd, $quantidadeEd, $hscodeEd, $ncmEd, $fornecedorEd, $precoEd, $totalEd,
+            $moedaEd, $tipoEd, $ffwEd, $obsEd, $idEditar
+        );
+        if (mysqli_stmt_execute($stmtEditar)) {
+            $mensagens[] = '✅ Registro atualizado.';
+        } else {
+            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+        }
+        mysqli_stmt_close($stmtEditar);
     }
 }
 
@@ -309,6 +359,7 @@ $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int) $_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$editandoId = (int) ($_GET['editar'] ?? 0);
 
 $where = '';
 $params = [];
@@ -347,6 +398,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     <title>Processos | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        /* Espaçamento extra — a tabela tem muitas colunas, então o padding
+           padrão do dashboard.css (12px) fica meio apertado nessa tela. */
+        #tabela-processos td, #tabela-processos th { padding: 14px 16px; }
+        #tabela-processos td { font-size: .85rem; }
+    </style>
 </head>
 <body>
     <header class="topbar">
@@ -359,7 +416,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
                 <a class="btn btn-light btn-sm" href="processos.php">Processos</a>
-                <a class="btn btn-outline-light btn-sm" href="#">Pagamento</a>
+                <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
             </nav>
         </div>
@@ -395,8 +452,8 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </form>
                 <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
                     Colunas esperadas (primeira linha = cabeçalho, qualquer ordem):<br>
-                    <code>processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs</code><br>
-                    Só <code>processo</code> é obrigatório — as demais colunas podem faltar. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
+                    <code>processo, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs</code><br>
+                    Só <code>processo</code> é obrigatório — as demais colunas podem faltar. <strong>Não existe coluna <code>status</code></strong>: todo processo nasce "aberto" automaticamente, e só vira "finalizado" quando o embarque correspondente é confirmado na tela Confirmar Entrega. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                 </p>
             </details>
         </section>
@@ -409,10 +466,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <div class="col-md-2">
                         <label class="form-label">Processo *</label>
                         <input type="text" name="processo_manual" class="form-control" required>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Status</label>
-                        <input type="text" name="status_manual" class="form-control" placeholder="Ex.: aberto">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Solicitação</label>
@@ -513,45 +566,151 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0">
+                <table class="table mrp-table mb-0" id="tabela-processos" style="min-width: 1900px;">
                     <thead>
                         <tr>
-                            <th>Processo</th>
                             <th>Status</th>
+                            <th>Processo</th>
                             <th>Solicitação</th>
+                            <th>Categoria</th>
                             <th>Planta</th>
                             <th>PO</th>
                             <th>Modal</th>
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
+                            <th>HS Code</th>
+                            <th>NCM</th>
                             <th>Fornecedor</th>
                             <th>Preço</th>
                             <th>Total</th>
                             <th>Moeda</th>
+                            <th>Tipo</th>
                             <th>FFW</th>
+                            <th>Obs</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="14" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="20" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
+                                <?php
+                                    $statusFinalizado = strtolower(trim((string) ($r['status'] ?? ''))) === 'finalizado';
+                                    $emEdicao = $editandoId === (int) $r['id'];
+                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
+                                ?>
                                 <tr>
+                                    <td>
+                                        <span class="status-badge <?php echo $statusFinalizado ? 'status-ok' : 'status-atencao'; ?>">
+                                            <?php echo $statusFinalizado ? 'Finalizado' : 'Aberto'; ?>
+                                        </span>
+                                    </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
-                                    <td><?php echo h($r['status'] ?: '—'); ?></td>
-                                    <td><?php echo dataBr($r['solicitacao']); ?></td>
-                                    <td><?php echo h($r['planta'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['po'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['modal'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
-                                    <td class="description-cell" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
-                                    <td><?php echo numeroBr($r['quantidade'], 0); ?></td>
-                                    <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
-                                    <td><?php echo numeroBr($r['preco']); ?></td>
-                                    <td><?php echo numeroBr($r['total']); ?></td>
-                                    <td><?php echo h($r['moeda'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['ffw'] ?: '—'); ?></td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="17">
+                                            <form method="POST" class="row g-2 align-items-end py-2">
+                                                <input type="hidden" name="acao" value="editar_registro">
+                                                <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Solicitação</label>
+                                                    <input type="text" name="solicitacao_editado" class="form-control form-control-sm" value="<?php echo h($r['solicitacao'] ? dataBr($r['solicitacao']) : ''); ?>" placeholder="dd/mm/aaaa">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Categoria</label>
+                                                    <input type="text" name="categoria_editado" class="form-control form-control-sm" value="<?php echo h($r['categoria'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Planta</label>
+                                                    <input type="text" name="planta_editado" class="form-control form-control-sm" value="<?php echo h($r['planta'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">PO</label>
+                                                    <input type="text" name="po_editado" class="form-control form-control-sm" value="<?php echo h($r['po'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Modal</label>
+                                                    <input type="text" name="modal_editado" class="form-control form-control-sm" value="<?php echo h($r['modal'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Componente</label>
+                                                    <input type="text" name="codigo_componente_editado" class="form-control form-control-sm" value="<?php echo h($r['codigo_componente'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small mb-0">Descrição</label>
+                                                    <input type="text" name="descricao_editado" class="form-control form-control-sm" value="<?php echo h($r['descricao'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Quantidade</label>
+                                                    <input type="text" name="quantidade_editado" class="form-control form-control-sm" value="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">HS Code</label>
+                                                    <input type="text" name="hscode_editado" class="form-control form-control-sm" value="<?php echo h($r['hscode'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">NCM</label>
+                                                    <input type="text" name="ncm_editado" class="form-control form-control-sm" value="<?php echo h($r['ncm'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Fornecedor</label>
+                                                    <input type="text" name="fornecedor_editado" class="form-control form-control-sm" value="<?php echo h($r['fornecedor'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Preço</label>
+                                                    <input type="text" name="preco_editado" class="form-control form-control-sm" value="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Total</label>
+                                                    <input type="text" name="total_editado" class="form-control form-control-sm" value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Moeda</label>
+                                                    <input type="text" name="moeda_editado" class="form-control form-control-sm" value="<?php echo h($r['moeda'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Tipo</label>
+                                                    <input type="text" name="tipo_editado" class="form-control form-control-sm" value="<?php echo h($r['tipo'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">FFW</label>
+                                                    <input type="text" name="ffw_editado" class="form-control form-control-sm" value="<?php echo h($r['ffw'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Obs</label>
+                                                    <input type="text" name="obs_editado" class="form-control form-control-sm" value="<?php echo h($r['obs'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-12 d-flex gap-2 mt-1">
+                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                    <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                </div>
+                                            </form>
+                                        </td>
+                                        <td></td>
+                                    <?php else: ?>
+                                        <td><?php echo dataBr($r['solicitacao']); ?></td>
+                                        <td><?php echo h($r['categoria'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['planta'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['po'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['modal'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
+                                        <td class="description-cell" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
+                                        <td><?php echo numeroBr($r['quantidade'], 0); ?></td>
+                                        <td><?php echo h($r['hscode'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['ncm'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
+                                        <td><?php echo numeroBr($r['preco']); ?></td>
+                                        <td><?php echo numeroBr($r['total']); ?></td>
+                                        <td><?php echo h($r['moeda'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['tipo'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['ffw'] ?: '—'); ?></td>
+                                        <td class="description-cell" title="<?php echo h($r['obs'] ?? ''); ?>"><?php echo h($r['obs'] ?: '—'); ?></td>
+                                        <td>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
