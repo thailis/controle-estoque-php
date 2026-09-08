@@ -26,6 +26,18 @@ function parseDataProgramacao(string $valor): ?string
     return null;
 }
 
+// Formata sempre como dd/mm/aaaa — usada pra pré-preencher o campo de edição
+// (que agora é texto simples, não mais <input type="date">, justamente pra
+// não depender do formato que o navegador escolhe mostrar).
+function formatarDataBrProgramacao(?string $data): string
+{
+    if ($data === null || $data === '') {
+        return '';
+    }
+    $obj = DateTimeImmutable::createFromFormat('!Y-m-d', $data);
+    return $obj ? $obj->format('d/m/Y') : $data;
+}
+
 function normalizarTexto(string $texto): string
 {
     $texto = mb_strtolower(trim($texto), 'UTF-8');
@@ -317,7 +329,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
         'pagina' => $_POST['pagina_atual'] ?? 1,
         'busca'  => $_POST['busca_atual'] ?? '',
         'filtro' => $_POST['filtro_atual'] ?? '',
-    ]));
+    ]) . '#linha-' . $idAlternar);
     exit;
 }
 
@@ -378,7 +390,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         'busca'  => $_POST['busca_atual'] ?? '',
         'filtro' => $_POST['filtro_atual'] ?? '',
         'flash'  => $flash,
-    ]));
+    ]) . '#linha-' . $idEditar);
     exit;
 }
 
@@ -675,7 +687,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
                 <div class="col-auto">
                     <label class="form-label small mb-1">Data</label>
-                    <input type="date" name="data_manual" class="form-control form-control-sm" required>
+                    <input type="text" name="data_manual" class="form-control form-control-sm" placeholder="dd/mm/aaaa" required>
                 </div>
                 <div class="col-auto">
                     <label class="form-label small mb-1">Quantidade</label>
@@ -733,7 +745,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 $emEdicao = ($editando === $idLinha);
                                 $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro);
                                 ?>
-                                <tr>
+                                <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
                                         <form method="POST" class="m-0">
                                             <input type="hidden" name="acao" value="alternar_atendido">
@@ -761,10 +773,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
-                                                <input type="date" name="data_editada" class="form-control form-control-sm" style="width:150px" value="<?php echo h($row['data'] ?? ''); ?>" required>
+                                                <input type="text" name="data_editada" class="form-control form-control-sm" style="width:130px" placeholder="dd/mm/aaaa" value="<?php echo h(formatarDataBrProgramacao($row['data'] ?? null)); ?>" required>
                                                 <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:120px" value="<?php echo h(number_format((float) $row['quantidade'], 2, ',', '')); ?>" required>
                                                 <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
                                             </form>
                                         </td>
                                     <?php else: ?>
@@ -774,7 +786,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <?php if ($estaAtendido): ?>
                                                 <span class="text-muted small" title="Reabra o item antes de editar">—</span>
                                             <?php else: ?>
-                                                <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                                <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
                                             <?php endif; ?>
                                         </td>
                                     <?php endif; ?>
@@ -804,5 +816,17 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
+        // já deveria fazer isso sozinha, mas algumas combinações de navegador/
+        // cabeçalho fixo não respeitam isso direito. Isso força o scroll de
+        // verdade, centralizando a linha na tela em vez de jogar ela pro topo.
+        if (window.location.hash) {
+            const alvo = document.querySelector(window.location.hash);
+            if (alvo) {
+                alvo.scrollIntoView({ block: 'center' });
+            }
+        }
+    </script>
 </body>
 </html>

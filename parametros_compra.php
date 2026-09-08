@@ -230,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         'busca'      => $_POST['busca_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'flash'      => $flash,
-    ]));
+    ]) . '#linha-' . urlencode($codigoManual));
     exit;
 }
 
@@ -270,7 +270,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         'busca'      => $_POST['busca_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'flash'      => $flash,
-    ]));
+    ]) . '#linha-' . urlencode($codigoEditar));
     exit;
 }
 
@@ -713,7 +713,7 @@ if (!empty($rows)) {
                                     $emEdicao = ($editando !== '' && $editando === $codigoLinha);
                                     $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&fornecedor=' . urlencode($fornecedorFiltro);
                                 ?>
-                                <tr>
+                                <tr id="linha-<?php echo h($codigoLinha); ?>">
                                     <td><strong><?php echo h($codigoLinha); ?></strong></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? '—'); ?></span></td>
 
@@ -732,13 +732,13 @@ if (!empty($rows)) {
                                                 <input type="text" name="max_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['estoque_max_dias'] ?? ''); ?>" placeholder="Max">
                                                 <input type="text" name="setup_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['setup'] ?? ''); ?>" placeholder="Setup %">
                                                 <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
                                             </form>
                                         </td>
                                         <?php $celSeg = celulaEstoqueSeguranca($row); ?>
                                         <td class="text-end text-muted" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?> (recalcula ao salvar)"<?php endif; ?>><?php echo h($celSeg[0]); ?></td>
                                         <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
                                         </td>
                                     <?php else: ?>
                                         <td class="text-end"><?php echo $row['moq'] !== null ? number_format((float) $row['moq'], 0, ',', '.') : '—'; ?></td>
@@ -752,7 +752,7 @@ if (!empty($rows)) {
                                             <?php echo h($celSeg[0]); ?>
                                         </td>
                                         <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
                                         </td>
                                     <?php endif; ?>
                                 </tr>
@@ -781,5 +781,17 @@ if (!empty($rows)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
+        // já deveria fazer isso sozinha, mas algumas combinações de navegador/
+        // cabeçalho fixo não respeitam isso direito. Isso força o scroll de
+        // verdade, centralizando a linha na tela em vez de jogar ela pro topo.
+        if (window.location.hash) {
+            const alvo = document.querySelector(window.location.hash);
+            if (alvo) {
+                alvo.scrollIntoView({ block: 'center' });
+            }
+        }
+    </script>
 </body>
 </html>

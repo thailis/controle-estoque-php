@@ -59,6 +59,42 @@ function calcularPeriodoSemana(int $semana): ?array
     ];
 }
 
+// Caminho inverso do calcularPeriodoSemana() acima: em vez de digitar a semana
+// e o site calcular a data, agora digita-se a DATA e o site calcula a semana
+// (número ISO da semana) e o ano — usando a mesma convenção já existente
+// (semana 30–53 = "ano" 2026; semana 1–29 = "ano" 2027). Isso é só um rótulo
+// de safra, não precisa bater com o ano civil real da data digitada.
+function calcularSemanaEAno(DateTimeImmutable $data): ?array
+{
+    $semana = (int) $data->format('W');
+    if ($semana >= 30 && $semana <= 53) {
+        $ano = 2026;
+    } elseif ($semana >= 1 && $semana <= 29) {
+        $ano = 2027;
+    } else {
+        return null;
+    }
+    return ['semana' => $semana, 'ano' => $ano];
+}
+
+// Aceita dd/mm/aaaa (formato padrão do site) ou aaaa-mm-dd (formato nativo do
+// <input type="date">, caso algum navegador force isso). Devolve sempre um
+// DateTimeImmutable, ou null se não reconhecer o formato.
+function parseDataEdi(string $valor): ?DateTimeImmutable
+{
+    $valor = trim($valor);
+    if ($valor === '') {
+        return null;
+    }
+    foreach (['d/m/Y', 'Y-m-d'] as $formato) {
+        $obj = DateTimeImmutable::createFromFormat('!' . $formato, $valor);
+        if ($obj !== false) {
+            return $obj;
+        }
+    }
+    return null;
+}
+
 // Interpreta a quantidade do CSV, que pode vir em formato BR (ponto de milhar,
 // vírgula decimal — ex.: "1.400" = 1400, "1.234,56" = 1234.56) ou já em formato
 // simples ("1400"). Sem essa conversão, "1.400" seria gravado como texto e o
@@ -166,7 +202,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $projeto = $dados['projeto'] ?? null;
                     $modelo = $dados['modelo'] ?? null;
                     $evento = $dados['evento'] ?? null;
-                    $semana = $dados['semana'] ?? null;
+                    $dataBruta = $dados['data'] ?? null;
                     $quantidadeBruta = $dados['quantidade'] ?? '';
                     $quantidade = parseQuantidadeEdi((string) $quantidadeBruta);
                     if ($quantidade === null) {
@@ -183,10 +219,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $dados['quantidade'] = $quantidade;
 
-                    $periodo = is_numeric($semana) ? calcularPeriodoSemana((int) $semana) : null;
+                    $dataObj = $dataBruta !== null ? parseDataEdi((string) $dataBruta) : null;
+                    $periodo = $dataObj !== null ? calcularSemanaEAno($dataObj) : null;
                     if ($periodo === null) {
                         $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: semana '$semana' fora dos intervalos 30–53/2026 e 1–29/2027.";
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: data '$dataBruta' inválida ou fora do período aceito (use dd/mm/aaaa).";
                         registrarLinhaProcessada(
                             $linhasProcessadas,
                             $totalProcessadas,
@@ -197,9 +234,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         continue;
                     }
 
+                    $semana = $periodo['semana'];
                     $ano = $periodo['ano'];
-                    $data_inicio = $periodo['data_inicio'];
-                    $data_fim = $periodo['data_fim'];
+                    $data_inicio = $dataObj->format('Y-m-d');
+                    // Data fim não é mais necessária (a data digitada já é o valor
+                    // completo) — mantém igual à data início só por compatibilidade
+                    // com a coluna que ainda existe na tabela.
+                    $data_fim = $data_inicio;
+                    $dados['semana'] = $semana;
                     $dados['ano'] = $ano;
                     $dados['data_inicio'] = $data_inicio;
                     $dados['data_fim'] = $data_fim;
@@ -315,12 +357,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
         'busca'  => $_POST['busca_atual'] ?? '',
         'ano'    => $_POST['ano_atual'] ?? '',
         'filtro' => $_POST['filtro_atual'] ?? '',
-    ]));
+    ]) . '#linha-' . $idAlternar);
     exit;
 }
 
 // Inclusão manual de um novo evento EDI direto pelo site, sem CSV.
-// Ano/Data início/Data fim são calculados a partir da semana, igual ao import.
+// Semana/Ano são calculados a partir da data digitada (caminho inverso do
+// que já usávamos antes — agora a data é o dado de entrada, não a semana).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     $pn2Manual = trim($_POST['pn2_manual'] ?? '') ?: null;
     $materialManual = trim($_POST['material_manual'] ?? '');
@@ -328,17 +371,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $projetoManual = trim($_POST['projeto_manual'] ?? '') ?: null;
     $modeloManual = trim($_POST['modelo_manual'] ?? '') ?: null;
     $eventoManual = trim($_POST['evento_manual'] ?? '');
-    $semanaManual = trim($_POST['semana_manual'] ?? '');
+    $dataManualTexto = trim($_POST['data_manual'] ?? '');
     $quantidadeManual = parseQuantidadeEdi(trim($_POST['quantidade_manual'] ?? ''));
-    $periodoManual = ctype_digit($semanaManual) ? calcularPeriodoSemana((int) $semanaManual) : null;
+    $dataManualObj = $dataManualTexto !== '' ? parseDataEdi($dataManualTexto) : null;
+    $periodoManual = $dataManualObj !== null ? calcularSemanaEAno($dataManualObj) : null;
 
     $flash = 'erro_dados';
     if ($materialManual !== '' && $eventoManual !== '' && $quantidadeManual !== null && $periodoManual !== null) {
+        $dataInicioManual = $dataManualObj->format('Y-m-d');
         $stmtInsManual = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         mysqli_stmt_bind_param(
-            $stmtInsManual, "ssssssssiss",
+            $stmtInsManual, "ssssssidiss",
             $pn2Manual, $materialManual, $marcaManual, $projetoManual, $modeloManual, $eventoManual,
-            $semanaManual, $quantidadeManual, $periodoManual['ano'], $periodoManual['data_fim'], $periodoManual['data_inicio']
+            $periodoManual['semana'], $quantidadeManual, $periodoManual['ano'], $dataInicioManual, $dataInicioManual
         );
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
@@ -356,21 +401,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 }
 
 // Edição direta de data e quantidade de um evento EDI já existente, sem CSV.
-// A data fim é recalculada automaticamente como data início + 6 dias, pra manter
-// a semana completa (mesma regra usada no cálculo original da importação).
+// A data digitada aqui recalcula sozinha a semana e o ano (mesma regra
+// inversa usada na importação/cadastro manual) — não precisa mais editar
+// esses dois campos separadamente.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
     $idEditar = (int) ($_POST['id'] ?? 0);
     $dataEditadaBruta = trim($_POST['data_editada'] ?? '');
     $quantidadeEditada = parseQuantidadeEdi(trim($_POST['quantidade_editada'] ?? ''));
-    $dataEditadaObj = DateTimeImmutable::createFromFormat('!Y-m-d', $dataEditadaBruta);
+    $dataEditadaObj = parseDataEdi($dataEditadaBruta);
+    $periodoEditado = $dataEditadaObj !== null ? calcularSemanaEAno($dataEditadaObj) : null;
 
     $flash = 'erro_dados';
-    if ($idEditar > 0 && $dataEditadaObj instanceof DateTimeImmutable && $quantidadeEditada !== null) {
+    if ($idEditar > 0 && $periodoEditado !== null && $quantidadeEditada !== null) {
         $novaDataInicio = $dataEditadaObj->format('Y-m-d');
-        $novaDataFim = $dataEditadaObj->modify('+6 days')->format('Y-m-d');
+        // Data fim não é mais necessária — mantém igual à data início, só
+        // por compatibilidade com a coluna que ainda existe na tabela.
+        $novaDataFim = $novaDataInicio;
 
-        $stmtEditar = mysqli_prepare($conn, "UPDATE edi SET data_inicio = ?, data_fim = ?, quantidade = ? WHERE _tidb_rowid = ?");
-        mysqli_stmt_bind_param($stmtEditar, "sssi", $novaDataInicio, $novaDataFim, $quantidadeEditada, $idEditar);
+        $stmtEditar = mysqli_prepare($conn, "UPDATE edi SET data_inicio = ?, data_fim = ?, quantidade = ?, semana = ?, ano = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param(
+            $stmtEditar, "ssdiii",
+            $novaDataInicio, $novaDataFim, $quantidadeEditada, $periodoEditado['semana'], $periodoEditado['ano'], $idEditar
+        );
         mysqli_stmt_execute($stmtEditar);
         mysqli_stmt_close($stmtEditar);
         $flash = 'editado';
@@ -382,7 +434,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         'ano'    => $_POST['ano_atual'] ?? '',
         'filtro' => $_POST['filtro_atual'] ?? '',
         'flash'  => $flash,
-    ]));
+    ]) . '#linha-' . $idEditar);
     exit;
 }
 
@@ -462,7 +514,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 if (($_GET['exportar'] ?? '') === 'csv') {
     $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, atendido
                   FROM edi $where
-                  ORDER BY ano DESC, semana DESC";
+                  ORDER BY data_inicio ASC";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -489,10 +541,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-// Busca os dados da página atual
+// Busca os dados da página atual — ordenado pela DATA de verdade (crescente,
+// mais antiga primeiro, mais recente por último), não mais pelos rótulos de
+// ano/semana (que ainda
+// existem, mas hoje são só derivados da data, não a fonte da ordenação).
 $sql = "SELECT _tidb_rowid AS id, pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido 
         FROM edi $where 
-        ORDER BY ano DESC, semana DESC 
+        ORDER BY data_inicio ASC 
         LIMIT ? OFFSET ?";
 
 $stmt = mysqli_prepare($conn, $sql);
@@ -708,8 +763,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>pn2, material, marca, projeto, modelo, evento, semana, quantidade</code><br>
-                        Ano e datas são calculados automaticamente: semanas 30–53 = 2026; semanas 1–29 = 2027. A data inicial é a segunda-feira e a data final é o domingo da semana. Separador: vírgula ou ponto e vírgula.
+                        <code>pn2, material, marca, projeto, modelo, evento, data, quantidade</code><br>
+                        A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
             </details>
@@ -759,8 +814,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <input type="text" name="evento_manual" class="form-control form-control-sm" style="width:120px" required>
                     </div>
                     <div class="col-auto">
-                        <label class="form-label small mb-1">Semana *</label>
-                        <input type="number" name="semana_manual" class="form-control form-control-sm" style="width:90px" min="1" max="53" required>
+                        <label class="form-label small mb-1">Data *</label>
+                        <input type="text" name="data_manual" class="form-control form-control-sm" style="width:120px" placeholder="dd/mm/aaaa" required>
                     </div>
                     <div class="col-auto">
                         <label class="form-label small mb-1">Quantidade *</label>
@@ -770,7 +825,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
                     </div>
                     <div class="col-12">
-                        <small class="text-muted">Ano e datas são calculados automaticamente pela semana (30–53 = 2026; 1–29 = 2027), igual ao CSV.</small>
+                        <small class="text-muted">Semana e ano são calculados automaticamente a partir da data (rótulo de safra: semana 30–53 = 2026; 1–29 = 2027), igual ao CSV.</small>
                     </div>
                 </form>
             </details>
@@ -834,7 +889,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 $emEdicao = ($editando === $idLinha);
                                 $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&filtro=' . urlencode($filtro);
                                 ?>
-                                <tr>
+                                <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
                                         <form method="POST" class="m-0">
                                             <input type="hidden" name="acao" value="alternar_atendido">
@@ -869,16 +924,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
                                                 <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                                                 <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:110px" value="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" required>
-                                                <input type="date" name="data_editada" class="form-control form-control-sm" style="width:150px" value="<?php echo htmlspecialchars($row['data_inicio'] ?? ''); ?>" required>
+                                                <input type="text" name="data_editada" class="form-control form-control-sm" style="width:130px" placeholder="dd/mm/aaaa" value="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" required>
                                                 <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
                                             </form>
                                         </td>
                                     <?php else: ?>
                                         <td class="text-center"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
                                         <td><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
                                         <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
                                         </td>
                                     <?php endif; ?>
                                 </tr>
@@ -907,5 +962,17 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
+        // já deveria fazer isso sozinha, mas algumas combinações de navegador/
+        // cabeçalho fixo não respeitam isso direito. Isso força o scroll de
+        // verdade, centralizando a linha na tela em vez de jogar ela pro topo.
+        if (window.location.hash) {
+            const alvo = document.querySelector(window.location.hash);
+            if (alvo) {
+                alvo.scrollIntoView({ block: 'center' });
+            }
+        }
+    </script>
 </body>
 </html>

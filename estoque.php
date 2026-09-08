@@ -686,5 +686,17 @@ if (!empty($componentes)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
+        // já deveria fazer isso sozinha, mas algumas combinações de navegador/
+        // cabeçalho fixo não respeitam isso direito. Isso força o scroll de
+        // verdade, centralizando a linha na tela em vez de jogar ela pro topo.
+        if (window.location.hash) {
+            const alvo = document.querySelector(window.location.hash);
+            if (alvo) {
+                alvo.scrollIntoView({ block: 'center' });
+            }
+        }
+    </script>
 </body>
 </html>
