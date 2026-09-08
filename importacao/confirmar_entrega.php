@@ -14,6 +14,18 @@ function h(mixed $valor): string
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
 
+// Formata sempre como dd/mm/aaaa — não depende do <input type="date"> do
+// navegador (que mostra mm/dd/aaaa em alguns idiomas/locales), porque aqui
+// o campo é só leitura e a formatação é toda nossa.
+function dataBrConfirmar(?string $data): string
+{
+    if ($data === null || $data === '') {
+        return '—';
+    }
+    $obj = DateTimeImmutable::createFromFormat('!Y-m-d', $data);
+    return $obj ? $obj->format('d/m/Y') : $data;
+}
+
 // Segunda conexão, só pra falar com o MRP — credenciais PRÓPRIAS e mínimas
 // (usuário dedicado, só SELECT em parametros_compra/bomnova e INSERT em
 // estoque; nunca as mesmas credenciais do site interno do MRP).
@@ -101,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     } else {
         // Busca o processo ligado a esse follow, e dele puxa componente + quantidade
         $stmt = mysqli_prepare($conn, "
-            SELECT f.id, f.processo, f.integrado_mrp, p.codigo_componente, p.descricao, p.quantidade, p.planta
+            SELECT f.id, f.processo, f.integrado_mrp, p.codigo_componente, p.descricao, p.quantidade, p.planta, p.status AS status_processo
             FROM follow f
             JOIN processos p ON p.processo = f.processo
             WHERE f.id = ?
@@ -115,6 +127,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
             $erro = 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.';
         } elseif ((int) $linha['integrado_mrp'] === 1) {
             $erro = 'Esse embarque já foi integrado ao MRP anteriormente — não é possível integrar de novo (evita duplicar estoque).';
+        } elseif (strtolower(trim((string) ($linha['status_processo'] ?? ''))) === 'cancelado') {
+            // Trava no servidor — mesmo que alguém envie o follow_id direto (sem passar
+            // pela lista, que já filtra isso), a confirmação é bloqueada aqui também.
+            $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega nem alimentar o estoque do MRP.";
         } else {
             try {
                 $connMrp = conectarMrp();
@@ -183,13 +199,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     }
 }
 
-// Lista embarques ainda não integrados, pra tela de confirmação
+// Lista embarques ainda não integrados, pra tela de confirmação — processos
+// cancelados NUNCA aparecem aqui (mas continuam com o follow salvo, só não
+// entram na fila de integração).
 $pendentes = [];
 $resultPendentes = mysqli_query($conn, "
-    SELECT f.id, f.processo, f.efetiva, f.status, p.codigo_componente, p.descricao, p.quantidade
+    SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     WHERE f.integrado_mrp = 0
+      AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
     ORDER BY f.efetiva IS NULL, f.efetiva ASC
 ");
 while ($linha = mysqli_fetch_assoc($resultPendentes)) {
@@ -256,33 +275,53 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                             <th>Status</th>
                             <th>Processo</th>
                             <th>Componente</th>
+                            <th>Fornecedor</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
-                            <th>Data efetiva</th>
+                            <th>Efetiva</th>
                             <th>Confirmar</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($pendentes)): ?>
-                            <tr><td colspan="7" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
+                            <tr><td colspan="8" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($pendentes as $p): ?>
-                                <?php $formId = 'form-confirmar-' . (int) $p['id']; ?>
+                                <?php
+                                    $formId = 'form-confirmar-' . (int) $p['id'];
+                                    // A data que vai pro estoque é sempre a EFETIVA, puxada do
+                                    // Follow — nunca digitada aqui, e nunca editável (por isso o
+                                    // campo é só leitura, não um <input type="date"> normal — isso
+                                    // também evita o formato mm/dd/aaaa que o navegador às vezes
+                                    // mostra num campo de data editável). Sem efetiva cadastrada,
+                                    // não tem o que confirmar: botão fica travado em "Aguardando".
+                                    $temEfetiva = !empty($p['efetiva']);
+                                ?>
                                 <tr>
                                     <td><span class="status-badge status-atencao"><?php echo ucfirst($p['status'] ?: 'aberto'); ?></span></td>
                                     <td><span class="component-code"><?php echo h($p['processo']); ?></span></td>
                                     <td><?php echo h($p['codigo_componente'] ?? '—'); ?></td>
+                                    <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
                                     <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
                                     <td>
-                                        <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
-                                            <input type="hidden" name="acao" value="confirmar_entrega">
-                                            <input type="hidden" name="follow_id" value="<?php echo (int) $p['id']; ?>">
-                                            <input type="date" name="data_efetiva" class="form-control form-control-sm" value="<?php echo h($p['efetiva'] ?? date('Y-m-d')); ?>" required>
-                                        </form>
+                                        <?php if ($temEfetiva): ?>
+                                            <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
+                                                <input type="hidden" name="acao" value="confirmar_entrega">
+                                                <input type="hidden" name="follow_id" value="<?php echo (int) $p['id']; ?>">
+                                                <input type="hidden" name="data_efetiva" value="<?php echo h($p['efetiva']); ?>">
+                                                <input type="text" class="form-control form-control-sm" value="<?php echo h(dataBrConfirmar($p['efetiva'])); ?>" disabled>
+                                            </form>
+                                        <?php else: ?>
+                                            <span class="text-muted" title="Preencha a data efetiva no Follow pra liberar a confirmação">— sem efetiva —</span>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
-                                        <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm">Confirmar</button>
+                                        <?php if ($temEfetiva): ?>
+                                            <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm">Confirmar</button>
+                                        <?php else: ?>
+                                            <button type="button" class="btn btn-secondary btn-sm" disabled title="Preencha a data efetiva no Follow primeiro">Aguardando</button>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>

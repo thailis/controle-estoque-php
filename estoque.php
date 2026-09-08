@@ -217,11 +217,81 @@ function h(mixed $valor): string
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
 }
 
+// ---------- Ajuste manual de estoque ----------
+// A tabela "estoque" funciona como livro-razão (várias linhas por componente/
+// planta, somadas na tela). Por isso, "editar" aqui NUNCA sobrescreve nem
+// apaga linha nenhuma — em vez disso, insere uma linha de AJUSTE com a
+// DIFERENÇA entre o valor atual (soma) e o valor novo desejado, marcada com
+// origem = "ajuste_manual". Isso preserva o histórico completo (de onde veio
+// cada entrada) e continua permitindo auditoria depois.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_estoque_ajuste') {
+    $codigoAjuste = trim($_POST['codigo_componente_editado'] ?? '');
+    if ($codigoAjuste === '') {
+        $mensagens[] = '❌ Componente inválido pra ajuste.';
+    } else {
+        // Recalcula os valores ATUAIS (somados) por planta, direto no servidor —
+        // nunca confia em nenhum valor "atual" que tenha vindo escondido do
+        // formulário, pra não correr risco de calcular o ajuste errado se o
+        // estoque tiver mudado entre a página carregar e o clique em Salvar.
+        $atuais = [];
+        $stmtAtual = mysqli_prepare($conn, "
+            SELECT COALESCE(NULLIF(TRIM(planta), ''), 'SEM_PLANTA') AS planta_chave,
+                   SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS valor
+            FROM estoque
+            WHERE codigo_componente = ?
+            GROUP BY COALESCE(NULLIF(TRIM(planta), ''), 'SEM_PLANTA')
+        ");
+        mysqli_stmt_bind_param($stmtAtual, 's', $codigoAjuste);
+        mysqli_stmt_execute($stmtAtual);
+        $resAtual = mysqli_stmt_get_result($stmtAtual);
+        while ($linhaAtual = mysqli_fetch_assoc($resAtual)) {
+            $atuais[$linhaAtual['planta_chave']] = (float) $linhaAtual['valor'];
+        }
+        mysqli_stmt_close($stmtAtual);
+
+        // Descrição não é editável aqui — usa a que já existe no componente,
+        // só pra a linha de ajuste ficar legível se alguém consultar o banco.
+        $stmtDescAtual = mysqli_prepare($conn, "SELECT MAX(descricao) AS descricao FROM estoque WHERE codigo_componente = ?");
+        mysqli_stmt_bind_param($stmtDescAtual, 's', $codigoAjuste);
+        mysqli_stmt_execute($stmtDescAtual);
+        $descricaoParaAjuste = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescAtual))['descricao'] ?? null;
+        mysqli_stmt_close($stmtDescAtual);
+
+        $ajustesFeitos = 0;
+        $valoresPostados = $_POST['planta_valor'] ?? [];
+
+        foreach ($valoresPostados as $plantaChave => $valorTexto) {
+            $novoValor = parseNumeroBr((string) $valorTexto) ?? 0.0;
+            $valorAtual = $atuais[$plantaChave] ?? 0.0;
+            $delta = $novoValor - $valorAtual;
+
+            if (abs($delta) > 0.0001) {
+                $plantaReal = $plantaChave === 'SEM_PLANTA' ? null : $plantaChave;
+                $stmtAjuste = mysqli_prepare($conn, "
+                    INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem)
+                    VALUES (?, ?, ?, ?, 'ajuste_manual')
+                ");
+                mysqli_stmt_bind_param($stmtAjuste, 'ssds', $codigoAjuste, $descricaoParaAjuste, $delta, $plantaReal);
+                mysqli_stmt_execute($stmtAjuste);
+                mysqli_stmt_close($stmtAjuste);
+                $ajustesFeitos++;
+            }
+        }
+
+        $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+        $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+        $flag = $ajustesFeitos > 0 ? 'ajustado=1' : 'sem_mudanca=1';
+        header('Location: estoque.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '#linha-' . urlencode($codigoAjuste));
+        exit;
+    }
+}
+
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$editandoCodigo = trim($_GET['editar'] ?? '');
 
 $where = '';
 $params = [];
@@ -448,6 +518,12 @@ if (!empty($componentes)) {
             </p>
         </div>
 
+        <?php if (isset($_GET['ajustado'])): ?>
+            <div class="alert alert-success">✅ Estoque ajustado com sucesso.</div>
+        <?php elseif (isset($_GET['sem_mudanca'])): ?>
+            <div class="alert alert-secondary">Nada foi alterado (os valores digitados já eram os mesmos).</div>
+        <?php endif; ?>
+
         <div class="card p-3 mb-4">
             <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
                 <summary>📥 Importar novo arquivo CSV</summary>
@@ -519,11 +595,12 @@ if (!empty($componentes)) {
                             <?php endif; ?>
                             <th class="text-end col-total">Total</th>
                             <th>MRP</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($componentes)): ?>
-                            <tr><td colspan="<?php echo 4 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="<?php echo 5 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($componentes as $codigo => $linha): ?>
                                 <?php
@@ -531,18 +608,58 @@ if (!empty($componentes)) {
                                         $linha['total_linhas'] !== null ? (int) $linha['total_linhas'] : null,
                                         $linha['tem_ativo'] !== null ? (int) $linha['tem_ativo'] : null
                                     );
+                                    $emEdicao = $editandoCodigo !== '' && $editandoCodigo === (string) $codigo;
+                                    $linkVoltar = 'estoque.php?pagina=' . $pagina . '&busca=' . urlencode($busca);
+                                    // Componente e Descrição ficam FORA do formulário (não editáveis) —
+                                    // o colspan cobre só as colunas de planta + Total + MRP.
+                                    $colspanEdicao = 2 + count($plantas) + ($temSemPlanta ? 1 : 0);
                                 ?>
-                                <tr>
+                                <tr id="linha-<?php echo h($codigo); ?>">
                                     <td><strong><?php echo h($codigo); ?></strong></td>
                                     <td><?php echo h($linha['descricao'] ?? ''); ?></td>
-                                    <?php foreach ($plantas as $p): ?>
-                                        <td class="text-end"><?php echo isset($porPlanta[$codigo][$p]) ? number_format($porPlanta[$codigo][$p], 2, ',', '.') : '—'; ?></td>
-                                    <?php endforeach; ?>
-                                    <?php if ($temSemPlanta): ?>
-                                        <td class="text-end"><?php echo isset($porPlanta[$codigo]['']) ? number_format($porPlanta[$codigo][''], 2, ',', '.') : '—'; ?></td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="<?php echo $colspanEdicao; ?>">
+                                            <form method="POST" class="row g-2 align-items-end py-2">
+                                                <input type="hidden" name="acao" value="editar_estoque_ajuste">
+                                                <input type="hidden" name="codigo_componente_editado" value="<?php echo h($codigo); ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <?php foreach ($plantas as $p): ?>
+                                                    <div class="col-md-2">
+                                                        <label class="form-label small mb-0">Estoque <?php echo h($p); ?></label>
+                                                        <input type="text" name="planta_valor[<?php echo h($p); ?>]" class="form-control form-control-sm" value="<?php echo isset($porPlanta[$codigo][$p]) ? number_format($porPlanta[$codigo][$p], 2, ',', '.') : '0,00'; ?>">
+                                                    </div>
+                                                <?php endforeach; ?>
+                                                <?php if ($temSemPlanta): ?>
+                                                    <div class="col-md-2">
+                                                        <label class="form-label small mb-0">Sem planta</label>
+                                                        <input type="text" name="planta_valor[SEM_PLANTA]" class="form-control form-control-sm" value="<?php echo isset($porPlanta[$codigo]['']) ? number_format($porPlanta[$codigo][''], 2, ',', '.') : '0,00'; ?>">
+                                                    </div>
+                                                <?php endif; ?>
+                                                <div class="col-12">
+                                                    <small class="text-muted">Alterar um valor grava um ajuste com a diferença (não apaga histórico). Componente e descrição não são editáveis aqui.</small>
+                                                </div>
+                                                <div class="col-12 d-flex gap-2 mt-1">
+                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                    <a href="<?php echo $linkVoltar; ?>#linha-<?php echo h($codigo); ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                </div>
+                                            </form>
+                                        </td>
+                                        <td></td>
+                                    <?php else: ?>
+                                        <?php foreach ($plantas as $p): ?>
+                                            <td class="text-end"><?php echo isset($porPlanta[$codigo][$p]) ? number_format($porPlanta[$codigo][$p], 2, ',', '.') : '—'; ?></td>
+                                        <?php endforeach; ?>
+                                        <?php if ($temSemPlanta): ?>
+                                            <td class="text-end"><?php echo isset($porPlanta[$codigo]['']) ? number_format($porPlanta[$codigo][''], 2, ',', '.') : '—'; ?></td>
+                                        <?php endif; ?>
+                                        <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
+                                        <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
+                                        <td>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigo); ?>#linha-<?php echo h($codigo); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        </td>
                                     <?php endif; ?>
-                                    <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
-                                    <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

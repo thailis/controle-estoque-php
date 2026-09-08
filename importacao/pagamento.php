@@ -326,20 +326,32 @@ $where = '';
 $params = [];
 $tipos = '';
 if ($busca !== '') {
-    $where = "WHERE processo LIKE ? OR fornecedor LIKE ? OR po LIKE ?";
+    $where = "WHERE pg.processo LIKE ? OR pg.fornecedor LIKE ? OR pg.po LIKE ?";
     $like = '%' . $busca . '%';
     $params = [$like, $like, $like];
     $tipos = 'sss';
 }
 
-$stmtTotal = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM pagamento $where");
+$stmtTotal = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM pagamento pg $where");
 if (!empty($params)) { mysqli_stmt_bind_param($stmtTotal, $tipos, ...$params); }
 mysqli_stmt_execute($stmtTotal);
 $total = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtTotal))['total'];
 mysqli_stmt_close($stmtTotal);
 $totalPaginas = max(1, (int) ceil($total / $porPagina));
 
-$sql = "SELECT * FROM pagamento $where ORDER BY criado_em DESC LIMIT ? OFFSET ?";
+$sql = "
+    SELECT pg.*,
+           p.status AS status_processo_vivo,
+           p.po AS po_vivo,
+           p.fornecedor AS fornecedor_vivo,
+           p.moeda AS moeda_vivo,
+           p.total AS total_vivo
+    FROM pagamento pg
+    LEFT JOIN processos p ON p.processo = pg.processo
+    $where
+    ORDER BY pg.criado_em DESC
+    LIMIT ? OFFSET ?
+";
 $stmt = mysqli_prepare($conn, $sql);
 if (!empty($params)) {
     mysqli_stmt_bind_param($stmt, $tipos . 'ii', ...array_merge($params, [$porPagina, $offset]));
@@ -349,7 +361,18 @@ if (!empty($params)) {
 mysqli_stmt_execute($stmt);
 $result = mysqli_stmt_get_result($stmt);
 $rows = [];
-while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
+while ($row = mysqli_fetch_assoc($result)) {
+    // Prioriza o valor AO VIVO de processos — só cai pra cópia armazenada em
+    // pagamento se, por algum motivo, o processo não existir mais lá (ex.:
+    // tabela processos foi limpa/reimportada e esse processo específico não
+    // veio de volta no novo arquivo).
+    $row['status'] = $row['status_processo_vivo'] ?? $row['status'];
+    $row['po'] = $row['po_vivo'] ?? $row['po'];
+    $row['fornecedor'] = $row['fornecedor_vivo'] ?? $row['fornecedor'];
+    $row['moeda'] = $row['moeda_vivo'] ?? $row['moeda'];
+    $row['total'] = $row['total_vivo'] ?? $row['total'];
+    $rows[] = $row;
+}
 
 // Soma geral (visão rápida de quanto está em aberto no total)
 $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_total, SUM(balance) AS soma_balance FROM pagamento"));
@@ -458,7 +481,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Numerário inicial</label>
-                        <input type="text" name="numerario_inicial_manual" class="form-control" placeholder="dd/mm/aaaa">
+                        <input type="date" name="numerario_inicial_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Valor inicial</label>
@@ -466,7 +489,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Numerário final</label>
-                        <input type="text" name="numerario_final_manual" class="form-control" placeholder="dd/mm/aaaa">
+                        <input type="date" name="numerario_final_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Valor final</label>
@@ -557,6 +580,13 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     } else {
                                         $statusCalc = 'finalizado'; $statusClasse = 'status-ok';
                                     }
+                                    // Se o processo foi cancelado em Processos, isso SOBREPÕE o
+                                    // status calculado (aberto/parcial/finalizado) — mesmo que a
+                                    // liquidação já estivesse toda fechada. O campo "status" aqui
+                                    // é a cópia que já recebe a cascata do toggle em processos.php.
+                                    if (strtolower(trim((string) ($r['status'] ?? ''))) === 'cancelado') {
+                                        $statusCalc = 'cancelado'; $statusClasse = 'status-critico';
+                                    }
                                     $emEdicao = $editandoId === (int) $r['id'];
                                     $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
                                 ?>
@@ -590,7 +620,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Numerário inicial</label>
-                                                    <input type="text" name="numerario_inicial_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_inicial'] ? dataBr($r['numerario_inicial']) : ''); ?>" placeholder="dd/mm/aaaa">
+                                                    <input type="date" name="numerario_inicial_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_inicial'] ?? ''); ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Valor inicial</label>
@@ -598,7 +628,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Numerário final</label>
-                                                    <input type="text" name="numerario_final_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_final'] ? dataBr($r['numerario_final']) : ''); ?>" placeholder="dd/mm/aaaa">
+                                                    <input type="date" name="numerario_final_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_final'] ?? ''); ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Valor final</label>

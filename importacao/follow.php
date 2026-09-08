@@ -43,6 +43,38 @@ function parseDataFollow(string $valor): ?string
     return null;
 }
 
+// Condição nunca é digitada — é sempre calculada comparando HOJE (data da
+// consulta) com a data prevista. O que importa é quanto tempo já passou
+// desde a data esperada (hoje − prevista), não o contrário:
+//   - hoje ainda não chegou na prevista (ou é o próprio dia dela)  -> "Em tempo"
+//   - hoje já passou da prevista, até 7 dias depois                -> "Atenção"
+//   - hoje já passou da prevista há mais de 7 dias                 -> "Atrasado"
+//   - sem data prevista cadastrada                                 -> sem condição (—)
+// "hoje" nunca é fixo — é sempre a data em que a página é carregada, então a
+// classificação de cada linha desliza sozinha conforme os dias passam.
+function calcularCondicaoFollow(?string $prevista): ?string
+{
+    if ($prevista === null || $prevista === '') {
+        return null;
+    }
+    $dataPrevista = DateTimeImmutable::createFromFormat('!Y-m-d', $prevista);
+    if (!$dataPrevista) {
+        return null;
+    }
+    $hoje = new DateTimeImmutable('today');
+    // Positivo quando hoje é DEPOIS da prevista (atrasado); negativo/zero quando
+    // hoje ainda não chegou (ou é igual) na prevista.
+    $diasAtraso = (int) $dataPrevista->diff($hoje)->format('%r%a');
+
+    if ($diasAtraso <= 0) {
+        return 'em tempo';
+    }
+    if ($diasAtraso <= 7) {
+        return 'atencao';
+    }
+    return 'atrasado';
+}
+
 $mensagens = [];
 
 // ---------- Cadastro manual de embarque ----------
@@ -68,8 +100,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             $mensagens[] = "❌ O processo \"$processoEscolhido\" não existe em Processos. Cadastre ele lá primeiro.";
         } else {
             $stmt = mysqli_prepare($conn, "
-                INSERT INTO follow (processo, origem, destino, transit_dias, ft_dias, armador, trk, pickup, etd, eta, prevista, efetiva, requerente, condicao, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO follow (processo, origem, destino, transit_dias, ft_dias, armador, trk, pickup, etd, eta, prevista, efetiva, requerente, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $origem = trim($_POST['origem_manual'] ?? '') ?: null;
             $destino = trim($_POST['destino_manual'] ?? '') ?: null;
@@ -85,7 +117,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             $prevista = parseDataFollow($_POST['prevista_manual'] ?? '');
             $efetiva = parseDataFollow($_POST['efetiva_manual'] ?? '');
             $requerente = trim($_POST['requerente_manual'] ?? '') ?: null;
-            $condicao = trim($_POST['condicao_manual'] ?? '') ?: null;
+            // Condição não é mais digitada — sempre calculada a partir da data
+            // prevista (ver calcularCondicaoFollow), então nem entra no INSERT.
             // Status não é mais digitado — todo embarque novo nasce "aberto".
             // Só vira "fechado" quando confirmado na tela confirmar_entrega.php
             // (que também alimenta o estoque do MRP nesse momento).
@@ -94,7 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             mysqli_stmt_bind_param(
                 $stmt, 'sssiisssssssss',
                 $processoEscolhido, $origem, $destino, $transitDias, $ftDias, $armador, $trk,
-                $pickup, $etd, $eta, $prevista, $efetiva, $requerente, $condicao, $status
+                $pickup, $etd, $eta, $prevista, $efetiva, $requerente, $status
             );
             if (mysqli_stmt_execute($stmt)) {
                 $mensagens[] = "✅ Embarque do processo \"$processoEscolhido\" cadastrado.";
@@ -117,7 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         $stmtEditar = mysqli_prepare($conn, "
             UPDATE follow
             SET origem = ?, destino = ?, transit_dias = ?, ft_dias = ?, armador = ?, trk = ?,
-                pickup = ?, etd = ?, eta = ?, prevista = ?, efetiva = ?, requerente = ?, condicao = ?
+                pickup = ?, etd = ?, eta = ?, prevista = ?, efetiva = ?, requerente = ?
             WHERE id = ?
         ");
         $origemEd = trim($_POST['origem_editado'] ?? '') ?: null;
@@ -134,12 +167,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         $previstaEd = parseDataFollow($_POST['prevista_editado'] ?? '');
         $efetivaEd = parseDataFollow($_POST['efetiva_editado'] ?? '');
         $requerenteEd = trim($_POST['requerente_editado'] ?? '') ?: null;
-        $condicaoEd = trim($_POST['condicao_editado'] ?? '') ?: null;
+        // Condição não é mais editável — sempre calculada a partir da prevista.
 
         mysqli_stmt_bind_param(
-            $stmtEditar, 'ssiisssssssssi',
+            $stmtEditar, 'ssiissssssssi',
             $origemEd, $destinoEd, $transitDiasEd, $ftDiasEd, $armadorEd, $trkEd,
-            $pickupEd, $etdEd, $etaEd, $previstaEd, $efetivaEd, $requerenteEd, $condicaoEd, $idEditar
+            $pickupEd, $etdEd, $etaEd, $previstaEd, $efetivaEd, $requerenteEd, $idEditar
         );
         if (mysqli_stmt_execute($stmtEditar)) {
             mysqli_stmt_close($stmtEditar);
@@ -169,6 +202,7 @@ $offset = ($pagina - 1) * $porPagina;
 
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'todos'; // todos | pendente | integrado
+$filtroCondicao = isset($_GET['condicao']) ? trim($_GET['condicao']) : 'todos'; // todos | em_tempo | atencao | atrasado
 $editandoId = (int) ($_GET['editar'] ?? 0);
 
 $condicoes = [];
@@ -185,6 +219,16 @@ if ($filtroStatus === 'pendente') {
     $condicoes[] = "f.integrado_mrp = 0";
 } elseif ($filtroStatus === 'integrado') {
     $condicoes[] = "f.integrado_mrp = 1";
+}
+// Mesma regra de calcularCondicaoFollow(), só que em SQL, pra poder filtrar
+// antes da paginação. DATEDIFF(CURDATE(), prevista) = hoje − prevista =
+// quantos dias já passaram da data esperada (positivo = atrasado).
+if ($filtroCondicao === 'em_tempo') {
+    $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) <= 0";
+} elseif ($filtroCondicao === 'atencao') {
+    $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) BETWEEN 1 AND 7";
+} elseif ($filtroCondicao === 'atrasado') {
+    $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) > 7";
 }
 
 $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
@@ -204,7 +248,7 @@ $totalPaginas = max(1, (int) ceil($total / $porPagina));
 $totalPendentes = (int) mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total FROM follow WHERE integrado_mrp = 0"))['total'];
 
 $sql = "
-    SELECT f.*, p.codigo_componente, p.descricao, p.quantidade
+    SELECT f.*, p.codigo_componente, p.descricao, p.quantidade, p.status AS status_processo
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     $where
@@ -346,10 +390,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <label class="form-label">Efetiva <small class="text-muted">(só quando chegar)</small></label>
                         <input type="date" name="efetiva_manual" class="form-control">
                     </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Condição</label>
-                        <input type="text" name="condicao_manual" class="form-control" placeholder="Ex.: em tempo">
-                    </div>
 
                     <div class="col-md-2">
                         <button type="submit" class="btn btn-primary w-100">Salvar</button>
@@ -366,16 +406,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <form method="GET" class="row g-3 align-items-end">
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <label class="form-label">Processo, rastreio, armador ou requerente</label>
                     <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Ex.: yp0000 ou MSC">
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">Status</label>
                     <select name="status" class="form-select">
                         <option value="todos" <?php echo $filtroStatus === 'todos' ? 'selected' : ''; ?>>Todos</option>
                         <option value="pendente" <?php echo $filtroStatus === 'pendente' ? 'selected' : ''; ?>>Pendentes de integração</option>
                         <option value="integrado" <?php echo $filtroStatus === 'integrado' ? 'selected' : ''; ?>>Já integrados ao MRP</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Condição</label>
+                    <select name="condicao" class="form-select">
+                        <option value="todos" <?php echo $filtroCondicao === 'todos' ? 'selected' : ''; ?>>Todas</option>
+                        <option value="em_tempo" <?php echo $filtroCondicao === 'em_tempo' ? 'selected' : ''; ?>>Em tempo</option>
+                        <option value="atencao" <?php echo $filtroCondicao === 'atencao' ? 'selected' : ''; ?>>Atenção</option>
+                        <option value="atrasado" <?php echo $filtroCondicao === 'atrasado' ? 'selected' : ''; ?>>Atrasado</option>
                     </select>
                 </div>
                 <div class="col-md-2 d-flex gap-2">
@@ -397,6 +446,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <table class="table mrp-table mb-0" style="min-width: 1700px;">
                     <thead>
                         <tr>
+                            <th>Status</th>
                             <th>Processo</th>
                             <th>Componente</th>
                             <th>Origem</th>
@@ -408,25 +458,42 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Prevista</th>
                             <th>Efetiva</th>
                             <th>Requerente</th>
-                            <th>Status</th>
+                            <th>Condição</th>
                             <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="13" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="14" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
                                     $emEdicao = $editandoId === (int) $r['id'];
-                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&status=' . urlencode($filtroStatus);
+                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&status=' . urlencode($filtroStatus) . '&condicao=' . urlencode($filtroCondicao);
+                                    $statusFollow = $r['status'] ?: 'aberto';
+                                    $condicaoCalc = calcularCondicaoFollow($r['prevista']);
+                                    $condicaoClasse = ['em tempo' => 'status-ok', 'atencao' => 'status-atencao', 'atrasado' => 'status-critico'][$condicaoCalc] ?? 'status-sem_demanda';
+                                    $condicaoTexto = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][$condicaoCalc] ?? '—';
+                                    // Status unificado: se o processo estiver cancelado, isso
+                                    // SOBREPÕE o status do follow (mesmo que já estivesse fechado).
+                                    $statusProcessoValor = strtolower(trim((string) ($r['status_processo'] ?? 'aberto')));
+                                    if ($statusProcessoValor === 'cancelado') {
+                                        $statusTexto = 'Cancelado'; $statusClasseUnificada = 'status-critico';
+                                    } elseif ($statusFollow === 'fechado') {
+                                        $statusTexto = 'Fechado'; $statusClasseUnificada = 'status-ok';
+                                    } else {
+                                        $statusTexto = 'Aberto'; $statusClasseUnificada = 'status-atencao';
+                                    }
                                 ?>
                                 <tr>
+                                    <td>
+                                        <span class="status-badge <?php echo $statusClasseUnificada; ?>" title="<?php echo $statusProcessoValor === 'cancelado' ? 'Processo cancelado em Processos' : ($statusFollow === 'fechado' ? 'Fechado e integrado ao MRP em ' . h($r['integrado_em'] ?? '') : 'Fecha automaticamente ao confirmar a entrega'); ?>"><?php echo h($statusTexto); ?></span>
+                                    </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?? '—'); ?></td>
 
                                     <?php if ($emEdicao): ?>
-                                        <td colspan="10">
+                                        <td colspan="9">
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_follow">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
@@ -462,10 +529,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                     <input type="text" name="requerente_editado" class="form-control form-control-sm" value="<?php echo h($r['requerente'] ?? ''); ?>">
                                                 </div>
                                                 <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Condição</label>
-                                                    <input type="text" name="condicao_editado" class="form-control form-control-sm" value="<?php echo h($r['condicao'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
                                                     <label class="form-label small mb-0">Pickup</label>
                                                     <input type="date" name="pickup_editado" class="form-control form-control-sm" value="<?php echo h($r['pickup'] ?? ''); ?>">
                                                 </div>
@@ -491,7 +554,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 </div>
                                             </form>
                                         </td>
-                                        <td></td>
+                                        <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
                                         <td></td>
                                     <?php else: ?>
                                         <td><?php echo h($r['origem'] ?: '—'); ?></td>
@@ -503,14 +566,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         <td><?php echo dataBr($r['prevista']); ?></td>
                                         <td><?php echo dataBr($r['efetiva']); ?></td>
                                         <td><?php echo h($r['requerente'] ?: '—'); ?></td>
-                                        <td>
-                                            <?php $statusFollow = $r['status'] ?: 'aberto'; ?>
-                                            <?php if ($statusFollow === 'fechado'): ?>
-                                                <span class="status-badge status-ok" title="Fechado e integrado ao MRP em <?php echo h($r['integrado_em'] ?? ''); ?>">Fechado</span>
-                                            <?php else: ?>
-                                                <span class="status-badge status-atencao" title="Fecha automaticamente ao confirmar a entrega">Aberto</span>
-                                            <?php endif; ?>
-                                        </td>
+                                        <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
                                         <td>
                                             <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
                                         </td>
@@ -529,7 +585,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>

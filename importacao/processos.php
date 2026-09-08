@@ -79,9 +79,105 @@ function normalizarTextoProcessos(string $texto): string
     return strtr($texto, $mapa);
 }
 
+// Gera o código do processo automaticamente (só usado no cadastro manual —
+// a importação de CSV continua trazendo o processo pronto do arquivo).
+// Formato: Y + ano(2) + modal(1) + planta(1) + categoria(1) + sequencial(3)
+// Ex.: Y26A1P001 = Y, 2026, Aéreo, planta terminada em 1, Project, sequencial 001.
+// O sequencial é um contador ÚNICO GERAL (não reinicia por ano/modal/planta/categoria)
+// — pega o maior sequencial já usado em qualquer processo gerado nesse formato
+// e soma 1, então nunca colide mesmo se a combinação se repetir.
+function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string $categoria): array
+{
+    $modalMapa = [
+        'aereo' => 'A', 'aéreo' => 'A', 'air' => 'A',
+        'sea' => 'S', 'maritimo' => 'S', 'marítimo' => 'S',
+        'road' => 'R', 'rodoviario' => 'R', 'rodoviário' => 'R',
+        'courrier' => 'C', 'courier' => 'C',
+    ];
+    $modalChave = mb_strtolower(trim($modal), 'UTF-8');
+    if (!isset($modalMapa[$modalChave])) {
+        return ['codigo' => null, 'erro' => "Modal \"$modal\" não reconhecido. Use: aereo, sea/maritimo, road ou courrier."];
+    }
+    $modalLetra = $modalMapa[$modalChave];
+
+    $plantaTrim = trim($planta);
+    if ($plantaTrim === '' || !ctype_digit(substr($plantaTrim, -1))) {
+        return ['codigo' => null, 'erro' => "Planta \"$planta\" inválida — não consegui extrair o dígito final."];
+    }
+    $plantaDigito = substr($plantaTrim, -1);
+
+    $categoriaMapa = [
+        'tooling' => 'T', 'project' => 'P', 'other' => 'O',
+    ];
+    $categoriaChave = mb_strtolower(trim($categoria), 'UTF-8');
+    if (!isset($categoriaMapa[$categoriaChave])) {
+        return ['codigo' => null, 'erro' => "Categoria \"$categoria\" não reconhecida. Use: tooling, project ou other."];
+    }
+    $categoriaLetra = $categoriaMapa[$categoriaChave];
+
+    $ano = date('y'); // 2 dígitos
+
+    // Maior sequencial já usado em qualquer processo no formato
+    // Y+AA+letra+dígito+letra+NNN, sem filtrar por ano/modal/planta/categoria —
+    // é um contador único pra todos.
+    $resultado = mysqli_query($conn, "
+        SELECT MAX(CAST(RIGHT(processo, 3) AS UNSIGNED)) AS max_seq
+        FROM processos
+        WHERE processo REGEXP '^Y[0-9]{2}[A-Z][0-9][A-Z][0-9]{3}$'
+    ");
+    $maxSeq = (int) (mysqli_fetch_assoc($resultado)['max_seq'] ?? 0);
+    $proximoSeq = $maxSeq + 1;
+
+    $codigo = 'Y' . $ano . $modalLetra . $plantaDigito . $categoriaLetra . str_pad((string) $proximoSeq, 3, '0', STR_PAD_LEFT);
+    return ['codigo' => $codigo, 'erro' => null];
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
+
+// ---------- Toggle Aberto / Cancelado ----------
+// Age por "processo" (não por id de uma linha só), porque um mesmo processo
+// pode ter várias linhas (vários componentes) — cancelar o processo cancela
+// todas elas juntas, e também "alimenta" (cascata) o status em Pagamento.
+// O Follow não guarda cópia do status — ele mostra ao vivo, direto de
+// Processos, então não precisa de cascata lá.
+// Uma vez "finalizado" (via confirmar_entrega.php), o botão trava — não dá
+// pra cancelar nem reabrir um processo que já foi entregue de verdade.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_status_processo') {
+    $processoToggle = trim($_POST['processo'] ?? '');
+    if ($processoToggle === '') {
+        $mensagens[] = '❌ Processo inválido.';
+    } else {
+        $stmtAtual = mysqli_prepare($conn, "SELECT status FROM processos WHERE processo = ? LIMIT 1");
+        mysqli_stmt_bind_param($stmtAtual, 's', $processoToggle);
+        mysqli_stmt_execute($stmtAtual);
+        $statusAtual = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtual))['status'] ?? 'aberto';
+        mysqli_stmt_close($stmtAtual);
+
+        if (strtolower(trim($statusAtual)) === 'finalizado') {
+            $mensagens[] = '❌ Esse processo já foi finalizado (entrega confirmada) — não é possível cancelar nem reabrir.';
+        } else {
+            $novoStatus = strtolower(trim($statusAtual)) === 'cancelado' ? 'aberto' : 'cancelado';
+
+            $stmtUpdateProc = mysqli_prepare($conn, "UPDATE processos SET status = ? WHERE processo = ?");
+            mysqli_stmt_bind_param($stmtUpdateProc, 'ss', $novoStatus, $processoToggle);
+            mysqli_stmt_execute($stmtUpdateProc);
+            mysqli_stmt_close($stmtUpdateProc);
+
+            // Cascata pro Pagamento (guarda uma cópia do status, não é ao vivo)
+            $stmtUpdatePag = mysqli_prepare($conn, "UPDATE pagamento SET status = ? WHERE processo = ?");
+            mysqli_stmt_bind_param($stmtUpdatePag, 'ss', $novoStatus, $processoToggle);
+            mysqli_stmt_execute($stmtUpdatePag);
+            mysqli_stmt_close($stmtUpdatePag);
+
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status_alterado=1');
+            exit;
+        }
+    }
+}
 
 // ---------- Importação de CSV ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
@@ -99,7 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
             $separador = substr_count($primeiraLinha, ';') >= substr_count($primeiraLinha, ',') ? ';' : ',';
             rewind($handle);
 
-            $cabecalhoOriginal = fgetcsv($handle, 0, $separador);
+            $cabecalhoOriginal = fgetcsv($handle, 0, $separador, '"', '\\');
             if ($cabecalhoOriginal === false) {
                 $mensagens[] = '❌ Não consegui ler o cabeçalho do arquivo.';
             } else {
@@ -162,7 +258,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $lote = [];
                     };
 
-                    while (($linha = fgetcsv($handle, 0, $separador)) !== false) {
+                    while (($linha = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
                         if (count(array_filter($linha, fn($v) => trim((string) $v) !== '')) === 0) {
                             continue;
                         }
@@ -219,28 +315,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
 // ---------- Cadastro manual ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual') {
-    $processo = trim($_POST['processo_manual'] ?? '');
-    if ($processo === '') {
-        $mensagens[] = '❌ Informe o número do processo.';
+    // O processo nunca é digitado no cadastro manual — é sempre gerado, e só
+    // depois que os 4 campos que compõem o código estiverem preenchidos
+    // (Categoria, Planta, Solicitação, Modal). Fornecedor NÃO entra no código
+    // e não é mais obrigatório.
+    $categoria = trim($_POST['categoria_manual'] ?? '') ?: null;
+    $planta = trim($_POST['planta_manual'] ?? '') ?: null;
+    $solicitacaoTexto = trim($_POST['solicitacao_manual'] ?? '');
+    $modal = trim($_POST['modal_manual'] ?? '') ?: null;
+    $fornecedor = trim($_POST['fornecedor_manual'] ?? '') ?: null;
+
+    $faltando = [];
+    if ($categoria === null) { $faltando[] = 'Categoria'; }
+    if ($planta === null) { $faltando[] = 'Planta'; }
+    if ($solicitacaoTexto === '') { $faltando[] = 'Solicitação'; }
+    if ($modal === null) { $faltando[] = 'Modal'; }
+
+    if (!empty($faltando)) {
+        $mensagens[] = '❌ Preencha os campos obrigatórios antes de salvar: ' . implode(', ', $faltando) . '.';
     } else {
+        $geracao = gerarCodigoProcesso($conn, $modal, $planta, $categoria);
+        if ($geracao['codigo'] === null) {
+            $mensagens[] = '❌ ' . $geracao['erro'];
+        } else {
+        $processo = $geracao['codigo'];
         $stmt = mysqli_prepare($conn, "
             INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
-        $solicitacao = parseDataProcessos(trim($_POST['solicitacao_manual'] ?? ''));
-        $categoria = trim($_POST['categoria_manual'] ?? '') ?: null;
-        $planta = trim($_POST['planta_manual'] ?? '') ?: null;
+        $solicitacao = parseDataProcessos($solicitacaoTexto);
         $po = trim($_POST['po_manual'] ?? '') ?: null;
-        $modal = trim($_POST['modal_manual'] ?? '') ?: null;
         $codigoComponente = trim($_POST['codigo_componente_manual'] ?? '') ?: null;
         $descricao = trim($_POST['descricao_manual'] ?? '') ?: null;
         $quantidade = parseNumeroBrProcessos(trim($_POST['quantidade_manual'] ?? ''));
         $hscode = trim($_POST['hscode_manual'] ?? '') ?: null;
         $ncm = trim($_POST['ncm_manual'] ?? '') ?: null;
-        $fornecedor = trim($_POST['fornecedor_manual'] ?? '') ?: null;
         $preco = parseNumeroBrProcessos(trim($_POST['preco_manual'] ?? ''));
-        $total = parseNumeroBrProcessos(trim($_POST['total_manual'] ?? ''));
+        // Total nunca é digitado — sempre calculado: quantidade × preço.
+        $total = ($quantidade !== null && $preco !== null) ? $quantidade * $preco : null;
         $moeda = trim($_POST['moeda_manual'] ?? '') ?: null;
         $tipo = trim($_POST['tipo_manual'] ?? '') ?: null;
         $ffw = trim($_POST['ffw_manual'] ?? '') ?: null;
@@ -250,16 +363,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         // codigo_componente(s) descricao(s) quantidade(d) hscode(s) ncm(s) fornecedor(s)
         // preco(d) total(d) moeda(s) tipo(s) ffw(s) obs(s)
         mysqli_stmt_bind_param(
-            $stmt, 'sssssssssdsssddsss',
+            $stmt, 'sssssssssdsssddssss',
             $processo, $status, $solicitacao, $categoria, $planta, $po, $modal, $codigoComponente,
             $descricao, $quantidade, $hscode, $ncm, $fornecedor, $preco, $total, $moeda, $tipo, $ffw, $obs
         );
         if (mysqli_stmt_execute($stmt)) {
-            $mensagens[] = "✅ Processo \"$processo\" cadastrado.";
+            $mensagens[] = "✅ Processo \"$processo\" cadastrado (código gerado automaticamente).";
         } else {
             $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
         }
         mysqli_stmt_close($stmt);
+        }
     }
 }
 
@@ -290,7 +404,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         $ncmEd = trim($_POST['ncm_editado'] ?? '') ?: null;
         $fornecedorEd = trim($_POST['fornecedor_editado'] ?? '') ?: null;
         $precoEd = parseNumeroBrProcessos(trim($_POST['preco_editado'] ?? ''));
-        $totalEd = parseNumeroBrProcessos(trim($_POST['total_editado'] ?? ''));
+        // Total nunca é digitado — sempre calculado: quantidade × preço.
+        $totalEd = ($quantidadeEd !== null && $precoEd !== null) ? $quantidadeEd * $precoEd : null;
         $moedaEd = trim($_POST['moeda_editado'] ?? '') ?: null;
         $tipoEd = trim($_POST['tipo_editado'] ?? '') ?: null;
         $ffwEd = trim($_POST['ffw_editado'] ?? '') ?: null;
@@ -321,17 +436,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
 // ---------- Exportação CSV ----------
 if (isset($_GET['exportar'])) {
     $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-    $where = '';
-    $params = [];
+    $filtroPlantaExp = trim($_GET['planta'] ?? '');
+    $filtroComponenteExp = trim($_GET['componente'] ?? '');
+    $filtroCategoriaExp = trim($_GET['categoria'] ?? '');
+    $filtroFornecedorExp = trim($_GET['fornecedor'] ?? '');
+
+    $condicoesExp = [];
+    $paramsExp = [];
+    $tiposExp = '';
     if ($busca !== '') {
-        $where = "WHERE processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ?";
+        $condicoesExp[] = "(processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ? OR descricao LIKE ?)";
         $like = '%' . $busca . '%';
-        $params = [$like, $like, $like];
+        $paramsExp[] = $like; $paramsExp[] = $like; $paramsExp[] = $like; $paramsExp[] = $like;
+        $tiposExp .= 'ssss';
     }
+    if ($filtroPlantaExp !== '') {
+        $condicoesExp[] = "planta = ?";
+        $paramsExp[] = $filtroPlantaExp;
+        $tiposExp .= 's';
+    }
+    if ($filtroComponenteExp !== '') {
+        $condicoesExp[] = "codigo_componente LIKE ?";
+        $paramsExp[] = '%' . $filtroComponenteExp . '%';
+        $tiposExp .= 's';
+    }
+    if ($filtroCategoriaExp !== '') {
+        $condicoesExp[] = "categoria = ?";
+        $paramsExp[] = $filtroCategoriaExp;
+        $tiposExp .= 's';
+    }
+    if ($filtroFornecedorExp !== '') {
+        $condicoesExp[] = "fornecedor = ?";
+        $paramsExp[] = $filtroFornecedorExp;
+        $tiposExp .= 's';
+    }
+    $where = !empty($condicoesExp) ? ('WHERE ' . implode(' AND ', $condicoesExp)) : '';
+
     $sqlExport = "SELECT * FROM processos $where ORDER BY criado_em DESC";
-    if (!empty($params)) {
+    if (!empty($paramsExp)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
-        mysqli_stmt_bind_param($stmtExport, 'sss', ...$params);
+        mysqli_stmt_bind_param($stmtExport, $tiposExp, ...$paramsExp);
         mysqli_stmt_execute($stmtExport);
         $resultExport = mysqli_stmt_get_result($stmtExport);
     } else {
@@ -363,17 +507,59 @@ $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int) $_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$filtroPlanta = trim($_GET['planta'] ?? '');
+$filtroComponente = trim($_GET['componente'] ?? '');
+$filtroCategoria = trim($_GET['categoria'] ?? '');
+$filtroFornecedor = trim($_GET['fornecedor'] ?? '');
 $editandoId = (int) ($_GET['editar'] ?? 0);
 
-$where = '';
+// Listas pros filtros em dropdown (só valores que já existem de verdade na base)
+$plantasDisponiveis = [];
+$res = mysqli_query($conn, "SELECT DISTINCT planta FROM processos WHERE planta IS NOT NULL AND TRIM(planta) <> '' ORDER BY planta");
+while ($linha = mysqli_fetch_assoc($res)) { $plantasDisponiveis[] = $linha['planta']; }
+
+$categoriasDisponiveis = [];
+$res = mysqli_query($conn, "SELECT DISTINCT categoria FROM processos WHERE categoria IS NOT NULL AND TRIM(categoria) <> '' ORDER BY categoria");
+while ($linha = mysqli_fetch_assoc($res)) { $categoriasDisponiveis[] = $linha['categoria']; }
+
+$fornecedoresDisponiveis = [];
+$res = mysqli_query($conn, "SELECT DISTINCT fornecedor FROM processos WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
+while ($linha = mysqli_fetch_assoc($res)) { $fornecedoresDisponiveis[] = $linha['fornecedor']; }
+
+$condicoes = [];
 $params = [];
 $tipos = '';
 if ($busca !== '') {
-    $where = "WHERE processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ? OR descricao LIKE ?";
+    $condicoes[] = "(processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ? OR descricao LIKE ?)";
     $like = '%' . $busca . '%';
-    $params = [$like, $like, $like, $like];
-    $tipos = 'ssss';
+    $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
+    $tipos .= 'ssss';
 }
+// Os 4 filtros abaixo são independentes entre si e da busca livre — combinam
+// com AND (cada um restringe mais o resultado), diferente da busca livre
+// (que usa OR entre as colunas pra achar qualquer correspondência).
+if ($filtroPlanta !== '') {
+    $condicoes[] = "planta = ?";
+    $params[] = $filtroPlanta;
+    $tipos .= 's';
+}
+if ($filtroComponente !== '') {
+    $condicoes[] = "codigo_componente LIKE ?";
+    $params[] = '%' . $filtroComponente . '%';
+    $tipos .= 's';
+}
+if ($filtroCategoria !== '') {
+    $condicoes[] = "categoria = ?";
+    $params[] = $filtroCategoria;
+    $tipos .= 's';
+}
+if ($filtroFornecedor !== '') {
+    $condicoes[] = "fornecedor = ?";
+    $params[] = $filtroFornecedor;
+    $tipos .= 's';
+}
+
+$where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 
 $stmtTotal = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos $where");
 if (!empty($params)) { mysqli_stmt_bind_param($stmtTotal, $tipos, ...$params); }
@@ -441,6 +627,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             <div class="alert alert-success">✅ Registro atualizado com sucesso.</div>
         <?php endif; ?>
 
+        <?php if (isset($_GET['status_alterado'])): ?>
+            <div class="alert alert-success">✅ Status do processo atualizado.</div>
+        <?php endif; ?>
+
         <?php if (!empty($mensagens)): ?>
             <div class="alert alert-info">
                 <?php foreach ($mensagens as $msg): ?>
@@ -481,28 +671,28 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <form method="POST" class="row g-3 mt-3">
                     <input type="hidden" name="acao" value="cadastro_manual">
                     <div class="col-md-2">
-                        <label class="form-label">Processo *</label>
-                        <input type="text" name="processo_manual" class="form-control" required>
+                        <label class="form-label">Processo <small class="text-muted">(gerado ao salvar)</small></label>
+                        <input type="text" class="form-control" value="Será gerado automaticamente" disabled>
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Solicitação</label>
-                        <input type="text" name="solicitacao_manual" class="form-control" placeholder="dd/mm/aaaa">
+                        <label class="form-label">Solicitação *</label>
+                        <input type="date" name="solicitacao_manual" class="form-control" required>
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Categoria</label>
-                        <input type="text" name="categoria_manual" class="form-control">
+                        <label class="form-label">Categoria *</label>
+                        <input type="text" name="categoria_manual" class="form-control" placeholder="tooling / project / other" required>
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Planta</label>
-                        <input type="text" name="planta_manual" class="form-control">
+                        <label class="form-label">Planta *</label>
+                        <input type="text" name="planta_manual" class="form-control" required>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">PO</label>
                         <input type="text" name="po_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Modal</label>
-                        <input type="text" name="modal_manual" class="form-control" placeholder="aereo / maritimo">
+                        <label class="form-label">Modal *</label>
+                        <input type="text" name="modal_manual" class="form-control" placeholder="aereo / sea / road / courrier" required>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Componente</label>
@@ -514,7 +704,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Quantidade</label>
-                        <input type="text" name="quantidade_manual" class="form-control">
+                        <input type="text" name="quantidade_manual" id="quantidade_manual" class="form-control" oninput="calcularTotalProcesso()">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">HS Code</label>
@@ -530,11 +720,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Preço</label>
-                        <input type="text" name="preco_manual" class="form-control">
+                        <input type="text" name="preco_manual" id="preco_manual" class="form-control" oninput="calcularTotalProcesso()">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Total</label>
-                        <input type="text" name="total_manual" class="form-control">
+                        <label class="form-label">Total <small class="text-muted">(qtd × preço)</small></label>
+                        <input type="text" id="total_manual_display" class="form-control" readonly placeholder="—">
+                        <input type="hidden" name="total_manual" id="total_manual">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Moeda</label>
@@ -561,15 +752,49 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
 
         <section class="filter-panel mb-4">
             <form method="GET" class="row g-3 align-items-end">
-                <div class="col-md-8">
+                <div class="col-md-4">
                     <label class="form-label">Buscar por processo, componente, fornecedor ou descrição</label>
                     <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Planta</label>
+                    <select name="planta" class="form-select">
+                        <option value="">Todas</option>
+                        <?php foreach ($plantasDisponiveis as $pl): ?>
+                            <option value="<?php echo h($pl); ?>" <?php echo $filtroPlanta === $pl ? 'selected' : ''; ?>><?php echo h($pl); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Componente</label>
+                    <input type="text" name="componente" class="form-control" value="<?php echo h($filtroComponente); ?>" placeholder="Ex.: 11001199">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Categoria</label>
+                    <select name="categoria" class="form-select">
+                        <option value="">Todas</option>
+                        <?php foreach ($categoriasDisponiveis as $cat): ?>
+                            <option value="<?php echo h($cat); ?>" <?php echo $filtroCategoria === $cat ? 'selected' : ''; ?>><?php echo h($cat); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Fornecedor</label>
+                    <select name="fornecedor" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach ($fornecedoresDisponiveis as $forn): ?>
+                            <option value="<?php echo h($forn); ?>" <?php echo $filtroFornecedor === $forn ? 'selected' : ''; ?>><?php echo h($forn); ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <div class="col-md-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
                 </div>
                 <div class="col-md-2">
-                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
+                    <a href="processos.php" class="btn btn-outline-secondary w-100">Limpar filtros</a>
+                </div>
+                <div class="col-md-2">
+                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
                 </div>
             </form>
         </section>
@@ -614,15 +839,27 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
-                                    $statusFinalizado = strtolower(trim((string) ($r['status'] ?? ''))) === 'finalizado';
+                                    $statusAtualRow = strtolower(trim((string) ($r['status'] ?? '')));
+                                    $statusFinalizado = $statusAtualRow === 'finalizado';
+                                    $statusCancelado = $statusAtualRow === 'cancelado';
                                     $emEdicao = $editandoId === (int) $r['id'];
                                     $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
                                 ?>
                                 <tr>
                                     <td>
-                                        <span class="status-badge <?php echo $statusFinalizado ? 'status-ok' : 'status-atencao'; ?>">
-                                            <?php echo $statusFinalizado ? 'Finalizado' : 'Aberto'; ?>
-                                        </span>
+                                        <?php if ($statusFinalizado): ?>
+                                            <span class="status-badge status-ok" title="Finalizado (entrega confirmada) — não pode mais mudar">Finalizado</span>
+                                        <?php else: ?>
+                                            <form method="POST" class="d-inline m-0">
+                                                <input type="hidden" name="acao" value="toggle_status_processo">
+                                                <input type="hidden" name="processo" value="<?php echo h($r['processo']); ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <button type="submit" class="status-badge border-0 <?php echo $statusCancelado ? 'status-critico' : 'status-atencao'; ?>" style="cursor:pointer;" title="Clique pra alternar entre Aberto e Cancelado">
+                                                    <?php echo $statusCancelado ? 'Cancelado' : 'Aberto'; ?>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
                                     </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
 
@@ -635,7 +872,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Solicitação</label>
-                                                    <input type="text" name="solicitacao_editado" class="form-control form-control-sm" value="<?php echo h($r['solicitacao'] ? dataBr($r['solicitacao']) : ''); ?>" placeholder="dd/mm/aaaa">
+                                                    <input type="date" name="solicitacao_editado" class="form-control form-control-sm" value="<?php echo h($r['solicitacao'] ?? ''); ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Categoria</label>
@@ -663,7 +900,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 </div>
                                                 <div class="col-md-1">
                                                     <label class="form-label small mb-0">Quantidade</label>
-                                                    <input type="text" name="quantidade_editado" class="form-control form-control-sm" value="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>">
+                                                    <input type="text" name="quantidade_editado" id="quantidade_editado" class="form-control form-control-sm" value="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>" oninput="calcularTotalProcessoEdicao()">
                                                 </div>
                                                 <div class="col-md-1">
                                                     <label class="form-label small mb-0">HS Code</label>
@@ -679,11 +916,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 </div>
                                                 <div class="col-md-1">
                                                     <label class="form-label small mb-0">Preço</label>
-                                                    <input type="text" name="preco_editado" class="form-control form-control-sm" value="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>">
+                                                    <input type="text" name="preco_editado" id="preco_editado" class="form-control form-control-sm" value="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>" oninput="calcularTotalProcessoEdicao()">
                                                 </div>
                                                 <div class="col-md-1">
-                                                    <label class="form-label small mb-0">Total</label>
-                                                    <input type="text" name="total_editado" class="form-control form-control-sm" value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
+                                                    <label class="form-label small mb-0">Total <small class="text-muted">(qtd×preço)</small></label>
+                                                    <input type="text" id="total_editado_display" class="form-control form-control-sm" readonly value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
+                                                    <input type="hidden" name="total_editado" id="total_editado" value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-1">
                                                     <label class="form-label small mb-0">Moeda</label>
@@ -755,5 +993,40 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
 
         <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
+    <script>
+        // Converte texto em formato BR ("1.234,56") ou número puro em float JS.
+        function parseNumeroBrProcJs(texto) {
+            if (!texto) return 0;
+            texto = String(texto).trim();
+            if (texto.includes(',')) {
+                texto = texto.replace(/\./g, '').replace(',', '.');
+            }
+            const n = parseFloat(texto);
+            return isNaN(n) ? 0 : n;
+        }
+
+        // Total = Quantidade × Preço. Nunca digitado — sempre recalculado.
+        function calcularTotalProcesso() {
+            const quantidade = parseNumeroBrProcJs(document.getElementById('quantidade_manual').value);
+            const preco = parseNumeroBrProcJs(document.getElementById('preco_manual').value);
+            const total = quantidade * preco;
+            const textoTotal = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('total_manual_display').value = textoTotal;
+            document.getElementById('total_manual').value = textoTotal;
+        }
+
+        // Mesmo cálculo, só que pro formulário de edição inline (ids próprios).
+        function calcularTotalProcessoEdicao() {
+            const qtdEl = document.getElementById('quantidade_editado');
+            const precoEl = document.getElementById('preco_editado');
+            if (!qtdEl || !precoEl) return;
+            const quantidade = parseNumeroBrProcJs(qtdEl.value);
+            const preco = parseNumeroBrProcJs(precoEl.value);
+            const total = quantidade * preco;
+            const textoTotal = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('total_editado_display').value = textoTotal;
+            document.getElementById('total_editado').value = textoTotal;
+        }
+    </script>
 </body>
 </html>
