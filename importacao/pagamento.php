@@ -481,7 +481,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Numerário inicial</label>
-                        <input type="date" name="numerario_inicial_manual" class="form-control">
+                        <input type="text" name="numerario_inicial_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Valor inicial</label>
@@ -489,7 +489,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Numerário final</label>
-                        <input type="date" name="numerario_final_manual" class="form-control">
+                        <input type="text" name="numerario_final_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Valor final</label>
@@ -544,7 +544,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
-                            <th>Status Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
                             <th>Moeda</th>
@@ -567,7 +566,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="21" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="20" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -593,7 +592,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                 <tr>
                                     <td><span class="status-badge <?php echo $statusClasse; ?>" title="OR: <?php echo h($orValor); ?> · NA: <?php echo h($naValor); ?>"><?php echo ucfirst($statusCalc); ?></span></td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
-                                    <td><?php echo h($r['status'] ?: '—'); ?></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
                                     <td><?php echo h($r['moeda'] ?: '—'); ?></td>
@@ -620,7 +618,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Numerário inicial</label>
-                                                    <input type="date" name="numerario_inicial_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_inicial'] ?? ''); ?>">
+                                                    <input type="text" name="numerario_inicial_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Valor inicial</label>
@@ -628,7 +626,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Numerário final</label>
-                                                    <input type="date" name="numerario_final_editado" class="form-control form-control-sm" value="<?php echo h($r['numerario_final'] ?? ''); ?>">
+                                                    <input type="text" name="numerario_final_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['numerario_final'] ? h(dataBr($r['numerario_final'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Valor final</label>

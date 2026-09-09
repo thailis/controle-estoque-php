@@ -113,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     } else {
         // Busca o processo ligado a esse follow, e dele puxa componente + quantidade
         $stmt = mysqli_prepare($conn, "
-            SELECT f.id, f.processo, f.integrado_mrp, p.codigo_componente, p.descricao, p.quantidade, p.planta, p.status AS status_processo
+            SELECT f.id, f.processo, f.integrado_mrp, p.codigo_componente, p.descricao, p.quantidade, p.planta, p.status AS status_processo, p.controla_estoque
             FROM follow f
             JOIN processos p ON p.processo = f.processo
             WHERE f.id = ?
@@ -131,6 +131,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
             // Trava no servidor — mesmo que alguém envie o follow_id direto (sem passar
             // pela lista, que já filtra isso), a confirmação é bloqueada aqui também.
             $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega nem alimentar o estoque do MRP.";
+        } elseif (strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) === 'nao') {
+            // Mesma lógica: item marcado como "não controla estoque" (tooling,
+            // amostra) em Processos — nunca deveria chegar aqui, mas trava de
+            // qualquer forma se alguém enviar o follow_id direto.
+            $erro = "❌ O item do processo \"{$linha['processo']}\" está marcado como \"não controla estoque\" — não alimenta o MRP.";
         } else {
             try {
                 $connMrp = conectarMrp();
@@ -200,8 +205,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
 }
 
 // Lista embarques ainda não integrados, pra tela de confirmação — processos
-// cancelados NUNCA aparecem aqui (mas continuam com o follow salvo, só não
-// entram na fila de integração).
+// cancelados, e itens marcados "não controla estoque" (tooling, amostra),
+// NUNCA aparecem aqui (mas continuam com o follow salvo, só não entram na
+// fila de integração).
 $pendentes = [];
 $resultPendentes = mysqli_query($conn, "
     SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor
@@ -209,6 +215,7 @@ $resultPendentes = mysqli_query($conn, "
     LEFT JOIN processos p ON p.processo = f.processo
     WHERE f.integrado_mrp = 0
       AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
+      AND (p.controla_estoque IS NULL OR LOWER(TRIM(p.controla_estoque)) <> 'nao')
     ORDER BY f.efetiva IS NULL, f.efetiva ASC
 ");
 while ($linha = mysqli_fetch_assoc($resultPendentes)) {

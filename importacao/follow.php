@@ -370,11 +370,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Pickup</label>
-                        <input type="date" name="pickup_manual" class="form-control">
+                        <input type="text" name="pickup_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">ETD</label>
-                        <input type="date" name="etd_manual" id="etd_manual" class="form-control" onchange="calcularDatasFollow()">
+                        <input type="text" name="etd_manual" id="etd_manual" class="form-control" placeholder="dd/mm/aaaa" oninput="calcularDatasFollow()">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">ETA <small class="text-muted">(ETD + transit)</small></label>
@@ -388,7 +388,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Efetiva <small class="text-muted">(só quando chegar)</small></label>
-                        <input type="date" name="efetiva_manual" class="form-control">
+                        <input type="text" name="efetiva_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
 
                     <div class="col-md-2">
@@ -530,23 +530,23 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Pickup</label>
-                                                    <input type="date" name="pickup_editado" class="form-control form-control-sm" value="<?php echo h($r['pickup'] ?? ''); ?>">
+                                                    <input type="text" name="pickup_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['pickup'] ? h(dataBr($r['pickup'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">ETD</label>
-                                                    <input type="date" name="etd_editado" class="form-control form-control-sm" value="<?php echo h($r['etd'] ?? ''); ?>">
+                                                    <input type="text" name="etd_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">ETA</label>
-                                                    <input type="date" name="eta_editado" class="form-control form-control-sm" value="<?php echo h($r['eta'] ?? ''); ?>">
+                                                    <input type="text" name="eta_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['eta'] ? h(dataBr($r['eta'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Prevista</label>
-                                                    <input type="date" name="prevista_editado" class="form-control form-control-sm" value="<?php echo h($r['prevista'] ?? ''); ?>">
+                                                    <input type="text" name="prevista_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['prevista'] ? h(dataBr($r['prevista'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Efetiva</label>
-                                                    <input type="date" name="efetiva_editado" class="form-control form-control-sm" value="<?php echo h($r['efetiva'] ?? ''); ?>">
+                                                    <input type="text" name="efetiva_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-12 d-flex gap-2 mt-1">
                                                     <button type="submit" class="btn btn-success btn-sm">Salvar</button>
@@ -611,10 +611,23 @@ while ($row = mysqli_fetch_assoc($result)) {
             return `${d}/${m}/${y}`;
         }
 
+        // Converte texto "dd/mm/aaaa" num objeto Date. Devolve null se não
+        // reconhecer o formato (campo vazio, incompleto, ou ainda sendo digitado).
+        function parseDataBrJs(texto) {
+            const partes = String(texto || '').trim().split('/');
+            if (partes.length !== 3) return null;
+            const [d, m, a] = partes.map(p => parseInt(p, 10));
+            if (!d || !m || !a || String(a).length !== 4) return null;
+            const data = new Date(a, m - 1, d);
+            // Confere que a data existe de verdade (ex.: rejeita 31/02/2026)
+            if (data.getFullYear() !== a || data.getMonth() !== m - 1 || data.getDate() !== d) return null;
+            return data;
+        }
+
         // ETA = ETD + Transit (dias). Prevista = ETA + 7 dias. Os dois são
         // sempre calculados — nunca digitados diretamente pelo usuário.
         function calcularDatasFollow() {
-            const etdValor = document.getElementById('etd_manual').value; // aaaa-mm-dd
+            const etdTexto = document.getElementById('etd_manual').value; // dd/mm/aaaa
             const transitValor = parseInt(document.getElementById('transit_dias_manual').value, 10) || 0;
 
             const campoEtaOculto = document.getElementById('eta_manual');
@@ -622,15 +635,14 @@ while ($row = mysqli_fetch_assoc($result)) {
             const campoPrevistaOculto = document.getElementById('prevista_manual');
             const campoPrevistaVisivel = document.getElementById('prevista_manual_display');
 
-            if (!etdValor) {
+            const etdData = parseDataBrJs(etdTexto);
+            if (!etdData) {
                 campoEtaOculto.value = '';
                 campoEtaVisivel.value = '';
                 campoPrevistaOculto.value = '';
                 campoPrevistaVisivel.value = '';
                 return;
             }
-
-            const etdData = new Date(etdValor + 'T00:00:00');
 
             const etaData = new Date(etdData);
             etaData.setDate(etaData.getDate() + transitValor);

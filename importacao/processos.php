@@ -179,6 +179,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     }
 }
 
+// ---------- Toggle Controla Estoque (Sim / Não) ----------
+// Diferente do toggle de Status acima, esse age por LINHA específica (id),
+// não pelo processo inteiro — porque um mesmo processo pode ter itens que
+// controlam estoque (entram na fila do Confirmar Entrega) e itens que não
+// controlam (tooling, amostra), misturados.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_controla_estoque') {
+    $idToggle = (int) ($_POST['id'] ?? 0);
+    if ($idToggle <= 0) {
+        $mensagens[] = '❌ Registro inválido.';
+    } else {
+        $stmtAtualCE = mysqli_prepare($conn, "SELECT controla_estoque, status FROM processos WHERE id = ?");
+        mysqli_stmt_bind_param($stmtAtualCE, 'i', $idToggle);
+        mysqli_stmt_execute($stmtAtualCE);
+        $linhaAtualCE = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtualCE));
+        mysqli_stmt_close($stmtAtualCE);
+
+        if (!$linhaAtualCE) {
+            $mensagens[] = '❌ Registro não encontrado.';
+        } elseif (strtolower(trim((string) $linhaAtualCE['status'])) === 'finalizado') {
+            $mensagens[] = '❌ Esse item já foi finalizado (entrega confirmada) — não é possível mudar o controle de estoque agora.';
+        } else {
+            $novoControla = strtolower(trim((string) $linhaAtualCE['controla_estoque'])) === 'sim' ? 'nao' : 'sim';
+            $stmtToggleCE = mysqli_prepare($conn, "UPDATE processos SET controla_estoque = ? WHERE id = ?");
+            mysqli_stmt_bind_param($stmtToggleCE, 'si', $novoControla, $idToggle);
+            mysqli_stmt_execute($stmtToggleCE);
+            mysqli_stmt_close($stmtToggleCE);
+
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&controla_alterado=1');
+            exit;
+        }
+    }
+}
+
 // ---------- Importação de CSV ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
@@ -220,6 +255,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'tipo' => ['tipo'],
                     'ffw' => ['ffw'],
                     'obs' => ['obs', 'observacao', 'observacoes'],
+                    'controla_estoque' => ['controla_estoque', 'controla estoque', 'estoque'],
                 ];
 
                 $indices = [];
@@ -237,7 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $lote = [];
                     $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
                         if (empty($lote)) return;
-                        $campos = ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs'];
+                        $campos = ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs', 'controla_estoque'];
                         $linhasSql = [];
                         $todosValores = [];
                         foreach ($lote as $linhaLote) {
@@ -272,6 +308,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $total = parseNumeroBrProcessos($get('total'));
                         $solicitacao = parseDataProcessos($get('solicitacao'));
 
+                        // Aceita variações comuns no CSV (sim/não, s/n, yes/no, 1/0).
+                        // Sem a coluna no arquivo, ou com valor não reconhecido, assume
+                        // "sim" — a maioria dos itens de importação são de estoque normal.
+                        $controlaEstoqueTexto = mb_strtolower($get('controla_estoque'), 'UTF-8');
+                        $controlaEstoque = in_array($controlaEstoqueTexto, ['nao', 'não', 'n', 'no', '0'], true) ? 'nao' : 'sim';
+
                         $lote[] = [
                             $processo,
                             'aberto', // status nunca vem do CSV — só o confirmar_entrega.php fecha ele
@@ -292,6 +334,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             $get('tipo') ?: null,
                             $get('ffw') ?: null,
                             $get('obs') ?: null,
+                            $controlaEstoque,
                         ];
 
                         if (count($lote) >= 200) {
@@ -340,8 +383,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         } else {
         $processo = $geracao['codigo'];
         $stmt = mysqli_prepare($conn, "
-            INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs, controla_estoque)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
         $solicitacao = parseDataProcessos($solicitacaoTexto);
@@ -358,14 +401,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $tipo = trim($_POST['tipo_manual'] ?? '') ?: null;
         $ffw = trim($_POST['ffw_manual'] ?? '') ?: null;
         $obs = trim($_POST['obs_manual'] ?? '') ?: null;
+        // Checkbox desmarcado não vem no POST — ausência = "nao". Padrão do
+        // formulário é vir marcado (checked), então o normal é chegar "sim".
+        $controlaEstoqueManual = isset($_POST['controla_estoque_manual']) ? 'sim' : 'nao';
 
         // Tipos: processo(s) status(s) solicitacao(s) categoria(s) planta(s) po(s) modal(s)
         // codigo_componente(s) descricao(s) quantidade(d) hscode(s) ncm(s) fornecedor(s)
-        // preco(d) total(d) moeda(s) tipo(s) ffw(s) obs(s)
+        // preco(d) total(d) moeda(s) tipo(s) ffw(s) obs(s) controla_estoque(s)
         mysqli_stmt_bind_param(
-            $stmt, 'sssssssssdsssddssss',
+            $stmt, 'sssssssssdsssddsssss',
             $processo, $status, $solicitacao, $categoria, $planta, $po, $modal, $codigoComponente,
-            $descricao, $quantidade, $hscode, $ncm, $fornecedor, $preco, $total, $moeda, $tipo, $ffw, $obs
+            $descricao, $quantidade, $hscode, $ncm, $fornecedor, $preco, $total, $moeda, $tipo, $ffw, $obs,
+            $controlaEstoqueManual
         );
         if (mysqli_stmt_execute($stmt)) {
             $mensagens[] = "✅ Processo \"$processo\" cadastrado (código gerado automaticamente).";
@@ -676,7 +723,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Solicitação *</label>
-                        <input type="date" name="solicitacao_manual" class="form-control" required>
+                        <input type="text" name="solicitacao_manual" class="form-control" placeholder="dd/mm/aaaa" required>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Categoria *</label>
@@ -742,6 +789,13 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <div class="col-md-12">
                         <label class="form-label">Observações</label>
                         <input type="text" name="obs_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check mt-4">
+                            <input type="checkbox" name="controla_estoque_manual" id="controla_estoque_manual" class="form-check-input" checked>
+                            <label class="form-check-label" for="controla_estoque_manual">Controla estoque (entra no Confirmar Entrega)</label>
+                        </div>
+                        <small class="text-muted">Desmarque pra tooling, amostra e itens que não devem alimentar o estoque do MRP.</small>
                     </div>
                     <div class="col-md-2">
                         <button type="submit" class="btn btn-primary w-100">Salvar</button>
@@ -812,6 +866,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <thead>
                         <tr>
                             <th>Status</th>
+                            <th>Estoque</th>
                             <th>Processo</th>
                             <th>Solicitação</th>
                             <th>Categoria</th>
@@ -835,13 +890,14 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="20" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="21" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
                                     $statusAtualRow = strtolower(trim((string) ($r['status'] ?? '')));
                                     $statusFinalizado = $statusAtualRow === 'finalizado';
                                     $statusCancelado = $statusAtualRow === 'cancelado';
+                                    $controlaEstoqueRow = strtolower(trim((string) ($r['controla_estoque'] ?? 'sim'))) === 'sim';
                                     $emEdicao = $editandoId === (int) $r['id'];
                                     $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
                                 ?>
@@ -861,6 +917,23 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                             </form>
                                         <?php endif; ?>
                                     </td>
+                                    <td>
+                                        <?php if ($statusFinalizado): ?>
+                                            <span class="status-badge <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" title="Finalizado — não é possível mudar">
+                                                <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
+                                            </span>
+                                        <?php else: ?>
+                                            <form method="POST" class="d-inline m-0">
+                                                <input type="hidden" name="acao" value="toggle_controla_estoque">
+                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <button type="submit" class="status-badge border-0 <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" style="cursor:pointer;" title="Clique pra alternar — 'Não' significa que esse item não entra no Confirmar Entrega (ex.: tooling, amostra)">
+                                                    <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
 
                                     <?php if ($emEdicao): ?>
@@ -872,7 +945,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Solicitação</label>
-                                                    <input type="date" name="solicitacao_editado" class="form-control form-control-sm" value="<?php echo h($r['solicitacao'] ?? ''); ?>">
+                                                    <input type="text" name="solicitacao_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['solicitacao'] ? h(dataBr($r['solicitacao'])) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Categoria</label>
