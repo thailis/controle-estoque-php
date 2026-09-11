@@ -357,7 +357,7 @@ try {
             // da parcela (ex.: 2/5) reflete a posição dela no total do horizonte de 12
             // meses, mesmo que só uma parte apareça filtrada na tela.
             foreach ($parcelas as $indice => $p) {
-                if ($p['status'] !== 'urgente' && $p['data'] > $fimJanela) {
+                if ($p['status'] !== 'urgente' && $p['data_necessidade'] > $fimJanela) {
                     continue;
                 }
 
@@ -368,7 +368,12 @@ try {
                     'projetos' => $comp['projetos'],
                     'estoque_atual' => (float) $comp['estoque_atual'],
                     'status' => $p['status'],
-                    'data' => $p['data'],
+                    // Mostra a DATA DE NECESSIDADE (quando o saldo ficaria negativo/abaixo
+                    // do estoque de segurança), não mais a data sugerida de compra (que é
+                    // a necessidade menos lead time + transit time). Quem quiser saber
+                    // quando fazer o pedido, já vê o Lead Time/Transit Time em Parâmetros
+                    // de Compra e pode subtrair — aqui o foco passa a ser "quando falta".
+                    'data' => $p['data_necessidade'],
                     'quantidade' => $p['quantidade'],
                     'quantidade_base' => $p['quantidade_base'],
                     'setup' => $p['setup'],
