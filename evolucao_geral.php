@@ -362,10 +362,17 @@ try {
             background: #f5f8fb;
             z-index: 2;
         }
-        .evolucao-table thead tr:nth-child(1) th { top: 0; height: 16px; padding: 3px 9px; font-size: .68rem; font-weight: 600; color: #536578; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
-        .evolucao-table thead tr:nth-child(2) th { top: 24px; height: 16px; padding: 3px 9px; font-size: .72rem; font-weight: 700; white-space: nowrap; }
-        .evolucao-table thead tr:nth-child(3) th { top: 48px; }
-        .evolucao-table thead tr:nth-child(4) th { top: 81px; }
+        .evolucao-table thead tr:nth-child(1) th {
+            top: 0; height: 20px; line-height: 20px; padding: 0 8px;
+            font-size: .68rem; font-weight: 600; color: #536578;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
+        }
+        .evolucao-table thead tr:nth-child(2) th {
+            top: 20px; height: 20px; line-height: 20px; padding: 0 8px;
+            font-size: .72rem; font-weight: 700; white-space: nowrap;
+        }
+        .evolucao-table thead tr:nth-child(3) th { top: 40px; height: 28px; line-height: 28px; padding: 0 8px; }
+        .evolucao-table thead tr:nth-child(4) th { top: 68px; height: 28px; line-height: 28px; padding: 0 8px; }
         .evolucao-table th:nth-child(-n+6),
         .evolucao-table td:nth-child(-n+6) {
             position: sticky;

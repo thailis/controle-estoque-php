@@ -56,13 +56,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 
     $mrpAtual = strtoupper(trim((string) ($_POST['mrp_atual'] ?? '')));
     $novoMrp = ($mrpAtual === 'N') ? 'S' : 'N';
+    // Regra obrigatória: MRP=N sempre força Planejamento=N junto. Ao reabrir
+    // (voltar pra S), reseta Planejamento pra S também (estado "tudo normal"
+    // por padrão — quem quiser desligar só o planejamento, faz isso depois,
+    // com o botão de Planejamento).
+    $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
 
     $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
-    $sqlToggle = "UPDATE bomnova SET mrp = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
+    $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
-    $tiposToggle = str_repeat('s', 1 + count($campos));
-    $parametrosToggle = array_merge([$novoMrp], $valoresOriginais);
+    $tiposToggle = str_repeat('s', 2 + count($campos));
+    $parametrosToggle = array_merge([$novoMrp, $novoPlanejamento], $valoresOriginais);
     mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
     mysqli_stmt_execute($stmtToggle);
     $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
@@ -71,6 +76,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     $flag = $linhasAfetadas > 0 ? 'mrp_ok' : 'mrp_erro';
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '=1');
+    exit;
+}
+
+// Toggle do Planejamento (S/N) — só tem efeito quando MRP=S (se MRP=N, o
+// planejamento já está travado em N pela regra acima, e essa ação nem deveria
+// ser possível de clicar, mas a trava é reforçada aqui no servidor também).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_planejamento') {
+    $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginais = [];
+    foreach ($campos as $campo) {
+        $valoresOriginais[] = (string) ($_POST['orig_' . $campo] ?? '');
+    }
+
+    $mrpAtualPlan = strtoupper(trim((string) ($_POST['mrp_atual'] ?? '')));
+    $planejamentoAtual = strtoupper(trim((string) ($_POST['planejamento_atual'] ?? '')));
+
+    if ($mrpAtualPlan === 'N') {
+        $flag = 'planejamento_bloqueado';
+    } else {
+        $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
+        $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+        $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
+
+        $stmtToggle = mysqli_prepare($conn, $sqlToggle);
+        $tiposToggle = str_repeat('s', 1 + count($campos));
+        $parametrosToggle = array_merge([$novoPlanejamentoToggle], $valoresOriginais);
+        mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
+        mysqli_stmt_execute($stmtToggle);
+        $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
+        mysqli_stmt_close($stmtToggle);
+        $flag = $linhasAfetadas > 0 ? 'planejamento_ok' : 'planejamento_erro';
+    }
+
+    $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+    $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '=1');
     exit;
 }
@@ -125,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -170,8 +211,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
                     }
+                    // Planejamento é opcional no CSV. Se mrp='N', é sempre forçado
+                    // 'N' junto (não dá pra ter mrp=N com planejamento=S). Se mrp='S'
+                    // e a coluna não vier no arquivo (ou vier com valor inválido),
+                    // assume 'S' — comportamento igual ao que já existia antes dessa
+                    // coluna existir.
+                    $planejamentoBruto = $dados['planejamento'] ?? null;
+                    $planejamento = $planejamentoBruto !== null ? strtoupper(trim($planejamentoBruto)) : null;
+                    if ($mrp === 'N') {
+                        $planejamento = 'N';
+                    } elseif ($planejamento !== 'S' && $planejamento !== 'N') {
+                        $planejamento = 'S';
+                    }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $mrp];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $mrp, $planejamento];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -220,7 +273,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($busca !== '') {
@@ -236,19 +289,19 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'MRP'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'MRP', 'Planejamento'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
             $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['descricao'],
-            $linhaExport['consumo'], $linhaExport['um'], $linhaExport['mrp'],
+            $linhaExport['consumo'], $linhaExport['um'], $linhaExport['mrp'], $linhaExport['planejamento'],
         ], ';', '"', '');
     }
     fclose($saida);
     exit;
 }
 
-$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp
+$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -316,6 +369,21 @@ while ($row = mysqli_fetch_assoc($result)) {
         <?php elseif (isset($_GET['mrp_erro'])): ?>
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
                 ⚠️ Não encontrei essa linha exata pra atualizar (os dados podem ter mudado desde que a página carregou — recarregue e tente de novo).
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['planejamento_ok'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ✅ Planejamento atualizado.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['planejamento_erro'])): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                ⚠️ Não encontrei essa linha exata pra atualizar (os dados podem ter mudado desde que a página carregou — recarregue e tente de novo).
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['planejamento_bloqueado'])): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                ⚠️ Esse componente está com MRP=N — Planejamento já está travado em N junto. Reabra o MRP primeiro se quiser mudar isso.
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
             </div>
         <?php endif; ?>
@@ -390,17 +458,26 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
                             <th>MRP</th>
+                            <th>Planejamento</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="12" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
                                     $mrp = strtoupper(trim((string) ($row['mrp'] ?? '')));
                                     $badgeClasse = $mrp === 'N' ? 'badge-mrp-n' : ($mrp === 'S' ? 'badge-mrp-s' : 'text-bg-secondary');
                                     $badgeTexto = $mrp !== '' ? $mrp : '—';
+                                    $planejamento = strtoupper(trim((string) ($row['planejamento'] ?? '')));
+                                    // Sem valor gravado ainda (linha antiga, pré-migração) — trata como
+                                    // "S" quando mrp=S (comportamento igual ao que já era antes dessa
+                                    // coluna existir), ou "N" quando mrp=N (força a regra).
+                                    if ($planejamento !== 'S' && $planejamento !== 'N') {
+                                        $planejamento = $mrp === 'N' ? 'N' : 'S';
+                                    }
+                                    $planBadgeClasse = $planejamento === 'N' ? 'badge-mrp-n' : 'badge-mrp-s';
                                 ?>
                                 <tr>
                                     <td><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
@@ -433,6 +510,32 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <?php echo htmlspecialchars($badgeTexto); ?>
                                             </button>
                                         </form>
+                                    </td>
+                                    <td>
+                                        <?php if ($mrp === 'N'): ?>
+                                            <span class="badge badge-mrp-n" title="MRP=N já força Planejamento=N — reabra o MRP primeiro pra poder mudar isso">N</span>
+                                        <?php else: ?>
+                                            <form method="POST" class="d-inline m-0">
+                                                <input type="hidden" name="acao" value="toggle_planejamento">
+                                                <input type="hidden" name="mrp_atual" value="<?php echo htmlspecialchars($mrp); ?>">
+                                                <input type="hidden" name="planejamento_atual" value="<?php echo htmlspecialchars($planejamento); ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                                <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_tipo" value="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_fornecedor" value="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_codigo_componente" value="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_pn" value="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_descricao" value="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_consumo" value="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>">
+                                                <input type="hidden" name="orig_um" value="<?php echo htmlspecialchars($row['um'] ?? ''); ?>">
+                                                <button type="submit" class="badge border-0 mrp-toggle-btn <?php echo $planBadgeClasse; ?>" title="Clique pra alternar — 'N' tira o componente do Dashboard e do Planejamento de Compras, mas ele continua aparecendo na Evolução Geral">
+                                                    <?php echo htmlspecialchars($planejamento); ?>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>

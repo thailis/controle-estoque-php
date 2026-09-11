@@ -317,7 +317,7 @@ try {
     $fornecedores = opcoesDistintas($conn, 'fornecedor');
     $projetos = opcoesDistintas($conn, 'projeto');
 
-    $condicoesBom = ["b.codigo_componente IS NOT NULL", "TRIM(b.codigo_componente) <> ''", "(b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')"];
+    $condicoesBom = ["b.codigo_componente IS NOT NULL", "TRIM(b.codigo_componente) <> ''", "(b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')", "(b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')"];
     $condicoesEdi = ["CAST(e.quantidade AS DECIMAL(18,4)) > 0", "(e.atendido = 0 OR e.atendido IS NULL)"];
     $parametros = [];
     $tipos = '';
@@ -475,7 +475,7 @@ try {
                        ) AS quantidade
                 FROM bomnova b
                 JOIN edi e ON TRIM(b.material) = TRIM(e.material)
-                WHERE TRIM(b.codigo_componente) IN ($placeholdersP) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+                WHERE TRIM(b.codigo_componente) IN ($placeholdersP) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N') AND (b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')
                   AND (e.atendido = 0 OR e.atendido IS NULL)
                 GROUP BY TRIM(b.codigo_componente), e.data_inicio
             ");

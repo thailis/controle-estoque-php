@@ -214,6 +214,7 @@ try {
     $condicoes = [
         "b.codigo_componente IS NOT NULL", "TRIM(b.codigo_componente) <> ''",
         "(b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')",
+        "(b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')",
     ];
     $parametros = [];
     $tipos = '';
@@ -305,7 +306,7 @@ try {
                    ) AS quantidade
             FROM bomnova b
             JOIN edi e ON TRIM(b.material) = TRIM(e.material)
-            WHERE TRIM(b.codigo_componente) IN ($placeholders) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+            WHERE TRIM(b.codigo_componente) IN ($placeholders) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N') AND (b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')
               AND (e.atendido = 0 OR e.atendido IS NULL)
             GROUP BY TRIM(b.codigo_componente), e.data_inicio
         ");
