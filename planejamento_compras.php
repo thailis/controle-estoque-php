@@ -147,7 +147,12 @@ function calcularParcelasCompraPlanejamento(
         // Piso de segurança = quantidade calculada automaticamente (ver
         // calcularEstoqueSegurancaQtd). Com segurancaQtd = 0, o piso é sempre 0.
         if ($saldoPorDia[$i] < $segurancaQtd) {
-            $dataNecessidade = $dias[$i];
+            // $dias[$i] é o dia em que o saldo simulado fica negativo — ou seja,
+            // o dia do PRÓPRIO evento que consome o estoque. O material precisa
+            // estar disponível com folga ANTES do evento (tempo de receber,
+            // conferir e disponibilizar) — por isso a necessidade real, pra fins
+            // de planejamento, é sempre 10 dias antes do evento.
+            $dataNecessidade = $dias[$i]->modify('-10 days');
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
             $janelaLocal = min($n, $i + $maxDias);
