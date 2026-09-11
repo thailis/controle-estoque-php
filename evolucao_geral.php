@@ -64,6 +64,7 @@ $projetos = [];
 $dias = [];
 $temEdiPorDia = [];
 $demandaEdiBrutaPorDia = [];
+$projetosPorDia = [];
 
 try {
     $fornecedores = opcoesDistintasGeral($conn, 'fornecedor');
@@ -198,6 +199,26 @@ try {
             $demandaEdiBrutaPorDia[$linha['data']] = (float) $linha['quantidade'];
         }
         mysqli_stmt_close($stmtDemandaBruta);
+
+        // Projetos distintos com demanda EDI em cada dia — mostrado numa linha
+        // própria, acima da bolinha de evento. Se mais de um projeto tiver
+        // demanda no mesmo dia, lista todos juntos, separados por vírgula.
+        $stmtProjetosPorDia = mysqli_prepare($conn, "
+            SELECT e.data_inicio AS data,
+                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.projeto), '') ORDER BY TRIM(b.projeto) SEPARATOR ', ') AS projetos
+            FROM bomnova b
+            JOIN edi e ON TRIM(b.material) = TRIM(e.material)
+            WHERE TRIM(b.codigo_componente) IN ($placeholders) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+              AND (e.atendido = 0 OR e.atendido IS NULL)
+            GROUP BY e.data_inicio
+        ");
+        mysqli_stmt_bind_param($stmtProjetosPorDia, $tiposCodigos, ...$codigosCalculo);
+        mysqli_stmt_execute($stmtProjetosPorDia);
+        $resProjetosPorDia = mysqli_stmt_get_result($stmtProjetosPorDia);
+        while ($linha = mysqli_fetch_assoc($resProjetosPorDia)) {
+            $projetosPorDia[$linha['data']] = $linha['projetos'] ?? '';
+        }
+        mysqli_stmt_close($stmtProjetosPorDia);
     }
 
     // Monta a lista de dias (mesma para todos os componentes) e o saldo projetado de cada um
@@ -263,7 +284,15 @@ try {
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
 
-        // Linha 1: marcador (●) nos dias com demanda EDI
+        // Linha 1: projetos com demanda EDI naquele dia (mesma linha nova da tela)
+        $linhaProjetos = ['', '', '', '', '', ''];
+        foreach ($dias as $dia) {
+            $chave = $dia->format('Y-m-d');
+            $linhaProjetos[] = $projetosPorDia[$chave] ?? '';
+        }
+        fputcsv($saida, $linhaProjetos, ';', '"', '');
+
+        // Linha 2: marcador (●) nos dias com demanda EDI
         $linhaMarcador = ['', '', '', '', '', ''];
         foreach ($dias as $dia) {
             $chave = $dia->format('Y-m-d');
@@ -271,14 +300,14 @@ try {
         }
         fputcsv($saida, $linhaMarcador, ';', '"', '');
 
-        // Linha 2: número da semana
+        // Linha 3: número da semana
         $linhaSemana = ['', '', '', '', '', ''];
         foreach ($dias as $dia) {
             $linhaSemana[] = $dia->format('W');
         }
         fputcsv($saida, $linhaSemana, ';', '"', '');
 
-        // Linha 3: cabeçalho com as datas
+        // Linha 4: cabeçalho com as datas
         $cabecalhoCsv = ['codigo_componente', 'descricao', 'fornecedores', 'projetos', 'consumo', 'estoque_hoje'];
         foreach ($dias as $dia) {
             $cabecalhoCsv[] = $dia->format('d/m/Y');
@@ -333,9 +362,10 @@ try {
             background: #f5f8fb;
             z-index: 2;
         }
-        .evolucao-table thead tr:nth-child(1) th { top: 0; height: 16px; padding: 3px 9px; font-size: .72rem; font-weight: 700; white-space: nowrap; }
-        .evolucao-table thead tr:nth-child(2) th { top: 24px; }
-        .evolucao-table thead tr:nth-child(3) th { top: 57px; }
+        .evolucao-table thead tr:nth-child(1) th { top: 0; height: 16px; padding: 3px 9px; font-size: .68rem; font-weight: 600; color: #536578; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
+        .evolucao-table thead tr:nth-child(2) th { top: 24px; height: 16px; padding: 3px 9px; font-size: .72rem; font-weight: 700; white-space: nowrap; }
+        .evolucao-table thead tr:nth-child(3) th { top: 48px; }
+        .evolucao-table thead tr:nth-child(4) th { top: 81px; }
         .evolucao-table th:nth-child(-n+6),
         .evolucao-table td:nth-child(-n+6) {
             position: sticky;
@@ -353,7 +383,8 @@ try {
         .evolucao-table th:nth-child(6), .evolucao-table td:nth-child(6) { left: 720px; width: 100px; min-width: 100px; max-width: 100px; z-index: 3; text-align: right; box-shadow: 2px 0 0 #dce4ec; }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
-        .saldo-negativo { color: #c53535; font-weight: 750; }
+        .saldo-negativo { background: #ffd6e0; color: #c53535; font-weight: 750; }
+        .saldo-alerta { background: #fff0f5; color: #8c7355; font-weight: 750; }
         .dot-edi {
             display: inline-block;
             width: 10px;
@@ -464,6 +495,20 @@ try {
                             <th></th>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
+                                <th class="linha-projeto <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>" title="<?php echo h($projetosPorDia[$chave] ?? ''); ?>">
+                                    <?php echo h($projetosPorDia[$chave] ?? ''); ?>
+                                </th>
+                            <?php endforeach; ?>
+                        </tr>
+                        <tr>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <?php foreach ($dias as $dia): ?>
+                                <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="linha-marcador <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
                                     <?php if ($temEdiPorDia[$chave]): ?>
                                         <span class="dot-edi" title="Demanda EDI nesta data"></span><?php echo numeroBr($demandaEdiBrutaPorDia[$chave] ?? 0, 0); ?>
@@ -523,8 +568,10 @@ try {
                                             if ($chave === $hoje->format('Y-m-d')) {
                                                 $classes[] = 'col-hoje';
                                             }
-                                            if ($saldo < 0) {
+                                            if ($saldo <= 0) {
                                                 $classes[] = 'saldo-negativo';
+                                            } elseif ($saldo >= 1 && $saldo <= 50) {
+                                                $classes[] = 'saldo-alerta';
                                             }
                                         ?>
                                         <td class="<?php echo h(implode(' ', $classes)); ?>"><?php echo numeroBr($saldo); ?></td>

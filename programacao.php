@@ -306,7 +306,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
                     $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
                     mysqli_stmt_close($stmtDesc);
 
-                    $plantaRecebimento = 'Recebido (Programação)';
+                    $plantaRecebimento = 'Recebido';
                     $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
                     mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
                     mysqli_stmt_execute($stmtInsEstoque);
