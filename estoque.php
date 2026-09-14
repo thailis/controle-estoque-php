@@ -509,6 +509,7 @@ if (!empty($componentes)) {
             <a class="btn btn-outline-secondary btn-sm" href="parametros_compra.php">Parâmetros</a>
             <a class="btn btn-outline-secondary btn-sm" href="evolucao_geral.php">Evolução geral</a>
             <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+            <a class="btn btn-outline-secondary btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
         </nav>
         <div class="card bg-primary text-white p-4 mb-4">
             <h1>🏷️ Estoque</h1>

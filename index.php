@@ -78,7 +78,21 @@ function calcularStatusJanela(
     }
 
     if ($minSaldo < $segurancaQtd) {
-        $status = 'critico';
+        // Antes de marcar "crítico" (precisa de uma NOVA compra urgente), verifica se o
+        // déficit já está coberto por programação pendente (pedido já feito, só não chegou
+        // ainda). Se a soma da programação futura (ainda não recebida) cobrir o quanto o
+        // saldo cairia abaixo do piso de segurança, o problema é só de timing/atraso da
+        // entrega — vira "atenção" (acompanhar/cobrar fornecedor), não "compra urgente".
+        // Se nem toda a programação pendente é suficiente pra cobrir o déficit, continua
+        // "crítico": falta comprar mais além do que já está a caminho.
+        $deficit = $segurancaQtd - $minSaldo;
+        $programacaoPendenteQtd = 0.0;
+        foreach ($programacaoPorData as $d => $q) {
+            if ($d >= $hojeChave) {
+                $programacaoPendenteQtd += $q;
+            }
+        }
+        $status = $programacaoPendenteQtd >= $deficit ? 'atencao' : 'critico';
     } elseif ($minSaldo < $minQtd) {
         $status = 'atencao';
     } elseif ($maxQtd > 0 && $maxSaldo > $maxQtd) {
@@ -682,6 +696,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <a class="btn btn-light btn-sm" href="parametros_compra.php">Parâmetros</a>
                 <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
                 <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+                <a class="btn btn-outline-light btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
             </nav>
         </div>
     </header>

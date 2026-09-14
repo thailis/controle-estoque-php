@@ -1,0 +1,515 @@
+<?php
+// pedido_compra.php
+// Tela pra montar um Pedido de Compra (Purchase Order) no layout padrão da
+// empresa e exportar em PDF. Não depende de nenhuma biblioteca de PDF no
+// servidor — o "Baixar PDF" chama a função de imprimir do navegador
+// (window.print), com uma folha de estilo própria pra impressão que esconde
+// os botões e ajusta a página pra ficar igual ao documento original.
+//
+// Os valores digitados NÃO são salvos no banco — essa tela é só uma
+// "máquina de escrever" formatada pro PO, pensada pra gerar o PDF na hora.
+// Se no futuro for necessário guardar histórico de pedidos emitidos, dá pra
+// acrescentar uma tabela e um botão de "salvar" sem mexer no layout.
+require_once 'conexao.php';
+
+// Endpoint chamado via JS (fetch) quando o usuário digita/sai do campo "Part
+// Number" — busca a descrição do componente na BOM, se existir. Se não
+// encontrar, devolve null e o campo Description continua livre pra digitar
+// na mão (não é um erro, é o caminho normal pra item que ainda não tem BOM).
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
+    header('Content-Type: application/json; charset=utf-8');
+    $codigo = trim($_GET['codigo'] ?? '');
+    $descricao = null;
+    if ($codigo !== '') {
+        $stmt = mysqli_prepare($conn, "
+            SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), NULL)) AS descricao
+            FROM bomnova
+            WHERE TRIM(codigo_componente) = ? AND (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
+        ");
+        mysqli_stmt_bind_param($stmt, 's', $codigo);
+        mysqli_stmt_execute($stmt);
+        $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))['descricao'] ?? null;
+        mysqli_stmt_close($stmt);
+    }
+    echo json_encode(['descricao' => $descricao]);
+    exit;
+}
+?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pedido de Compra (PO)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        :root {
+            --navy: #12304a;
+            --destaque: #c0504d;
+            --borda: #dce4ec;
+            --cinza-label: #f3f6f9;
+        }
+        body {
+            background: #eef1f5;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+            font-size: 13px;
+            color: #17212b;
+        }
+
+        .po-sheet {
+            max-width: 900px;
+            margin: 16px auto 40px;
+            background: #fff;
+            border: 1px solid var(--borda);
+            box-shadow: 0 6px 20px rgba(18,48,74,.10);
+        }
+
+        .po-header {
+            background: var(--navy);
+            color: #fff;
+            text-align: center;
+            padding: 10px 16px;
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+        .po-header .numero {
+            color: #ff9b7a;
+            font-weight: 750;
+        }
+        .po-header input {
+            background: transparent;
+            border: none;
+            color: #ff9b7a;
+            font-weight: 750;
+            text-align: center;
+            width: 160px;
+            font-size: 1.05rem;
+        }
+        .po-header input::placeholder { color: #ffd0bd; }
+
+        .po-secao-titulo {
+            font-weight: 750;
+            padding: 8px 16px 2px;
+            font-size: .95rem;
+        }
+
+        table.po-info { width: 100%; border-collapse: collapse; padding: 0 16px; table-layout: fixed; }
+        table.po-info td { padding: 1px 6px; vertical-align: top; font-size: .85rem; overflow: hidden; }
+        table.po-info td.lbl { font-weight: 700; font-size: .78rem; color: #3c4c5c; width: 90px; white-space: nowrap; }
+        table.po-info td.lbl-2 { font-weight: 700; font-size: .78rem; color: #3c4c5c; width: 70px; white-space: nowrap; }
+        table.po-info input {
+            border: none;
+            border-bottom: 1px solid transparent;
+            background: transparent;
+            width: 100%;
+            padding: 1px 2px;
+            font-size: .85rem;
+            box-sizing: border-box;
+        }
+        table.po-info input:focus {
+            outline: none;
+            border-bottom: 1px solid var(--navy);
+            background: #f7faff;
+        }
+        .po-info-wrap { padding: 4px 16px 10px; }
+        table.po-outer { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        table.po-outer td { vertical-align: top; padding: 0; overflow: hidden; }
+        table.po-outer td.po-logo-cell { width: 130px; text-align: right; padding-right: 4px; }
+        .po-logo-cell img { max-height: 55px; }
+
+        .po-material-titulo {
+            text-align: center;
+            font-weight: 750;
+            background: var(--cinza-label);
+            border-top: 1px solid var(--borda);
+            border-bottom: 1px solid var(--borda);
+            padding: 6px;
+            font-size: .9rem;
+        }
+        table.po-tabela { width: 100%; border-collapse: collapse; font-size: .8rem; table-layout: fixed; }
+        table.po-tabela th {
+            background: var(--cinza-label);
+            padding: 6px 8px;
+            font-size: .72rem;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+            border-bottom: 1px solid var(--borda);
+            text-align: center;
+        }
+        table.po-tabela td { padding: 4px 8px; border-bottom: 1px solid #eef1f5; vertical-align: middle; }
+        table.po-tabela tbody tr:nth-child(even) { background: #f9fbfd; }
+        table.po-tabela input {
+            border: none;
+            background: transparent;
+            width: 100%;
+            padding: 2px 3px;
+            font-size: .8rem;
+        }
+        table.po-tabela input:focus { outline: none; background: #f0f6ff; }
+        table.po-tabela .num { text-align: right; }
+        table.po-tabela .num input { text-align: right; }
+        table.po-tabela .center { text-align: center; }
+        table.po-tabela .center input { text-align: center; }
+        table.po-tabela .col-idx { width: 28px; text-align: center; color: #66788a; }
+        table.po-tabela .col-acao { width: 34px; text-align: center; }
+        table.po-tabela .btn-remover-linha {
+            border: none; background: none; color: #c53535; font-size: .95rem; cursor: pointer; line-height: 1;
+        }
+
+        .po-pagamento-titulo {
+            text-align: center;
+            font-weight: 750;
+            background: var(--navy);
+            color: #fff;
+            padding: 6px;
+            font-size: .9rem;
+        }
+        table.po-totais { width: 100%; border-collapse: collapse; padding: 10px 16px; }
+        table.po-totais td { padding: 2px 8px; vertical-align: top; }
+        .po-totais-linha { display: table; width: 100%; table-layout: fixed; margin-bottom: 2px; }
+        .po-totais-linha .lado-a, .po-totais-linha .lado-b { display: table-cell; vertical-align: middle; }
+        .po-totais-linha .lado-a { width: 55%; text-align: right; font-weight: 700; font-size: .78rem; color: #3c4c5c; padding-right: 6px; }
+        .po-totais-linha input {
+            border: none; border-bottom: 1px solid transparent; background: transparent;
+            text-align: right; font-size: .85rem; padding: 1px 2px; width: 100%;
+        }
+        .po-totais-linha input:focus { outline: none; border-bottom: 1px solid var(--navy); background: #f7faff; }
+        .po-total-final .lado-a { font-weight: 750; font-size: .95rem; }
+        .po-total-final input { font-weight: 750; font-size: 1rem; }
+
+        table.po-rodape { width: 100%; border-collapse: collapse; border-top: 1px solid var(--borda); }
+        table.po-rodape td { padding: 10px 16px; vertical-align: top; width: 50%; }
+        table.po-rodape td:first-child { border-right: 1px solid var(--borda); }
+        .po-rodape-linha { display: table; width: 100%; table-layout: fixed; margin-bottom: 4px; }
+        .po-rodape-linha .lado-a { display: table-cell; width: 90px; font-weight: 700; font-size: .78rem; color: #3c4c5c; vertical-align: middle; }
+        .po-rodape-linha .lado-b { display: table-cell; vertical-align: middle; }
+        .po-rodape-linha input {
+            border: none; border-bottom: 1px solid transparent; background: transparent; width: 100%; font-size: .82rem; padding: 1px 2px;
+        }
+        .po-rodape-linha input:focus { outline: none; border-bottom: 1px solid var(--navy); background: #f7faff; }
+        .po-invoice-titulo { text-align: center; font-weight: 700; font-size: .82rem; margin-bottom: 6px; }
+        .po-invoice-texto { text-align: center; }
+        .po-invoice-texto textarea { text-align: center; color: var(--destaque); font-weight: 700; width: 100%; padding: 8px 10px; font-size: .85rem; resize: vertical; font-family: inherit; }
+
+        .po-assinatura { text-align: center; padding: 40px 16px 24px; }
+        .po-assinatura input {
+            border: none; border-top: 1px solid #333; background: transparent; text-align: center;
+            width: 260px; padding-top: 4px; font-size: .85rem;
+        }
+        .po-assinatura input:focus { outline: none; background: #f7faff; }
+
+        .po-assinatura-img { display: block; max-height: 60px; margin: 0 auto 6px; }
+        .po-assinatura-upload-wrap { text-align: center; margin-bottom: 6px; }
+        .po-assinatura-upload-wrap label { font-size: .78rem; color: #3c4c5c; cursor: pointer; }
+
+        .btn-add-linha { font-size: .78rem; }
+
+        @media print {
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+            body { background: #fff; }
+            .no-print { display: none !important; }
+            .po-sheet { box-shadow: none; border: none; margin: 0; max-width: 100%; }
+            table.po-tabela .col-acao { display: none; }
+            table.po-tabela .col-acao-largura { display: none; }
+            input { color: #000 !important; }
+            .po-header input { color: var(--destaque) !important; }
+            .po-invoice-texto textarea { color: var(--destaque) !important; }
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar no-print">
+        <div class="container-fluid dashboard-container d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="eyebrow">Supply Chain • Compras</span>
+                <h1>Pedido de Compra</h1>
+                <p class="mb-0">Preencha os dados e gere o PDF direto pelo navegador</p>
+            </div>
+            <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <a class="btn btn-outline-light btn-sm" href="index.php">🏠 Dashboard</a>
+                <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
+                <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>
+                <a class="btn btn-outline-light btn-sm" href="bomnova.php">BOM</a>
+                <a class="btn btn-outline-light btn-sm" href="programacao.php">Programação</a>
+                <a class="btn btn-outline-light btn-sm" href="parametros_compra.php">Parâmetros</a>
+                <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
+                <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+                <a class="btn btn-light btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
+                <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
+            </nav>
+        </div>
+    </header>
+
+    <div class="po-sheet" id="po-sheet">
+        <div class="po-header">
+            Purchase Order: <input type="text" id="po_numero" placeholder="0000000000" size="12">
+        </div>
+
+        <div class="po-secao-titulo">Customer</div>
+        <div class="po-info-wrap">
+            <table class="po-outer">
+                <tr>
+                    <td>
+                        <table class="po-info">
+                            <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="cli_company" value="YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA."></td></tr>
+                            <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="cli_taxid" value="27.690.132/0003-00"></td></tr>
+                            <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="cli_adress" value="RUA DOOSAN, 777"></td></tr>
+                            <tr><td class="lbl">Zip Code</td><td colspan="3"><input type="text" id="cli_zip" value="13.469-765"></td></tr>
+                        </table>
+                    </td>
+                    <td class="po-logo-cell">
+                        <img src="assets/logo_yapp.jpeg" alt="Logo" onerror="this.style.display='none'">
+                    </td>
+                </tr>
+            </table>
+            <table class="po-info">
+                <tr>
+                    <td class="lbl">Buyer</td><td><input type="text" id="cli_buyer" value="Thailis Rodrigues Domingues"></td>
+                    <td class="lbl-2">Phone</td><td><input type="text" id="cli_phone" value="+55 19 99946-2526"></td>
+                </tr>
+                <tr>
+                    <td class="lbl">Email</td><td colspan="3"><input type="text" id="cli_email" value="thailisdomingues.br@yapp.com"></td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="po-secao-titulo">
+            Supplier <input type="text" id="sup_ref" placeholder="Referência do fornecedor" style="color:var(--destaque); font-weight:700; width:220px; display:inline-block; border:none; background:transparent;">
+        </div>
+        <div class="po-info-wrap">
+            <table class="po-info">
+                <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="sup_company" placeholder="Razão social do fornecedor"></td></tr>
+                <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="sup_taxid" placeholder="00.000.000/0000-00"></td></tr>
+                <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="sup_adress" placeholder="Endereço"></td></tr>
+                <tr><td class="lbl">Zip Code</td><td colspan="3"><input type="text" id="sup_zip" placeholder="00.000-000"></td></tr>
+            </table>
+            <table class="po-info">
+                <tr>
+                    <td class="lbl">Commercial</td><td><input type="text" id="sup_contato" placeholder="Nome do contato comercial"></td>
+                    <td class="lbl-2">Phone</td><td><input type="text" id="sup_phone" placeholder="+55 00 00000-0000"></td>
+                </tr>
+                <tr>
+                    <td class="lbl">Email</td><td colspan="3"><input type="text" id="sup_email" placeholder="email@fornecedor.com"></td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="po-material-titulo">Material Detail</div>
+        <table class="po-tabela" id="tabela-itens">
+            <colgroup>
+                <col style="width:4%"><col style="width:12%"><col style="width:26%">
+                <col style="width:10%"><col style="width:6%"><col style="width:10%">
+                <col style="width:12%"><col style="width:12%"><col class="col-acao-largura" style="width:8%">
+            </colgroup>
+            <thead>
+                <tr>
+                    <th class="col-idx">#</th>
+                    <th>Part Number</th>
+                    <th>Description</th>
+                    <th>ETA</th>
+                    <th>UnM</th>
+                    <th>Quantity</th>
+                    <th>Net Price</th>
+                    <th>Total</th>
+                    <th class="col-acao no-print"></th>
+                </tr>
+            </thead>
+            <tbody id="corpo-itens"></tbody>
+        </table>
+        <div class="p-2 no-print">
+            <button type="button" class="btn btn-outline-secondary btn-add-linha" onclick="adicionarLinha()">➕ Adicionar linha</button>
+        </div>
+
+        <div class="po-pagamento-titulo">Payment and Freight information</div>
+        <table class="po-totais">
+            <tr>
+                <td style="width:50%">
+                    <div class="po-totais-linha"><span class="lado-a">ICMS</span><span class="lado-b"><input type="text" id="tax_icms" value="18%" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">PIS</span><span class="lado-b"><input type="text" id="tax_pis" value="1,65%" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">COFINS</span><span class="lado-b"><input type="text" id="tax_cofins" value="7,60%" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">IPI</span><span class="lado-b"><input type="text" id="tax_ipi" value="15%" oninput="recalcularTotal()"></span></div>
+                </td>
+                <td style="width:50%">
+                    <div class="po-totais-linha"><span class="lado-a">Currency:</span><span class="lado-b"><input type="text" id="moeda" value="R$"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">Net:</span><span class="lado-b"><input type="text" id="valor_net" readonly></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">Advanced Cash:</span><span class="lado-b"><input type="text" id="valor_adiantamento" value="0,00" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">Taxes <small style="font-weight:400;">(ICMS+PIS+COFINS+IPI)</small>:</span><span class="lado-b"><input type="text" id="valor_taxes" readonly></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">Frete:</span><span class="lado-b"><input type="text" id="valor_frete" value="0,00" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha po-total-final"><span class="lado-a">Total:</span><span class="lado-b"><input type="text" id="valor_total" readonly></span></div>
+                </td>
+            </tr>
+        </table>
+
+        <table class="po-rodape">
+            <tr>
+                <td>
+                    <div class="po-rodape-linha"><span class="lado-a">Payment:</span><span class="lado-b"><input type="text" id="rodape_payment" value="28 DDL"></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a">Incoterms:</span><span class="lado-b"><input type="text" id="rodape_incoterms" value="CIF"></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><input type="text" id="rodape_delivery1" value="YAPP Americana - RUA DOOSAN, 777, Americana/SP"></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a"></span><span class="lado-b"><input type="text" id="rodape_delivery2" value="13.469-765"></span></div>
+                </td>
+                <td>
+                    <div class="po-invoice-titulo">Commercial Invoice must contain:</div>
+                    <div class="po-invoice-texto">
+                        <textarea id="rodape_invoice" rows="3" placeholder="PO 0000000000 PROJETO"></textarea>
+                    </div>
+                </td>
+            </tr>
+        </table>
+
+        <div class="po-assinatura">
+            <div class="po-assinatura-upload-wrap no-print">
+                <label for="assinatura_upload">📎 Importar assinatura (JPG/PNG)</label>
+                <input type="file" id="assinatura_upload" accept="image/jpeg,image/png" onchange="importarAssinatura(event)" style="display:block; margin:2px auto 0;">
+            </div>
+            <img id="assinatura_img" class="po-assinatura-img" alt="Assinatura" style="display:none;">
+            <input type="text" id="assinatura_nome" value="Thailis Domingues">
+        </div>
+    </div>
+
+    <script>
+        let contadorLinhas = 0;
+
+        function importarAssinatura(evento) {
+            const arquivo = evento.target.files[0];
+            if (!arquivo) return;
+            const leitor = new FileReader();
+            leitor.onload = () => {
+                const img = document.getElementById('assinatura_img');
+                img.src = leitor.result;
+                img.style.display = 'block';
+            };
+            leitor.readAsDataURL(arquivo);
+        }
+
+        function parseNumeroBrPo(texto) {
+            if (!texto) return 0;
+            texto = String(texto).trim();
+            if (texto.includes(',')) {
+                texto = texto.replace(/\./g, '').replace(',', '.');
+            }
+            const n = parseFloat(texto);
+            return isNaN(n) ? 0 : n;
+        }
+
+        function formatarNumeroBrPo(n) {
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function adicionarLinha(dados) {
+            contadorLinhas++;
+            const idx = contadorLinhas;
+            const tr = document.createElement('tr');
+            tr.id = 'linha-' + idx;
+            tr.innerHTML = `
+                <td class="col-idx">${idx}</td>
+                <td><input type="text" class="f-part" placeholder="" onchange="buscarDescricaoBom(${idx})"></td>
+                <td><input type="text" class="f-desc" placeholder="Descrição do material"></td>
+                <td class="center"><input type="text" class="f-eta" placeholder="dd/mm/aaaa"></td>
+                <td class="center"><input type="text" class="f-unm" placeholder="UN"></td>
+                <td class="num"><input type="text" class="f-qtd" placeholder="0" oninput="recalcularLinha(${idx})"></td>
+                <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
+                <td class="num"><input type="text" class="f-total" readonly></td>
+                <td class="col-acao no-print"><button type="button" class="btn-remover-linha" onclick="removerLinha(${idx})" title="Remover linha">✕</button></td>
+            `;
+            document.getElementById('corpo-itens').appendChild(tr);
+        }
+
+        // Ao sair do campo Part Number, busca a descrição do componente na BOM.
+        // Se encontrar, preenche a Description (sobrescreve, já que a BOM é a
+        // fonte oficial). Se não encontrar, não faz nada — o campo Description
+        // continua livre pra digitar na mão, não é tratado como erro.
+        function buscarDescricaoBom(idx) {
+            const linha = document.getElementById('linha-' + idx);
+            if (!linha) return;
+            const codigo = linha.querySelector('.f-part').value.trim();
+            if (!codigo) return;
+
+            fetch('pedido_compra.php?ajax=buscar_descricao&codigo=' + encodeURIComponent(codigo))
+                .then(r => r.json())
+                .then(dados => {
+                    if (dados.descricao) {
+                        linha.querySelector('.f-desc').value = dados.descricao;
+                    }
+                })
+                .catch(() => { /* falha de rede — deixa o campo como está, sem travar o preenchimento manual */ });
+        }
+
+        function removerLinha(idx) {
+            const linha = document.getElementById('linha-' + idx);
+            if (linha) linha.remove();
+            renumerarLinhas();
+            recalcularNet();
+        }
+
+        function renumerarLinhas() {
+            const linhas = document.querySelectorAll('#corpo-itens tr');
+            linhas.forEach((linha, i) => {
+                linha.querySelector('.col-idx').textContent = i + 1;
+            });
+        }
+
+        function recalcularLinha(idx) {
+            const linha = document.getElementById('linha-' + idx);
+            if (!linha) return;
+            const qtd = parseNumeroBrPo(linha.querySelector('.f-qtd').value);
+            const preco = parseNumeroBrPo(linha.querySelector('.f-preco').value);
+            linha.querySelector('.f-total').value = formatarNumeroBrPo(qtd * preco);
+            recalcularNet();
+        }
+
+        function recalcularNet() {
+            let net = 0;
+            document.querySelectorAll('#corpo-itens .f-total').forEach(campo => {
+                net += parseNumeroBrPo(campo.value);
+            });
+            document.getElementById('valor_net').value = formatarNumeroBrPo(net);
+            recalcularTotal();
+        }
+
+        // ICMS e PIS/COFINS são calculados "por dentro": o percentual incide sobre o
+        // preço BRUTO da nota, não sobre o Net. Por isso, pra achar o preço bruto que,
+        // depois de descontados esses impostos, resulta de volta no Net informado, é
+        // preciso "regrossar" (dividir), não multiplicar:
+        //   preçoBruto = Net ÷ (1 − PIS% − COFINS%) ÷ (1 − ICMS%)
+        // O IPI é "por fora": incide sobre esse preço bruto e é somado por cima
+        // (não é descontado de dentro do preço, é um valor adicional na nota).
+        //   valorIpi = preçoBruto × IPI%
+        // Taxes (exibido) = (preçoBruto + valorIpi) − Net.
+        // Total = Net + Taxes + Frete − Advanced Cash.
+        function parsePercentualPo(texto) {
+            return parseNumeroBrPo(String(texto || '').replace('%', ''));
+        }
+
+        function recalcularTotal() {
+            const net = parseNumeroBrPo(document.getElementById('valor_net').value);
+            const icms = parsePercentualPo(document.getElementById('tax_icms').value);
+            const ipi = parsePercentualPo(document.getElementById('tax_ipi').value);
+            const pis = parsePercentualPo(document.getElementById('tax_pis').value);
+            const cofins = parsePercentualPo(document.getElementById('tax_cofins').value);
+
+            const fatorPisCofins = 1 - (pis + cofins) / 100;
+            const precoBrutoSemIcms = fatorPisCofins > 0 ? net / fatorPisCofins : net;
+
+            const fatorIcms = 1 - icms / 100;
+            const precoBruto = fatorIcms > 0 ? precoBrutoSemIcms / fatorIcms : precoBrutoSemIcms;
+
+            const valorIpi = precoBruto * ipi / 100;
+            const taxes = (precoBruto + valorIpi) - net;
+            document.getElementById('valor_taxes').value = formatarNumeroBrPo(taxes);
+
+            const frete = parseNumeroBrPo(document.getElementById('valor_frete').value);
+            const adiantamento = parseNumeroBrPo(document.getElementById('valor_adiantamento').value);
+            const total = net + taxes + frete - adiantamento;
+            document.getElementById('valor_total').value = formatarNumeroBrPo(total);
+        }
+
+        // Começa com 3 linhas em branco, prontas pra preencher
+        adicionarLinha();
+        adicionarLinha();
+        adicionarLinha();
+        recalcularNet();
+    </script>
+</body>
+</html>

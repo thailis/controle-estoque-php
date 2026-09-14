@@ -481,6 +481,7 @@ try {
                 <a class="btn btn-outline-light btn-sm" href="parametros_compra.php">Parâmetros</a>
                 <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
                 <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
+                <a class="btn btn-outline-light btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
             </nav>
         </div>
     </header>
