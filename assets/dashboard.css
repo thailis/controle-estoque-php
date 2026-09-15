@@ -177,6 +177,7 @@ body {
 .dot-acompanhar { background: #d78706; }
 .dot-success { background: var(--success); }
 .dot-muted { background: #8796a5; }
+.dot-parametro { background: #8a6d00; }
 
 .mrp-table { min-width: 1460px; font-size: .81rem; }
 .mrp-table thead th {
@@ -230,6 +231,7 @@ body {
 .status-excesso { color: #6f42c1; background: #f1eafc; }
 .status-ok { color: var(--success); background: var(--success-soft); }
 .status-sem_demanda { color: #637485; background: #eef2f5; }
+.status-sem_parametro { color: #8a6d00; background: #fdf3d6; }
 .status-planejar { color: #a96600; background: #fff7df; }
 .status-acompanhar {color: #d78706; background-color: #fcf678;}
 

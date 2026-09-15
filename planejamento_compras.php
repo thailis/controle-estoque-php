@@ -153,8 +153,8 @@ function calcularParcelasCompraPlanejamento(
             // o dia do PRÓPRIO evento que consome o estoque. O material precisa
             // estar disponível com folga ANTES do evento (tempo de receber,
             // conferir e disponibilizar) — por isso a necessidade real, pra fins
-            // de planejamento, é sempre 10 dias antes do evento.
-            $dataNecessidade = $dias[$i]->modify('-10 days');
+            // de planejamento, é sempre 30 dias antes do evento.
+            $dataNecessidade = $dias[$i]->modify('-30 days');
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
             $janelaLocal = min($n, $i + $maxDias);

@@ -299,7 +299,7 @@ $busca = trim($_GET['busca'] ?? '');
 $fornecedor = trim($_GET['fornecedor'] ?? '');
 $projeto = trim($_GET['projeto'] ?? '');
 $statusFiltro = $_GET['status'] ?? 'critico';
-$statusPermitidos = ['todos', 'critico', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda'];
+$statusPermitidos = ['todos', 'critico', 'atencao', 'excesso', 'planejar', 'ok', 'sem_demanda', 'sem_parametro'];
 if (!in_array($statusFiltro, $statusPermitidos, true)) {
     $statusFiltro = 'critico';
 }
@@ -509,6 +509,13 @@ try {
             foreach ($linhas as &$linhaRef) {
                 $codigo = $linhaRef['codigo_componente'];
                 if (!isset($parametrosCompra[$codigo])) {
+                    // Sem os 5 parâmetros completos (MOQ, Frozen Zone, Transit Time, Min,
+                    // Max), não dá pra rodar o cálculo preciso — sinaliza isso explicitamente
+                    // em vez de mostrar um status impreciso. Só sinaliza quando existe demanda
+                    // real; sem demanda nenhuma, "sem_demanda" já faz mais sentido.
+                    if ($linhaRef['status'] !== 'sem_demanda') {
+                        $linhaRef['status'] = 'sem_parametro';
+                    }
                     continue;
                 }
                 $p = $parametrosCompra[$codigo];
@@ -525,9 +532,11 @@ try {
                     $p['setup'] !== null ? (float) $p['setup'] : 0.0
                 );
 
-                // (1) Status real dentro da janela de 90 dias: crítico (saldo já ficaria
-                // abaixo do estoque de segurança calculado, ou negativo se o cálculo der
-                // zero), atenção (abaixo do Min), excesso (acima do Max) ou ok.
+                // (1) Status do Dashboard: usa a MESMA lógica de "data sugerida de compra"
+                // do Planejamento (considera MOQ, Frozen Zone, Transit Time e Min/Max via
+                // segurancaQtd), só que com o horizonte de busca limitado aos 90 dias do
+                // Dashboard (em vez dos 12 meses do Planejamento). Excesso continua vindo
+                // da simulação de saldo simples (calcularStatusJanela).
                 $janela = calcularStatusJanela(
                     $linhaRef['estoque_atual'],
                     $progComp,
@@ -538,7 +547,30 @@ try {
                     (int) $p['estoque_max_dias'],
                     $segurancaQtd
                 );
-                $linhaRef['status'] = $janela['status'];
+
+                $statusMrp90 = calcularDataSugeridaCompra(
+                    $linhaRef['estoque_atual'],
+                    $progComp,
+                    $demComp,
+                    $hojeMrp,
+                    $hojeMrp->modify('+90 days'),
+                    (float) $p['moq'],
+                    (int) $p['frozen_zone_dias'],
+                    (int) $p['transit_time_dias'],
+                    (int) $p['estoque_min_dias'],
+                    (int) $p['estoque_max_dias'],
+                    $segurancaQtd
+                );
+
+                if ($janela['status'] === 'excesso') {
+                    $linhaRef['status'] = 'excesso';
+                } elseif ($statusMrp90['status'] === 'urgente') {
+                    $linhaRef['status'] = 'critico';
+                } elseif ($statusMrp90['status'] === 'programada') {
+                    $linhaRef['status'] = 'atencao';
+                } else {
+                    $linhaRef['status'] = 'ok';
+                }
 
                 // (2) Data/quantidade sugerida (horizonte largo), só pra mostrar quando
                 // fizer sentido (crítico ou atenção) — não muda o status, só informa.
@@ -617,6 +649,7 @@ $stats = [
     'planejar' => 0,
     'ok' => 0,
     'sem_demanda' => 0,
+    'sem_parametro' => 0,
     'sem_estoque' => 0,
 ];
 foreach ($linhas as $linha) {
@@ -664,6 +697,7 @@ $rotulosStatus = [
     'planejar' => 'Planejar',
     'ok' => 'Estoque OK',
     'sem_demanda' => 'Sem demanda',
+    'sem_parametro' => 'Sem parâmetro',
 ];
 
 function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtual, string $direcaoAtual): string
@@ -753,6 +787,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                         <option value="planejar" <?php echo $statusFiltro === 'planejar' ? 'selected' : ''; ?>>Planejar</option>
                         <option value="ok" <?php echo $statusFiltro === 'ok' ? 'selected' : ''; ?>>OK</option>
                         <option value="sem_demanda" <?php echo $statusFiltro === 'sem_demanda' ? 'selected' : ''; ?>>Sem demanda</option>
+                        <option value="sem_parametro" <?php echo $statusFiltro === 'sem_parametro' ? 'selected' : ''; ?>>Sem parâmetro</option>
                     </select>
                 </div>
                 <div class="col-6 col-md-3 col-lg-1 d-grid">
@@ -786,6 +821,11 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <span class="metric-label">Sem estoque cadastrado</span>
                 <strong><?php echo numeroBr($stats['sem_estoque'], 0); ?></strong>
                 <small>Exige conferência da base</small>
+            </article>
+            <article class="metric-card metric-info">
+                <span class="metric-label">Sem parâmetro</span>
+                <strong><?php echo numeroBr($stats['sem_parametro'], 0); ?></strong>
+                <small>Faltam MOQ, Frozen Zone, Transit Time, Min ou Max</small>
             </article>
         </section>
 
@@ -821,6 +861,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <span><i class="dot dot-planejar"></i> Planejar: necessidade futura fora dos 90 dias</span>
                 <span><i class="dot dot-success"></i> OK: dentro da faixa esperada</span>
                 <span><i class="dot dot-muted"></i> Sem demanda no período</span>
+                <span><i class="dot dot-parametro"></i> Sem parâmetro: faltam MOQ, Frozen Zone, Transit Time, Min ou Max cadastrados</span>
             </div>
 
             <div class="table-responsive">
