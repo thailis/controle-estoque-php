@@ -12,6 +12,8 @@
 // acrescentar uma tabela e um botão de "salvar" sem mexer no layout.
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 // Endpoint chamado via JS (fetch) quando o usuário digita/sai do campo "Part
 // Number" — busca a descrição do componente na BOM, se existir. Se não
 // encontrar, devolve null e o campo Description continua livre pra digitar
@@ -227,6 +229,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
                 <p class="mb-0">Preencha os dados e gere o PDF direto pelo navegador</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-outline-light btn-sm" href="index.php">🏠 Dashboard</a>
                 <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
                 <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>

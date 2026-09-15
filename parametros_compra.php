@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 set_time_limit(300);
 
 // Interpreta números em formato BR: "1.400" = 1400 (milhar), "1.234,56" = 1234.56.
@@ -48,6 +50,7 @@ $importados = 0;
 $erros = 0;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
+    exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
@@ -194,6 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 // usa o mesmo INSERT ... ON DUPLICATE KEY UPDATE do CSV — cadastrar um componente
 // que já existe simplesmente atualiza os parâmetros dele, sem duplicar linha.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
+    exigirComprador();
     $codigoManual = trim($_POST['componente_manual'] ?? '');
     $moqManual = parseNumeroBrParametros(trim($_POST['moq_manual'] ?? ''));
     $frozenManual = parseNumeroBrParametros(trim($_POST['frozen_manual'] ?? ''));
@@ -236,6 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 
 // Edição direta dos parâmetros de um componente já cadastrado, sem CSV.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    exigirComprador();
     $codigoEditar = trim($_POST['codigo_editar'] ?? '');
     $moqEditado = parseNumeroBrParametros(trim($_POST['moq_editado'] ?? ''));
     $frozenEditado = parseNumeroBrParametros(trim($_POST['frozen_editado'] ?? ''));
@@ -542,7 +547,9 @@ if (!empty($rows)) {
 <body>
     <div class="container" style="max-width: 1180px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
+                <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>

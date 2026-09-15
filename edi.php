@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 set_time_limit(300);
 
 $mensagens = [];
@@ -141,6 +143,7 @@ function formatarDataBr(?string $data): string
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
+    exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
     $modo = $_POST['modo'] ?? 'adicionar';
 
@@ -344,6 +347,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
 // Alternar o status "atendido" de um evento EDI, sem apagar a linha
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
+    exigirComprador();
     $idAlternar = (int) ($_POST['id'] ?? 0);
     if ($idAlternar > 0) {
         $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
@@ -365,6 +369,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 // Semana/Ano são calculados a partir da data digitada (caminho inverso do
 // que já usávamos antes — agora a data é o dado de entrada, não a semana).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
+    exigirComprador();
     $pn2Manual = trim($_POST['pn2_manual'] ?? '') ?: null;
     $materialManual = trim($_POST['material_manual'] ?? '');
     $marcaManual = trim($_POST['marca_manual'] ?? '') ?: null;
@@ -405,6 +410,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 // inversa usada na importação/cadastro manual) — não precisa mais editar
 // esses dois campos separadamente.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    exigirComprador();
     $idEditar = (int) ($_POST['id'] ?? 0);
     $dataEditadaBruta = trim($_POST['data_editada'] ?? '');
     $quantidadeEditada = parseQuantidadeEdi(trim($_POST['quantidade_editada'] ?? ''));
@@ -626,7 +632,9 @@ while ($row = mysqli_fetch_assoc($result)) {
 <body>
     <div class="container" style="max-width: 1180px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
+                <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>

@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 set_time_limit(300);
 
 $mensagens = [];
@@ -115,6 +117,7 @@ function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
+    exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
     $modo = $_POST['modo'] ?? 'adicionar';
 
@@ -266,6 +269,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 // removida — desfaz a entrada sem deixar resíduo, mesmo que o estoque tenha
 // mudado depois por outros motivos.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
+    exigirComprador();
     $idAlternar = (int) ($_POST['id'] ?? 0);
 
     if ($idAlternar > 0) {
@@ -335,6 +339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 
 // Inserção manual de uma nova programação direto pelo site, sem CSV
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
+    exigirComprador();
     $componenteManual = trim($_POST['componente_manual'] ?? '');
     $dataManual = parseDataProgramacao(trim($_POST['data_manual'] ?? ''));
     $quantidadeManual = parseQuantidade(trim($_POST['quantidade_manual'] ?? ''));
@@ -362,6 +367,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 // aqui deixaria a quantidade da programação e a do estoque dessincronizadas;
 // é preciso reabrir primeiro).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    exigirComprador();
     $idEditar = (int) ($_POST['id'] ?? 0);
     $dataEditada = parseDataProgramacao(trim($_POST['data_editada'] ?? ''));
     $quantidadeEditada = parseQuantidade(trim($_POST['quantidade_editada'] ?? ''));
@@ -583,7 +589,9 @@ while ($row = mysqli_fetch_assoc($result)) {
 <body>
     <div class="container" style="max-width: 1180px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
+                <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>

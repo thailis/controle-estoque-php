@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 set_time_limit(300);
 
 // Interpreta números em formato BR: "1.400" = 1400 (milhar), "1.234,56" = 1234.56,
@@ -52,6 +54,7 @@ $importados = 0;
 $erros = 0;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
+    exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
@@ -225,6 +228,7 @@ function h(mixed $valor): string
 // origem = "ajuste_manual". Isso preserva o histórico completo (de onde veio
 // cada entrada) e continua permitindo auditoria depois.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_estoque_ajuste') {
+    exigirComprador();
     $codigoAjuste = trim($_POST['codigo_componente_editado'] ?? '');
     if ($codigoAjuste === '') {
         $mensagens[] = '❌ Componente inválido pra ajuste.';
@@ -501,7 +505,9 @@ if (!empty($componentes)) {
 <body>
     <div class="container-fluid" style="max-width: 1400px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
+                <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>

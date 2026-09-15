@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 // Evita timeout do PHP em importações grandes; a lentidão real é de rede até o banco,
 // não do processamento em si, então aumentamos a margem de segurança.
 set_time_limit(300);
@@ -48,6 +50,7 @@ $erros = 0;
 // idênticas em tudo, só uma é afetada por clique (não trava a página, só limita o
 // alcance do clique único).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
+    exigirComprador();
     $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
     $valoresOriginais = [];
     foreach ($campos as $campo) {
@@ -84,6 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 // planejamento já está travado em N pela regra acima, e essa ação nem deveria
 // ser possível de clicar, mas a trava é reforçada aqui no servidor também).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_planejamento') {
+    exigirComprador();
     $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
     $valoresOriginais = [];
     foreach ($campos as $campo) {
@@ -117,6 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
+    exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
@@ -347,7 +352,9 @@ while ($row = mysqli_fetch_assoc($result)) {
 <body>
     <div class="container-fluid" style="max-width: 1600px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
+            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
+                <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>

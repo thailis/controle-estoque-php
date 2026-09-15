@@ -1,6 +1,8 @@
 <?php
 require_once 'conexao.php';
 
+require_once 'auth.php';
+exigirLogin();
 function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
@@ -413,6 +415,8 @@ try {
                 <p class="mb-0">Saldo projetado dia a dia, vários componentes lado a lado</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
                 <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>
                 <a class="btn btn-outline-light btn-sm" href="edi.php">EDI</a>
