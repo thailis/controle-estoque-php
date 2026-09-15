@@ -505,9 +505,6 @@ if (!empty($componentes)) {
 <body>
     <div class="container-fluid" style="max-width: 1400px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
-            <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
-                <a class="btn btn-outline-light btn-sm" href="trocar_senha.php">🔑 Alterar senha</a>
-                <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
