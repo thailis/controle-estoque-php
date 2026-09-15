@@ -416,6 +416,7 @@ try {
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="trocar_senha.php">🔑 Alterar senha</a>
                 <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
                 <a class="btn btn-outline-light btn-sm" href="estoque.php">Estoque</a>

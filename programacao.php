@@ -590,6 +590,7 @@ while ($row = mysqli_fetch_assoc($result)) {
     <div class="container" style="max-width: 1180px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
             <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <a class="btn btn-outline-light btn-sm" href="trocar_senha.php">🔑 Alterar senha</a>
                 <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
