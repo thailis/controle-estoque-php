@@ -4,9 +4,14 @@
 //
 // Como usar: em cada <td> editável, adicione:
 //   class="celula-editavel"
-//   data-id="123"            (identificador do registro)
+//   data-id="123"            (identificador do registro, quando existir)
 //   data-campo="quantidade"  (nome do campo, o backend decide o que fazer com ele)
 //   data-valor-bruto="1234,56"  (valor no formato que o input deve mostrar)
+//   data-extra='{"chave":"valor"}'  (opcional — JSON com dados extras enviados
+//                                     junto no POST, prefixados com "orig_".
+//                                     Usado quando não existe um id único e a
+//                                     linha precisa ser identificada por vários
+//                                     campos ao mesmo tempo, como na BOM.)
 //
 // A página precisa definir, ANTES de incluir este script:
 //   window.INLINE_EDIT_ENDPOINT = 'programacao.php'; (a própria página, ou outra)
@@ -60,9 +65,20 @@
 
             const dados = new URLSearchParams();
             dados.set('acao', window.INLINE_EDIT_ACAO);
-            dados.set('id', celula.dataset.id);
+            dados.set('id', celula.dataset.id ?? '');
             dados.set('campo', celula.dataset.campo);
             dados.set('valor', novoValor);
+
+            if (celula.dataset.extra) {
+                try {
+                    const extra = JSON.parse(celula.dataset.extra);
+                    Object.keys(extra).forEach((chave) => {
+                        dados.set('orig_' + chave, extra[chave]);
+                    });
+                } catch (e) {
+                    // data-extra malformado — ignora, segue só com id/campo/valor.
+                }
+            }
 
             fetch(window.INLINE_EDIT_ENDPOINT, {
                 method: 'POST',

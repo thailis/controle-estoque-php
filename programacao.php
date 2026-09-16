@@ -798,12 +798,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Fornecedor</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
-                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="7" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="6" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -847,13 +846,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                         <?php endif; ?>
                                     ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
-                                    <td>
-                                        <?php if ($estaAtendido): ?>
-                                            <span class="text-muted small" title="Reabra o item antes de editar">—</span>
-                                        <?php else: ?>
-                                            <span class="text-muted small">Duplo clique na data/quantidade</span>
-                                        <?php endif; ?>
-                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>

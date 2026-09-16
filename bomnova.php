@@ -49,6 +49,52 @@ $erros = 0;
 // hora de casar o valor. LIMIT 1 garante que, mesmo em um cenário raro de duas linhas
 // idênticas em tudo, só uma é afetada por clique (não trava a página, só limita o
 // alcance do clique único).
+// Edição inline (duplo clique) de um campo por vez. Mesma limitação de sempre:
+// sem coluna id na tabela, a linha só pode ser identificada pela combinação de
+// TODOS os campos originais ao mesmo tempo (enviados pelo front como orig_*).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $campo = (string) ($_POST['campo'] ?? '');
+    $novoValor = trim((string) ($_POST['valor'] ?? ''));
+
+    if (!in_array($campo, $camposEditaveis, true)) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    $camposCompostos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginais = [];
+    foreach ($camposCompostos as $c) {
+        $valoresOriginais[] = (string) ($_POST['orig_' . $c] ?? '');
+    }
+
+    $condicoes = array_map(fn($c) => "COALESCE($c, '') = ?", $camposCompostos);
+    $sqlEditar = "UPDATE bomnova SET $campo = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
+
+    $stmtEditar = mysqli_prepare($conn, $sqlEditar);
+    $tiposEditar = str_repeat('s', 1 + count($camposCompostos));
+    $parametrosEditar = array_merge([$novoValor], $valoresOriginais);
+    mysqli_stmt_bind_param($stmtEditar, $tiposEditar, ...$parametrosEditar);
+    mysqli_stmt_execute($stmtEditar);
+    $linhasAfetadas = mysqli_stmt_affected_rows($stmtEditar);
+    mysqli_stmt_close($stmtEditar);
+
+    if ($linhasAfetadas === 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+        exit;
+    }
+
+    echo json_encode(['ok' => true, 'exibido' => $novoValor]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
     exigirComprador();
     $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
@@ -485,17 +531,31 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     }
                                     $planBadgeClasse = $planejamento === 'N' ? 'badge-mrp-n' : 'badge-mrp-s';
                                 ?>
+                                <?php
+                                    $contextoLinha = json_encode([
+                                        'planta' => (string) ($row['planta'] ?? ''),
+                                        'projeto' => (string) ($row['projeto'] ?? ''),
+                                        'material' => (string) ($row['material'] ?? ''),
+                                        'tipo' => (string) ($row['tipo'] ?? ''),
+                                        'fornecedor' => (string) ($row['fornecedor'] ?? ''),
+                                        'codigo_componente' => (string) ($row['codigo_componente'] ?? ''),
+                                        'pn' => (string) ($row['pn'] ?? ''),
+                                        'descricao' => (string) ($row['descricao'] ?? ''),
+                                        'consumo' => (string) ($row['consumo'] ?? ''),
+                                        'um' => (string) ($row['um'] ?? ''),
+                                    ], JSON_HEX_APOS | JSON_HEX_QUOT);
+                                ?>
                                 <tr>
-                                    <td><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['tipo'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="projeto" data-valor-bruto="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="tipo" data-valor-bruto="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['tipo'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
-                                    <td><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
-                                    <td><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
-                                    <td class="text-end"><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="codigo_componente" data-valor-bruto="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
+                                    <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
                                     <td>
                                         <form method="POST" class="d-inline m-0">
                                             <input type="hidden" name="acao" value="toggle_mrp">
@@ -570,5 +630,10 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'bomnova.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
 </body>
 </html>
