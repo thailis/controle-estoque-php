@@ -723,6 +723,31 @@ if (!empty($componentes)) {
     </script>
     <script src="assets/inline-edit.js"></script>
     <script>
+        // O Total nunca é editado manualmente — ele é sempre a soma das colunas
+        // de estoque preenchidas na própria linha. Como a edição por duplo
+        // clique só atualiza a célula editada (sem recarregar a página), esse
+        // listener recalcula o Total daquela linha na hora, assim que qualquer
+        // planta é salva com sucesso.
+        document.addEventListener('inline-edit:salvo', (evento) => {
+            const linha = evento.target.closest('tr');
+            if (!linha) return;
+
+            const totalCel = linha.querySelector('.col-total');
+            if (!totalCel) return;
+
+            let soma = 0;
+            linha.querySelectorAll('td.celula-editavel').forEach((celula) => {
+                const bruto = (celula.dataset.valorBruto || '0').replace(',', '.');
+                const numero = parseFloat(bruto);
+                if (!isNaN(numero)) {
+                    soma += numero;
+                }
+            });
+
+            totalCel.textContent = soma.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        });
+    </script>
+    <script>
         // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/
         // cabeçalho fixo não respeitam isso direito. Isso força o scroll de

@@ -92,6 +92,10 @@
                         celula.dataset.valorBruto = novoValor;
                         celula.classList.add('inline-edit-sucesso');
                         setTimeout(() => celula.classList.remove('inline-edit-sucesso'), 900);
+                        celula.dispatchEvent(new CustomEvent('inline-edit:salvo', {
+                            bubbles: true,
+                            detail: { campo: celula.dataset.campo, exibido: json.exibido, valorBruto: novoValor },
+                        }));
                     } else {
                         celula.textContent = valorExibidoAntigo;
                         alert(json.erro || 'Não foi possível salvar.');
