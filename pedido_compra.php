@@ -14,6 +14,18 @@ require_once 'conexao.php';
 
 require_once 'auth.php';
 exigirLogin();
+
+// Filiais cadastradas (endereço de entrega). A tabela "filiais" precisa
+// existir no banco — veja sql_filiais.sql. Cada opção do dropdown carrega o
+// endereço/CEP já formatados, aplicados nos campos "Delivery at" via JS.
+$filiais = [];
+$resFiliais = mysqli_query($conn, "SELECT id, nome, razao_social, cnpj, endereco, cep, responsavel, email FROM filiais ORDER BY nome");
+if ($resFiliais) {
+    while ($linhaFilial = mysqli_fetch_assoc($resFiliais)) {
+        $filiais[] = $linhaFilial;
+    }
+}
+
 // Endpoint chamado via JS (fetch) quando o usuário digita/sai do campo "Part
 // Number" — busca a descrição do componente na BOM, se existir. Se não
 // encontrar, devolve null e o campo Description continua livre pra digitar
@@ -211,6 +223,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
             body { background: #fff; }
             .no-print { display: none !important; }
+            .linha-vazia-print { display: none !important; }
             .po-sheet { box-shadow: none; border: none; margin: 0; max-width: 100%; }
             table.po-tabela .col-acao { display: none; }
             table.po-tabela .col-acao-largura { display: none; }
@@ -346,6 +359,17 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
         <table class="po-rodape">
             <tr>
                 <td>
+                    <div class="po-rodape-linha no-print">
+                        <span class="lado-a">Filial:</span>
+                        <span class="lado-b">
+                            <select id="filial_selecionada" class="form-select form-select-sm" onchange="aplicarFilial()" style="width:auto; display:inline-block;">
+                                <option value="">Selecione...</option>
+                                <?php foreach ($filiais as $f): ?>
+                                    <option value="<?php echo (int) $f['id']; ?>"><?php echo htmlspecialchars($f['nome']); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </span>
+                    </div>
                     <div class="po-rodape-linha"><span class="lado-a">Payment:</span><span class="lado-b"><input type="text" id="rodape_payment" value="28 DDL"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Incoterms:</span><span class="lado-b"><input type="text" id="rodape_incoterms" value="CIF"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><input type="text" id="rodape_delivery1" value="YAPP Americana - RUA DOOSAN, 777, Americana/SP"></span></div>
@@ -371,7 +395,56 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
     </div>
 
     <script>
+        // Antes de imprimir/exportar o PDF, esconde linhas de material que
+        // ficaram em branco (sem Part Number nem Description preenchidos) —
+        // linhas adicionadas mas não usadas não devem aparecer no documento
+        // final. Depois de imprimir, volta tudo ao normal pra continuar editando.
+        window.addEventListener('beforeprint', () => {
+            let numeroVisivel = 0;
+            document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
+                const part = linha.querySelector('.f-part')?.value.trim() ?? '';
+                const desc = linha.querySelector('.f-desc')?.value.trim() ?? '';
+                const vazia = part === '' && desc === '';
+                linha.classList.toggle('linha-vazia-print', vazia);
+
+                const celIdx = linha.querySelector('.col-idx');
+                if (celIdx) {
+                    celIdx.dataset.numeroOriginal = celIdx.textContent;
+                    if (!vazia) {
+                        numeroVisivel++;
+                        celIdx.textContent = numeroVisivel;
+                    }
+                }
+            });
+        });
+        window.addEventListener('afterprint', () => {
+            document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
+                linha.classList.remove('linha-vazia-print');
+                const celIdx = linha.querySelector('.col-idx');
+                if (celIdx && celIdx.dataset.numeroOriginal) {
+                    celIdx.textContent = celIdx.dataset.numeroOriginal;
+                    delete celIdx.dataset.numeroOriginal;
+                }
+            });
+        });
+
         let contadorLinhas = 0;
+
+        const filiaisMap = <?php echo json_encode(array_column($filiais, null, 'id'), JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+        function aplicarFilial() {
+            const id = document.getElementById('filial_selecionada').value;
+            const filial = filiaisMap[id];
+            if (!filial) return;
+            document.getElementById('cli_company').value = filial.razao_social;
+            document.getElementById('cli_taxid').value = filial.cnpj;
+            document.getElementById('cli_adress').value = filial.endereco;
+            document.getElementById('cli_zip').value = filial.cep;
+            document.getElementById('cli_buyer').value = filial.responsavel;
+            document.getElementById('cli_email').value = filial.email;
+            document.getElementById('rodape_delivery1').value = filial.nome + ' - ' + filial.endereco;
+            document.getElementById('rodape_delivery2').value = filial.cep;
+        }
 
         function importarAssinatura(evento) {
             const arquivo = evento.target.files[0];
