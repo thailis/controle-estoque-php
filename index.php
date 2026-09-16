@@ -13,6 +13,23 @@ function numeroBr($valor, int $decimais = 2): string
     return number_format((float) $valor, $decimais, ',', '.');
 }
 
+// Monta o texto exibido no badge de status. Pra "atenção", detalha o motivo
+// (chegada programada em breve, perto do mínimo, ou os dois) em vez de mostrar
+// só "Atenção" genérico — o filtro e a contagem continuam agrupados como
+// "atencao" por trás, isso é só o texto mostrado na tela.
+function rotuloBadge(array $linha, array $rotulosStatus): string
+{
+    if ($linha['status'] !== 'atencao') {
+        return $rotulosStatus[$linha['status']];
+    }
+    return match ($linha['atencao_motivo'] ?? null) {
+        'chegada' => 'Atenção · Chegada em breve',
+        'minimo' => 'Atenção · Perto do mínimo',
+        'ambos' => 'Atenção · Chegada + Mínimo',
+        default => 'Atenção',
+    };
+}
+
 // Classifica o componente dentro da janela de curto prazo (hoje até hoje+diasJanela),
 // usando os limites Min/Max (em dias de cobertura) convertidos em quantidade através da
 // demanda "local" (próximos 60 dias a partir de hoje — não o horizonte inteiro, pra não
@@ -238,7 +255,11 @@ function calcularDataSugeridaCompra(
         // o piso é sempre 0 — comportamento idêntico ao de antes (só dispara quando o
         // saldo físico fica negativo).
         if ($saldoPorDia[$i] < $segurancaQtd) {
-            $dataNecessidade = $dias[$i];
+            // O dia em que o saldo estoura é o dia do PRÓPRIO evento que consome o
+            // estoque. A necessidade real, pra fins de planejamento, é 30 dias antes
+            // desse evento (tempo de receber, conferir e disponibilizar o material) —
+            // mesma margem usada no Planejamento de Compras.
+            $dataNecessidade = $dias[$i]->modify('-30 days');
             $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
             // Quantidade alvo = soma direta da demanda JÁ CONHECIDA nos próximos Max dias
@@ -562,12 +583,35 @@ try {
                     $segurancaQtd
                 );
 
+                // Atenção passa a ser um alerta concreto, com dois motivos possíveis:
+                // (a) já existe entrega programada chegando nos próximos 15 dias — vale
+                //     acompanhar/cobrar o fornecedor pra garantir que chegue no prazo;
+                // (b) o estoque está chegando perto do Mínimo cadastrado (dentro da janela
+                //     de 90 dias) e ainda não existe nenhuma compra programada cobrindo isso.
+                $limite15Dias = $hojeMrp->modify('+15 days')->format('Y-m-d');
+                $hojeChaveDash = $hojeMrp->format('Y-m-d');
+                $chegadaEm15Dias = false;
+                foreach ($progComp as $dataProg => $qtdProg) {
+                    if ($qtdProg > 0 && $dataProg >= $hojeChaveDash && $dataProg <= $limite15Dias) {
+                        $chegadaEm15Dias = true;
+                        break;
+                    }
+                }
+                $pertoDoMinimoSemCompra = $janela['status'] === 'atencao';
+
                 if ($janela['status'] === 'excesso') {
                     $linhaRef['status'] = 'excesso';
                 } elseif ($statusMrp90['status'] === 'urgente') {
                     $linhaRef['status'] = 'critico';
-                } elseif ($statusMrp90['status'] === 'programada') {
+                } elseif ($chegadaEm15Dias || $pertoDoMinimoSemCompra) {
                     $linhaRef['status'] = 'atencao';
+                    if ($chegadaEm15Dias && $pertoDoMinimoSemCompra) {
+                        $linhaRef['atencao_motivo'] = 'ambos';
+                    } elseif ($chegadaEm15Dias) {
+                        $linhaRef['atencao_motivo'] = 'chegada';
+                    } else {
+                        $linhaRef['atencao_motivo'] = 'minimo';
+                    }
                 } else {
                     $linhaRef['status'] = 'ok';
                 }
@@ -856,7 +900,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
 
             <div class="status-legend" aria-label="Legenda de status">
                 <span><i class="dot dot-danger"></i> Urgente: saldo ficaria negativo dentro de 90 dias</span>
-                <span><i class="dot dot-warning"></i> Atenção: abaixo do estoque mínimo configurado (ou até 20% de margem, sem parâmetros)</span>
+                <span><i class="dot dot-warning"></i> Atenção: chegada programada nos próximos 15 dias, ou perto do Mínimo sem compra programada</span>
                 <span><i class="dot dot-excesso"></i> Excesso: acima do estoque máximo configurado</span>
                 <span><i class="dot dot-planejar"></i> Planejar: necessidade futura fora dos 90 dias</span>
                 <span><i class="dot dot-success"></i> OK: dentro da faixa esperada</span>
@@ -913,7 +957,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                                         <?php if ($linha['status'] === 'planejar' && ($linha['mrp_data_sugerida'] ?? null)): ?>
                                             <span class="status-badge status-planejar" title="Comprar em <?php echo h($linha['mrp_data_sugerida']->format('d/m/Y')); ?> • Quantidade sugerida: <?php echo numeroBr($linha['mrp_quantidade_sugerida']); ?>">Planejar</span>
                                         <?php else: ?>
-                                            <span class="status-badge status-<?php echo h($linha['status']); ?>"><?php echo h($rotulosStatus[$linha['status']]); ?></span>
+                                            <span class="status-badge status-<?php echo h($linha['status']); ?>"><?php echo h(rotuloBadge($linha, $rotulosStatus)); ?></span>
                                         <?php endif; ?>
                                     </td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($linha['codigo_componente']); ?>">Ver evolução</a></td>
