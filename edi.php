@@ -409,6 +409,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 // A data digitada aqui recalcula sozinha a semana e o ano (mesma regra
 // inversa usada na importação/cadastro manual) — não precisa mais editar
 // esses dois campos separadamente.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $id = (int) ($_POST['id'] ?? 0);
+    $campo = (string) ($_POST['campo'] ?? '');
+    $valor = trim((string) ($_POST['valor'] ?? ''));
+
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade'], true)) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    if ($campo === 'quantidade') {
+        $quantidadeEditada = parseQuantidadeEdi($valor);
+        if ($quantidadeEditada === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Quantidade inválida.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE edi SET quantidade = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmt, 'di', $quantidadeEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => (string) $quantidadeEditada]);
+        exit;
+    }
+
+    // campo === 'data'
+    $dataEditadaObj = parseDataEdi($valor);
+    if ($dataEditadaObj === null) {
+        echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
+        exit;
+    }
+    $periodoEditado = calcularSemanaEAno($dataEditadaObj);
+    $novaData = $dataEditadaObj->format('Y-m-d');
+    $stmt = mysqli_prepare($conn, "UPDATE edi SET data_inicio = ?, data_fim = ?, semana = ?, ano = ? WHERE _tidb_rowid = ?");
+    mysqli_stmt_bind_param($stmt, 'ssiii', $novaData, $novaData, $periodoEditado['semana'], $periodoEditado['ano'], $id);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    echo json_encode(['ok' => true, 'exibido' => $dataEditadaObj->format('d/m/Y')]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
     exigirComprador();
     $idEditar = (int) ($_POST['id'] ?? 0);
@@ -882,12 +929,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-center">Semana</th>
                             <th class="text-center">Quantidade</th>
                             <th>Data</th>
-                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -921,28 +967,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
                                     <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
 
-                                    <?php if ($emEdicao): ?>
-                                        <td colspan="3">
-                                            <form method="POST" class="d-flex gap-2 align-items-center flex-wrap m-0">
-                                                <input type="hidden" name="acao" value="editar_registro">
-                                                <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
-                                                <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
-                                                <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
-                                                <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:110px" value="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" required>
-                                                <input type="text" name="data_editada" class="form-control form-control-sm" style="width:130px" placeholder="dd/mm/aaaa" value="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" required>
-                                                <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
-                                            </form>
-                                        </td>
-                                    <?php else: ?>
-                                        <td class="text-center"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
-                                        <td><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
-                                        <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
-                                        </td>
-                                    <?php endif; ?>
+                                    <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="quantidade" data-valor-bruto="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="data" data-valor-bruto="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -969,6 +995,11 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'edi.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
     <script>
         // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/

@@ -239,6 +239,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 }
 
 // Edição direta dos parâmetros de um componente já cadastrado, sem CSV.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $codigo = trim((string) ($_POST['id'] ?? ''));
+    $campo = (string) ($_POST['campo'] ?? '');
+    $valor = trim((string) ($_POST['valor'] ?? ''));
+
+    $colunasPorCampo = [
+        'moq' => 'moq',
+        'frozen' => 'frozen_zone_dias',
+        'transit' => 'transit_time_dias',
+        'min' => 'estoque_min_dias',
+        'max' => 'estoque_max_dias',
+        'setup' => 'setup',
+    ];
+
+    if ($codigo === '' || !isset($colunasPorCampo[$campo])) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    $valorTextoLimpo = $campo === 'setup' ? str_replace('%', '', $valor) : $valor;
+    $numero = parseNumeroBrParametros($valorTextoLimpo);
+    if ($numero === null) {
+        echo json_encode(['ok' => false, 'erro' => 'Valor inválido.']);
+        exit;
+    }
+
+    $coluna = $colunasPorCampo[$campo];
+    $ehInteiro = in_array($campo, ['frozen', 'transit', 'min', 'max'], true);
+    $valorGravar = $ehInteiro ? (int) $numero : (float) $numero;
+    $tipoBind = $ehInteiro ? 'i' : 'd';
+
+    // Se o componente ainda não tem linha em parametros_compra, cria uma na hora.
+    $stmt = mysqli_prepare($conn, "INSERT INTO parametros_compra (codigo_componente, $coluna) VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE $coluna = VALUES($coluna)");
+    mysqli_stmt_bind_param($stmt, 's' . $tipoBind, $codigo, $valorGravar);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+
+    $exibido = $campo === 'setup'
+        ? number_format($valorGravar, 2, ',', '.') . '%'
+        : ($ehInteiro ? (string) $valorGravar : number_format($valorGravar, 0, ',', '.'));
+
+    echo json_encode(['ok' => true, 'exibido' => $exibido]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
     exigirComprador();
     $codigoEditar = trim($_POST['codigo_editar'] ?? '');
@@ -706,12 +759,11 @@ if (!empty($rows)) {
                             <th class="text-end">Estoque Max (dias)</th>
                             <th class="text-end">Setup (%)</th>
                             <th class="text-end">Estoque Segurança (un)</th>
-                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="9" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -723,44 +775,16 @@ if (!empty($rows)) {
                                     <td><strong><?php echo h($codigoLinha); ?></strong></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? '—'); ?></span></td>
 
-                                    <?php if ($emEdicao): ?>
-                                        <td colspan="6">
-                                            <form method="POST" class="d-flex gap-2 align-items-center flex-wrap m-0">
-                                                <input type="hidden" name="acao" value="editar_registro">
-                                                <input type="hidden" name="codigo_editar" value="<?php echo h($codigoLinha); ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
-                                                <input type="text" name="moq_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['moq'] ?? ''); ?>" placeholder="MOQ">
-                                                <input type="text" name="frozen_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['frozen_zone_dias'] ?? ''); ?>" placeholder="Lead Time">
-                                                <input type="text" name="transit_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['transit_time_dias'] ?? ''); ?>" placeholder="Transit">
-                                                <input type="text" name="min_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['estoque_min_dias'] ?? ''); ?>" placeholder="Min">
-                                                <input type="text" name="max_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['estoque_max_dias'] ?? ''); ?>" placeholder="Max">
-                                                <input type="text" name="setup_editado" class="form-control form-control-sm text-end" style="width:90px" value="<?php echo h($row['setup'] ?? ''); ?>" placeholder="Setup %">
-                                                <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
-                                            </form>
-                                        </td>
-                                        <?php $celSeg = celulaEstoqueSeguranca($row); ?>
-                                        <td class="text-end text-muted" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?> (recalcula ao salvar)"<?php endif; ?>><?php echo h($celSeg[0]); ?></td>
-                                        <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
-                                        </td>
-                                    <?php else: ?>
-                                        <td class="text-end"><?php echo $row['moq'] !== null ? number_format((float) $row['moq'], 0, ',', '.') : '—'; ?></td>
-                                        <td class="text-end"><?php echo $row['frozen_zone_dias'] ?? '—'; ?></td>
-                                        <td class="text-end"><?php echo $row['transit_time_dias'] ?? '—'; ?></td>
-                                        <td class="text-end"><?php echo $row['estoque_min_dias'] ?? '—'; ?></td>
-                                        <td class="text-end"><?php echo $row['estoque_max_dias'] ?? '—'; ?></td>
-                                        <td class="text-end"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
-                                        <?php $celSeg = celulaEstoqueSeguranca($row); ?>
-                                        <td class="text-end" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?>"<?php endif; ?>>
-                                            <?php echo h($celSeg[0]); ?>
-                                        </td>
-                                        <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo urlencode($codigoLinha); ?>#linha-<?php echo urlencode($codigoLinha); ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
-                                        </td>
-                                    <?php endif; ?>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="moq" data-valor-bruto="<?php echo h($row['moq'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['moq'] !== null ? number_format((float) $row['moq'], 0, ',', '.') : '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="frozen" data-valor-bruto="<?php echo h($row['frozen_zone_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['frozen_zone_dias'] ?? '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="transit" data-valor-bruto="<?php echo h($row['transit_time_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['transit_time_dias'] ?? '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="min" data-valor-bruto="<?php echo h($row['estoque_min_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_min_dias'] ?? '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="max" data-valor-bruto="<?php echo h($row['estoque_max_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_max_dias'] ?? '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="setup" data-valor-bruto="<?php echo h($row['setup'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
+                                    <?php $celSeg = celulaEstoqueSeguranca($row); ?>
+                                    <td class="text-end" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?>"<?php endif; ?>>
+                                        <?php echo h($celSeg[0]); ?>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -787,6 +811,11 @@ if (!empty($rows)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'parametros_compra.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
     <script>
         // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/
