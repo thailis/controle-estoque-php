@@ -4,7 +4,7 @@ require_once 'auth.php';
 
 exigirLogin();
 // Só Comprador gerencia usuários. Visualizador nem carrega esta tela.
-exigirComprador();
+exigirAdministrador();
 
 function h(mixed $valor): string
 {
@@ -16,12 +16,12 @@ $erros = [];
 
 // Criar novo usuário
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'criar') {
-    exigirComprador();
+    exigirAdministrador();
 
     $nome = trim($_POST['nome'] ?? '');
     $usuario = trim($_POST['usuario'] ?? '');
     $senha = (string) ($_POST['senha'] ?? '');
-    $papel = ($_POST['papel'] ?? '') === 'comprador' ? 'comprador' : 'visualizador';
+    $papel = in_array($_POST['papel'] ?? '', ['comprador', 'administrador'], true) ? $_POST['papel'] : 'visualizador';
 
     if ($nome === '' || $usuario === '' || $senha === '') {
         $erros[] = 'Preencha nome, usuário e senha.';
@@ -45,9 +45,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'criar')
 
 // Trocar o papel (comprador <-> visualizador)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'trocar_papel') {
-    exigirComprador();
+    exigirAdministrador();
     $id = (int) ($_POST['id'] ?? 0);
-    $novoPapel = ($_POST['novo_papel'] ?? '') === 'comprador' ? 'comprador' : 'visualizador';
+    $novoPapel = in_array($_POST['novo_papel'] ?? '', ['comprador', 'administrador'], true) ? $_POST['novo_papel'] : 'visualizador';
     $stmt = mysqli_prepare($conn, "UPDATE usuarios SET papel = ? WHERE id = ?");
     mysqli_stmt_bind_param($stmt, 'si', $novoPapel, $id);
     mysqli_stmt_execute($stmt);
@@ -57,7 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'trocar_
 
 // Ativar/desativar (em vez de excluir de vez, é mais seguro)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_ativo') {
-    exigirComprador();
+    exigirAdministrador();
     $id = (int) ($_POST['id'] ?? 0);
     if ($id === (int) ($_SESSION['usuario_id'] ?? 0)) {
         $erros[] = 'Você não pode desativar seu próprio usuário.';
@@ -72,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 
 // Redefinir senha
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefinir_senha') {
-    exigirComprador();
+    exigirAdministrador();
     $id = (int) ($_POST['id'] ?? 0);
     $novaSenha = (string) ($_POST['nova_senha'] ?? '');
     if (strlen($novaSenha) < 6) {
@@ -108,7 +108,7 @@ while ($linha = mysqli_fetch_assoc($res)) {
             <div>
                 <span class="eyebrow">Supply Chain • Planejamento de materiais</span>
                 <h1>Usuários</h1>
-                <p class="mb-0">Logado como <?php echo h(nomeUsuarioLogado()); ?> (Comprador)</p>
+                <p class="mb-0">Logado como <?php echo h(nomeUsuarioLogado()); ?> (Administrador)</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
@@ -152,6 +152,7 @@ while ($linha = mysqli_fetch_assoc($res)) {
                     <select name="papel" class="form-select">
                         <option value="visualizador">Visualizador</option>
                         <option value="comprador">Comprador</option>
+                        <option value="administrador">Administrador</option>
                     </select>
                 </div>
                 <div class="col-md-1 d-grid align-items-end">
@@ -190,6 +191,7 @@ while ($linha = mysqli_fetch_assoc($res)) {
                                     <select name="novo_papel" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto;">
                                         <option value="visualizador" <?php echo $u['papel'] === 'visualizador' ? 'selected' : ''; ?>>Visualizador</option>
                                         <option value="comprador" <?php echo $u['papel'] === 'comprador' ? 'selected' : ''; ?>>Comprador</option>
+                                        <option value="administrador" <?php echo $u['papel'] === 'administrador' ? 'selected' : ''; ?>>Administrador</option>
                                     </select>
                                 </form>
                             </td>

@@ -769,7 +769,9 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <p class="mb-0">SAP - Site Avançado em Planilhas</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <?php if (ehAdministrador()): ?>
                 <a class="btn btn-outline-light btn-sm" href="usuarios.php">👤 Usuários</a>
+                <?php endif; ?>
                 <a class="btn btn-outline-light btn-sm" href="trocar_senha.php">🔑 Alterar senha</a>
                 <a class="btn btn-outline-light btn-sm" href="logout.php">🚪 Sair</a>
                 <a class="btn btn-light btn-sm" href="estoque.php">Estoque</a>
