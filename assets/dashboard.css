@@ -232,6 +232,16 @@ body {
 .status-ok { color: var(--success); background: var(--success-soft); }
 .status-sem_demanda { color: #637485; background: #eef2f5; }
 .status-sem_parametro { color: #8a6d00; background: #fdf3d6; }
+
+/* Edição inline por duplo clique (assets/inline-edit.js) */
+.celula-editavel { cursor: cell; position: relative; }
+.celula-editavel:hover { background: #eef4fb; box-shadow: inset 0 0 0 1px #b9d3ef; }
+.celula-editavel .inline-edit-input { display: inline-block; width: 100%; min-width: 90px; }
+.inline-edit-sucesso { animation: inline-edit-flash 0.9s ease-out; }
+@keyframes inline-edit-flash {
+    0% { background: #d4f4dd; }
+    100% { background: transparent; }
+}
 .status-planejar { color: #a96600; background: #fff7df; }
 .status-acompanhar {color: #d78706; background-color: #fcf678;}
 

@@ -366,6 +366,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 // Bloqueada se o item já estiver atendido (já virou estoque físico — editar
 // aqui deixaria a quantidade da programação e a do estoque dessincronizadas;
 // é preciso reabrir primeiro).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $id = (int) ($_POST['id'] ?? 0);
+    $campo = (string) ($_POST['campo'] ?? '');
+    $valor = trim((string) ($_POST['valor'] ?? ''));
+
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade'], true)) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    $stmtCheck = mysqli_prepare($conn, "SELECT atendido FROM programacao WHERE id = ?");
+    mysqli_stmt_bind_param($stmtCheck, 'i', $id);
+    mysqli_stmt_execute($stmtCheck);
+    $item = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
+    mysqli_stmt_close($stmtCheck);
+
+    if (!$item) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
+        exit;
+    }
+    if ((int) $item['atendido'] === 1) {
+        echo json_encode(['ok' => false, 'erro' => 'Reabra o item antes de editar.']);
+        exit;
+    }
+
+    if ($campo === 'data') {
+        $dataEditada = parseDataProgramacao($valor);
+        if ($dataEditada === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET data = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $dataEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => (new DateTimeImmutable($dataEditada))->format('d/m/Y')]);
+        exit;
+    }
+
+    // campo === 'quantidade'
+    $quantidadeEditada = parseQuantidade($valor);
+    if ($quantidadeEditada === null) {
+        echo json_encode(['ok' => false, 'erro' => 'Quantidade inválida.']);
+        exit;
+    }
+    $stmt = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ? WHERE id = ?");
+    mysqli_stmt_bind_param($stmt, 'di', $quantidadeEditada, $id);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    echo json_encode(['ok' => true, 'exibido' => number_format($quantidadeEditada, 2, ',', '.')]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
     exigirComprador();
     $idEditar = (int) ($_POST['id'] ?? 0);
@@ -772,31 +832,28 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? ''); ?></span></td>
 
-                                    <?php if ($emEdicao): ?>
-                                        <td colspan="3">
-                                            <form method="POST" class="d-flex gap-2 align-items-center flex-wrap m-0">
-                                                <input type="hidden" name="acao" value="editar_registro">
-                                                <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
-                                                <input type="text" name="data_editada" class="form-control form-control-sm" style="width:130px" placeholder="dd/mm/aaaa" value="<?php echo h(formatarDataBrProgramacao($row['data'] ?? null)); ?>" required>
-                                                <input type="text" name="quantidade_editada" class="form-control form-control-sm text-end" style="width:120px" value="<?php echo h(number_format((float) $row['quantidade'], 2, ',', '')); ?>" required>
-                                                <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                <a href="<?php echo $linkVoltar; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
-                                            </form>
-                                        </td>
-                                    <?php else: ?>
-                                        <td><?php echo $row['data'] ? h((new DateTimeImmutable($row['data']))->format('d/m/Y')) : ''; ?></td>
-                                        <td class="text-end"><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
-                                        <td>
-                                            <?php if ($estaAtendido): ?>
-                                                <span class="text-muted small" title="Reabra o item antes de editar">—</span>
-                                            <?php else: ?>
-                                                <a href="<?php echo $linkVoltar; ?>&editar=<?php echo $idLinha; ?>#linha-<?php echo $idLinha; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
-                                            <?php endif; ?>
-                                        </td>
-                                    <?php endif; ?>
+                                    <?php $podeEditarLinha = !$estaAtendido; ?>
+                                    <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
+                                        <?php if ($podeEditarLinha): ?>
+                                        data-id="<?php echo $idLinha; ?>" data-campo="data"
+                                        data-valor-bruto="<?php echo h(formatarDataBrProgramacao($row['data'] ?? null)); ?>"
+                                        title="Duplo clique para editar"
+                                        <?php endif; ?>
+                                    ><?php echo $row['data'] ? h((new DateTimeImmutable($row['data']))->format('d/m/Y')) : ''; ?></td>
+                                    <td class="text-end <?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
+                                        <?php if ($podeEditarLinha): ?>
+                                        data-id="<?php echo $idLinha; ?>" data-campo="quantidade"
+                                        data-valor-bruto="<?php echo h(number_format((float) $row['quantidade'], 2, ',', '')); ?>"
+                                        title="Duplo clique para editar"
+                                        <?php endif; ?>
+                                    ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
+                                    <td>
+                                        <?php if ($estaAtendido): ?>
+                                            <span class="text-muted small" title="Reabra o item antes de editar">—</span>
+                                        <?php else: ?>
+                                            <span class="text-muted small">Duplo clique na data/quantidade</span>
+                                        <?php endif; ?>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -823,6 +880,11 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'programacao.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
     <script>
         // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/
