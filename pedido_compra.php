@@ -267,6 +267,17 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
                 <tr>
                     <td>
                         <table class="po-info">
+                            <tr class="no-print">
+                                <td class="lbl">Filial</td>
+                                <td colspan="3">
+                                    <select id="filial_selecionada" class="form-select form-select-sm" onchange="aplicarFilial()">
+                                        <option value="">Selecione...</option>
+                                        <?php foreach ($filiais as $f): ?>
+                                            <option value="<?php echo (int) $f['id']; ?>"><?php echo htmlspecialchars($f['nome']); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </td>
+                            </tr>
                             <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="cli_company" value="YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA."></td></tr>
                             <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="cli_taxid" value="27.690.132/0003-00"></td></tr>
                             <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="cli_adress" value="RUA DOOSAN, 777"></td></tr>
@@ -359,17 +370,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
         <table class="po-rodape">
             <tr>
                 <td>
-                    <div class="po-rodape-linha no-print">
-                        <span class="lado-a">Filial:</span>
-                        <span class="lado-b">
-                            <select id="filial_selecionada" class="form-select form-select-sm" onchange="aplicarFilial()" style="width:auto; display:inline-block;">
-                                <option value="">Selecione...</option>
-                                <?php foreach ($filiais as $f): ?>
-                                    <option value="<?php echo (int) $f['id']; ?>"><?php echo htmlspecialchars($f['nome']); ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </span>
-                    </div>
                     <div class="po-rodape-linha"><span class="lado-a">Payment:</span><span class="lado-b"><input type="text" id="rodape_payment" value="28 DDL"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Incoterms:</span><span class="lado-b"><input type="text" id="rodape_incoterms" value="CIF"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><input type="text" id="rodape_delivery1" value="YAPP Americana - RUA DOOSAN, 777, Americana/SP"></span></div>
