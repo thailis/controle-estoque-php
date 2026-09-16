@@ -202,6 +202,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             border: none; border-bottom: 1px solid transparent; background: transparent; width: 100%; font-size: .82rem; padding: 1px 2px;
         }
         .po-rodape-linha input:focus { outline: none; border-bottom: 1px solid var(--navy); background: #f7faff; }
+        .rodape-textarea {
+            border: none; border-bottom: 1px solid transparent; background: transparent; width: 100%;
+            font-size: .82rem; padding: 1px 2px; font-family: inherit; resize: vertical; line-height: 1.3;
+        }
+        .rodape-textarea:focus { outline: none; border-bottom: 1px solid var(--navy); background: #f7faff; }
         .po-invoice-titulo { text-align: center; font-weight: 700; font-size: .82rem; margin-bottom: 6px; }
         .po-invoice-texto { text-align: center; }
         .po-invoice-texto textarea { text-align: center; color: var(--destaque); font-weight: 700; width: 100%; padding: 8px 10px; font-size: .85rem; resize: vertical; font-family: inherit; }
@@ -228,6 +233,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             table.po-tabela .col-acao { display: none; }
             table.po-tabela .col-acao-largura { display: none; }
             input { color: #000 !important; }
+            .rodape-textarea { color: #000 !important; }
             .po-header input { color: var(--destaque) !important; }
             .po-invoice-texto textarea { color: var(--destaque) !important; }
         }
@@ -291,7 +297,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             </table>
             <table class="po-info">
                 <tr>
-                    <td class="lbl">Buyer</td><td><input type="text" id="cli_buyer" value="Thailis Rodrigues Domingues"></td>
+                    <td class="lbl">Buyer</td><td><input type="text" id="cli_buyer" value="Thailis Rodrigues Domingues" oninput="document.getElementById('assinatura_nome').value = this.value"></td>
                     <td class="lbl-2">Phone</td><td><input type="text" id="cli_phone" value="+55 19 99946-2526"></td>
                 </tr>
                 <tr>
@@ -372,7 +378,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
                 <td>
                     <div class="po-rodape-linha"><span class="lado-a">Payment:</span><span class="lado-b"><input type="text" id="rodape_payment" value="28 DDL"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Incoterms:</span><span class="lado-b"><input type="text" id="rodape_incoterms" value="CIF"></span></div>
-                    <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><input type="text" id="rodape_delivery1" value="YAPP Americana - RUA DOOSAN, 777, Americana/SP"></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><textarea id="rodape_delivery1" rows="2" class="rodape-textarea">YAPP Americana - RUA DOOSAN, 777, Americana/SP</textarea></span></div>
                     <div class="po-rodape-linha"><span class="lado-a"></span><span class="lado-b"><input type="text" id="rodape_delivery2" value="13.469-765"></span></div>
                 </td>
                 <td>
@@ -441,6 +447,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             document.getElementById('cli_adress').value = filial.endereco;
             document.getElementById('cli_zip').value = filial.cep;
             document.getElementById('cli_buyer').value = filial.responsavel;
+            document.getElementById('assinatura_nome').value = filial.responsavel;
             document.getElementById('cli_email').value = filial.email;
             document.getElementById('rodape_delivery1').value = filial.nome + ' - ' + filial.endereco;
             document.getElementById('rodape_delivery2').value = filial.cep;
