@@ -80,12 +80,13 @@ $mensagens = [];
 $importados = 0;
 $erros = 0;
 
-// ---------- Toggle de Liquidação OR / Liquidação NA ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['toggle_liquidacao_or', 'toggle_liquidacao_na'], true)) {
+// ---------- Toggle único de Status (Aberto <-> Finalizado) ----------
+// Não existe mais etapa intermediária ("Parcial"): o botão fecha (ou reabre)
+// liquidacao_or e liquidacao_na juntos, num único clique.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_status_pagamento') {
     $idPagamento = (int) ($_POST['id'] ?? 0);
-    $acaoToggle = $_POST['acao'];
 
-    $stmtAtual = mysqli_prepare($conn, "SELECT liquidacao_or, liquidacao_na FROM pagamento WHERE id = ?");
+    $stmtAtual = mysqli_prepare($conn, "SELECT liquidacao_na FROM pagamento WHERE id = ?");
     mysqli_stmt_bind_param($stmtAtual, 'i', $idPagamento);
     mysqli_stmt_execute($stmtAtual);
     $atual = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtual));
@@ -94,38 +95,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['to
     if (!$atual) {
         $mensagens[] = '❌ Registro de pagamento não encontrado.';
     } else {
-        $orAtual = strtolower(trim((string) ($atual['liquidacao_or'] ?? ''))) === 'fechado' ? 'fechado' : 'aberto';
         $naAtual = strtolower(trim((string) ($atual['liquidacao_na'] ?? ''))) === 'fechado' ? 'fechado' : 'aberto';
+        $novo = $naAtual === 'fechado' ? 'aberto' : 'fechado';
 
-        if ($acaoToggle === 'toggle_liquidacao_or') {
-            if ($orAtual === 'aberto') {
-                $novoOr = 'fechado';
-                $novoNa = $naAtual;
-            } else {
-                $novoOr = 'aberto';
-                $novoNa = 'aberto';
-            }
-            $stmtUpdate = mysqli_prepare($conn, "UPDATE pagamento SET liquidacao_or = ?, liquidacao_na = ? WHERE id = ?");
-            mysqli_stmt_bind_param($stmtUpdate, 'ssi', $novoOr, $novoNa, $idPagamento);
-            mysqli_stmt_execute($stmtUpdate);
-            mysqli_stmt_close($stmtUpdate);
+        $stmtUpdate = mysqli_prepare($conn, "UPDATE pagamento SET liquidacao_or = ?, liquidacao_na = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmtUpdate, 'ssi', $novo, $novo, $idPagamento);
+        mysqli_stmt_execute($stmtUpdate);
+        mysqli_stmt_close($stmtUpdate);
+    }
+}
+
+// ---------- Exclusão ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_pagamento') {
+    $idExcluir = (int) ($_POST['id'] ?? 0);
+    if ($idExcluir > 0) {
+        $stmtExcluir = mysqli_prepare($conn, "DELETE FROM pagamento WHERE id = ?");
+        mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
+        if (mysqli_stmt_execute($stmtExcluir)) {
+            $mensagens[] = '🗑️ Pagamento excluído.';
         } else {
-            if ($naAtual === 'aberto') {
-                if ($orAtual !== 'fechado') {
-                    $mensagens[] = '❌ Não é possível fechar a Liquidação NA enquanto a Liquidação OR estiver aberta. Feche a OR primeiro.';
-                } else {
-                    $stmtUpdate = mysqli_prepare($conn, "UPDATE pagamento SET liquidacao_na = 'fechado' WHERE id = ?");
-                    mysqli_stmt_bind_param($stmtUpdate, 'i', $idPagamento);
-                    mysqli_stmt_execute($stmtUpdate);
-                    mysqli_stmt_close($stmtUpdate);
-                }
-            } else {
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE pagamento SET liquidacao_na = 'aberto' WHERE id = ?");
-                mysqli_stmt_bind_param($stmtUpdate, 'i', $idPagamento);
-                mysqli_stmt_execute($stmtUpdate);
-                mysqli_stmt_close($stmtUpdate);
-            }
+            $mensagens[] = '❌ Erro ao excluir: ' . mysqli_stmt_error($stmtExcluir);
         }
+        mysqli_stmt_close($stmtExcluir);
     }
 }
 
@@ -184,60 +175,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 }
 
 // ---------- Edição ----------
+// Só os campos que continuam editáveis na listagem: numerário/valor inicial e
+// final, diferença (agora digitada diretamente), RB e OA. Advanced1, Advanced2,
+// Despachante e Balance não são mais editados por aqui (mas continuam intactos
+// no banco, só não aparecem mais na tela).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_pagamento') {
     $idEditar = (int) ($_POST['id_editar'] ?? 0);
     if ($idEditar <= 0) {
         $mensagens[] = '❌ Registro inválido pra edição.';
     } else {
-        $stmtAtualPag = mysqli_prepare($conn, "SELECT processo FROM pagamento WHERE id = ?");
-        mysqli_stmt_bind_param($stmtAtualPag, 'i', $idEditar);
-        mysqli_stmt_execute($stmtAtualPag);
-        $atualPag = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtualPag));
-        mysqli_stmt_close($stmtAtualPag);
+        $numerarioInicialEd = parseDataPagamento(trim($_POST['numerario_inicial_editado'] ?? ''));
+        $valorInicialEd = parseNumeroBrPagamento(trim($_POST['valor_inicial_editado'] ?? ''));
+        $numerarioFinalEd = parseDataPagamento(trim($_POST['numerario_final_editado'] ?? ''));
+        $valorFinalEd = parseNumeroBrPagamento(trim($_POST['valor_final_editado'] ?? ''));
+        $diferencaEd = parseNumeroBrPagamento(trim($_POST['diferenca_editado'] ?? ''));
+        $rbEd = trim($_POST['rb_editado'] ?? '') ?: null;
+        $oaEd = trim($_POST['oa_editado'] ?? '') ?: null;
 
-        if (!$atualPag) {
-            $mensagens[] = '❌ Registro de pagamento não encontrado.';
+        $stmtEditar = mysqli_prepare($conn, "
+            UPDATE pagamento
+            SET numerario_inicial = ?, valor_inicial = ?, numerario_final = ?, valor_final = ?, diferenca = ?, rb = ?, oa = ?
+            WHERE id = ?
+        ");
+        mysqli_stmt_bind_param(
+            $stmtEditar, 'sdsddssi',
+            $numerarioInicialEd, $valorInicialEd, $numerarioFinalEd, $valorFinalEd, $diferencaEd, $rbEd, $oaEd, $idEditar
+        );
+        if (mysqli_stmt_execute($stmtEditar)) {
+            mysqli_stmt_close($stmtEditar);
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            header('Location: pagamento.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
+            exit;
         } else {
-            $stmtTotalProc = mysqli_prepare($conn, "SELECT total FROM processos WHERE processo = ? LIMIT 1");
-            mysqli_stmt_bind_param($stmtTotalProc, 's', $atualPag['processo']);
-            mysqli_stmt_execute($stmtTotalProc);
-            $totalProc = (float) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtTotalProc))['total'] ?? 0);
-            mysqli_stmt_close($stmtTotalProc);
-
-            $advanced1Ed = parseNumeroBrPagamento(trim($_POST['advanced1_editado'] ?? '')) ?? 0.0;
-            $advanced2Ed = parseNumeroBrPagamento(trim($_POST['advanced2_editado'] ?? '')) ?? 0.0;
-            $despachanteEd = trim($_POST['despachante_editado'] ?? '') ?: null;
-            $numerarioInicialEd = parseDataPagamento(trim($_POST['numerario_inicial_editado'] ?? ''));
-            $valorInicialEd = parseNumeroBrPagamento(trim($_POST['valor_inicial_editado'] ?? '')) ?? 0.0;
-            $numerarioFinalEd = parseDataPagamento(trim($_POST['numerario_final_editado'] ?? ''));
-            $valorFinalEd = parseNumeroBrPagamento(trim($_POST['valor_final_editado'] ?? '')) ?? 0.0;
-            $rbEd = trim($_POST['rb_editado'] ?? '') ?: null;
-            $oaEd = trim($_POST['oa_editado'] ?? '') ?: null;
-
-            $balanceEd = $advanced1Ed + $advanced2Ed - $totalProc;
-            $diferencaEd = $valorFinalEd - $valorInicialEd;
-
-            $stmtEditar = mysqli_prepare($conn, "
-                UPDATE pagamento
-                SET advanced1 = ?, advanced2 = ?, balance = ?, despachante = ?, numerario_inicial = ?,
-                    valor_inicial = ?, numerario_final = ?, valor_final = ?, diferenca = ?, rb = ?, oa = ?
-                WHERE id = ?
-            ");
-            mysqli_stmt_bind_param(
-                $stmtEditar, 'dddssdsddssi',
-                $advanced1Ed, $advanced2Ed, $balanceEd, $despachanteEd, $numerarioInicialEd,
-                $valorInicialEd, $numerarioFinalEd, $valorFinalEd, $diferencaEd, $rbEd, $oaEd, $idEditar
-            );
-            if (mysqli_stmt_execute($stmtEditar)) {
-                mysqli_stmt_close($stmtEditar);
-                $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
-                $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-                header('Location: pagamento.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
-                exit;
-            } else {
-                $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
-                mysqli_stmt_close($stmtEditar);
-            }
+            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+            mysqli_stmt_close($stmtEditar);
         }
     }
 }
@@ -357,6 +329,13 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
     <title>Pagamento | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        .mrp-table .btn-remover-linha {
+            border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; line-height: 1;
+        }
+        .mrp-table .btn-remover-linha:hover { color: #a12727; }
+        .mrp-table tbody tr[data-editavel="1"]:hover { background: #f7faff; }
+    </style>
 </head>
 <body>
     <header class="topbar">
@@ -378,7 +357,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
     <main class="container-fluid dashboard-container py-4">
 
         <?php if (isset($_GET['editado'])): ?>
-            <div class="alert alert-success">✅ Pagamento atualizado com sucesso (Balance e Diferença recalculados).</div>
+            <div class="alert alert-success">✅ Pagamento atualizado com sucesso.</div>
         <?php endif; ?>
 
         <?php if (!empty($mensagens)): ?>
@@ -507,11 +486,11 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <div>
                     <span class="eyebrow text-primary">Resultado</span>
                     <h2>Pagamentos</h2>
-                    <p><?php echo numeroBr($total, 0); ?> encontrado(s)</p>
+                    <p><?php echo numeroBr($total, 0); ?> encontrado(s) <small class="text-muted">— dê duplo-clique numa linha pra editar</small></p>
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1500px;">
+                <table class="table mrp-table mb-0" style="min-width: 1300px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -523,58 +502,55 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                             <th>Numerário final</th>
                             <th>Valor final</th>
                             <th>Diferença</th>
-                            <th>Liquidação NA</th>
                             <th>RB</th>
                             <th>OA</th>
-                            <th>Ação</th>
+                            <th class="no-print">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="13" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="12" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
-                                    $orValor = strtolower(trim((string) ($r['liquidacao_or'] ?? ''))) === 'fechado' ? 'fechado' : 'aberto';
                                     $naValor = strtolower(trim((string) ($r['liquidacao_na'] ?? ''))) === 'fechado' ? 'fechado' : 'aberto';
-                                    if ($orValor === 'aberto') {
-                                        $statusCalc = 'aberto'; $statusClasse = 'status-atencao';
-                                    } elseif ($orValor === 'fechado' && $naValor === 'aberto') {
-                                        $statusCalc = 'parcial'; $statusClasse = 'status-planejar';
+                                    $processoCancelado = strtolower(trim((string) ($r['status'] ?? ''))) === 'cancelado';
+                                    if ($processoCancelado) {
+                                        $statusTexto = 'Cancelado'; $statusClasse = 'status-critico';
+                                    } elseif ($naValor === 'fechado') {
+                                        $statusTexto = 'Finalizado'; $statusClasse = 'status-ok';
                                     } else {
-                                        $statusCalc = 'finalizado'; $statusClasse = 'status-ok';
-                                    }
-                                    if (strtolower(trim((string) ($r['status'] ?? ''))) === 'cancelado') {
-                                        $statusCalc = 'cancelado'; $statusClasse = 'status-critico';
+                                        $statusTexto = 'Aberto'; $statusClasse = 'status-atencao';
                                     }
                                     $emEdicao = $editandoId === (int) $r['id'];
                                     $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
+                                    $linkEditar = $linkVoltar . '&editar=' . (int) $r['id'];
                                 ?>
-                                <tr>
-                                    <td><span class="status-badge <?php echo $statusClasse; ?>" title="OR: <?php echo h($orValor); ?> · NA: <?php echo h($naValor); ?>"><?php echo ucfirst($statusCalc); ?></span></td>
+                                <tr<?php if (!$emEdicao): ?> data-editavel="1" style="cursor:pointer;" ondblclick="if(!event.target.closest('a,button,form,input')){ window.location='<?php echo $linkEditar; ?>'; }"<?php endif; ?>>
+                                    <td>
+                                        <?php if ($processoCancelado): ?>
+                                            <span class="status-badge <?php echo $statusClasse; ?>"><?php echo h($statusTexto); ?></span>
+                                        <?php else: ?>
+                                            <form method="POST" class="d-inline m-0">
+                                                <input type="hidden" name="acao" value="toggle_status_pagamento">
+                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
+                                                <button type="submit" class="status-badge border-0 <?php echo $statusClasse; ?>" style="cursor:pointer;" title="Clique pra alternar entre Aberto e Finalizado">
+                                                    <?php echo h($statusTexto); ?>
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
 
                                     <?php if ($emEdicao): ?>
-                                        <td colspan="8">
+                                        <td colspan="7">
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_pagamento">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
                                                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Advanced 1</label>
-                                                    <input type="text" name="advanced1_editado" class="form-control form-control-sm" value="<?php echo $r['advanced1'] !== null ? numeroBr($r['advanced1']) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Advanced 2</label>
-                                                    <input type="text" name="advanced2_editado" class="form-control form-control-sm" value="<?php echo $r['advanced2'] !== null ? numeroBr($r['advanced2']) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Despachante</label>
-                                                    <input type="text" name="despachante_editado" class="form-control form-control-sm" value="<?php echo h($r['despachante'] ?? ''); ?>">
-                                                </div>
                                                 <div class="col-md-2">
                                                     <label class="form-label small mb-0">Numerário inicial</label>
                                                     <input type="text" name="numerario_inicial_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>">
@@ -592,15 +568,16 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                     <input type="text" name="valor_final_editado" class="form-control form-control-sm" value="<?php echo $r['valor_final'] !== null ? numeroBr($r['valor_final']) : ''; ?>">
                                                 </div>
                                                 <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Diferença</label>
+                                                    <input type="text" name="diferenca_editado" class="form-control form-control-sm" value="<?php echo $r['diferenca'] !== null ? numeroBr($r['diferenca']) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-1">
                                                     <label class="form-label small mb-0">RB</label>
                                                     <input type="text" name="rb_editado" class="form-control form-control-sm" value="<?php echo h($r['rb'] ?? ''); ?>">
                                                 </div>
-                                                <div class="col-md-3">
-                                                    <label class="form-label small mb-0">OA (link)</label>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">OA</label>
                                                     <input type="text" name="oa_editado" class="form-control form-control-sm" value="<?php echo h($r['oa'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-9">
-                                                    <small class="text-muted">Balance e Diferença são recalculados automaticamente ao salvar. Liquidação OR/NA se alteram pelo botão na listagem, não aqui.</small>
                                                 </div>
                                                 <div class="col-md-12 d-flex gap-2 mt-1">
                                                     <button type="submit" class="btn btn-success btn-sm">Salvar</button>
@@ -615,15 +592,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                         <td><?php echo dataBr($r['numerario_final']); ?></td>
                                         <td><?php echo numeroBr($r['valor_final']); ?></td>
                                         <td><?php echo numeroBr($r['diferenca']); ?></td>
-                                        <td>
-                                            <form method="POST" class="d-inline m-0">
-                                                <input type="hidden" name="acao" value="toggle_liquidacao_na">
-                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
-                                                <button type="submit" class="status-badge border-0 <?php echo $naValor === 'fechado' ? 'status-ok' : 'status-atencao'; ?>" style="cursor:pointer;" title="<?php echo $orValor !== 'fechado' ? 'Só é possível fechar a NA depois que a OR estiver fechada' : 'Clique pra alternar'; ?>">
-                                                    <?php echo ucfirst($naValor); ?>
-                                                </button>
-                                            </form>
-                                        </td>
                                         <td><?php echo h($r['rb'] ?: '—'); ?></td>
                                         <td>
                                             <?php if (!empty($r['oa'])): ?>
@@ -632,8 +600,14 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                                 —
                                             <?php endif; ?>
                                         </td>
-                                        <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        <td class="no-print">
+                                            <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este pagamento? Essa ação não pode ser desfeita.');">
+                                                <input type="hidden" name="acao" value="excluir_pagamento">
+                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <button type="submit" class="btn-remover-linha" title="Excluir pagamento">✕</button>
+                                            </form>
                                         </td>
                                     <?php endif; ?>
                                 </tr>
