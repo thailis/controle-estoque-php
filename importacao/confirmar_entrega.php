@@ -123,6 +123,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
         $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
         mysqli_stmt_close($stmt);
 
+        // Item marcado como "não controla estoque" (tooling, amostra) ainda
+        // aparece na lista e pode ser confirmado normalmente — só não escreve
+        // nada no estoque do MRP. O Follow/Processo fecham do mesmo jeito.
+        $controlaEstoque = strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) !== 'nao';
+
         if (!$linha) {
             $erro = 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.';
         } elseif ((int) $linha['integrado_mrp'] === 1) {
@@ -131,54 +136,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
             // Trava no servidor — mesmo que alguém envie o follow_id direto (sem passar
             // pela lista, que já filtra isso), a confirmação é bloqueada aqui também.
             $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega nem alimentar o estoque do MRP.";
-        } elseif (strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) === 'nao') {
-            // Mesma lógica: item marcado como "não controla estoque" (tooling,
-            // amostra) em Processos — nunca deveria chegar aqui, mas trava de
-            // qualquer forma se alguém enviar o follow_id direto.
-            $erro = "❌ O item do processo \"{$linha['processo']}\" está marcado como \"não controla estoque\" — não alimenta o MRP.";
         } else {
             try {
-                $connMrp = conectarMrp();
-                $validacao = validarComponenteMrp($connMrp, $linha['codigo_componente']);
+                $descricaoParaFechar = $linha['descricao'];
 
-                if (!$validacao['valido']) {
-                    // BLOQUEIA — não insere nada no MRP, não marca como integrado.
-                    // O follow.efetiva pode até já estar preenchido (é rastreio
-                    // logístico, continua válido), mas a integração de estoque
-                    // fica pendente até o componente ser corrigido/cadastrado.
-                    $erro = "❌ Integração bloqueada — {$validacao['motivo']}";
-                } else {
-                    // Componente confirmado no MRP — segue com a integração.
-                    // Usa a descrição CANÔNICA vinda da BOM (não o texto digitado no
-                    // processo de importação, que pode divergir) — com o texto do
-                    // processo como reserva só se a BOM não tiver descrição nenhuma.
-                    //
-                    // A planta é fixada como "Importação" — não a planta física de
-                    // destino (ex.: 2401). Isso faz essa entrada aparecer numa coluna
-                    // PRÓPRIA na tela de Estoque (o site já gera uma coluna por planta
-                    // distinta encontrada nos dados, então basta essa string nova pra
-                    // criar a coluna sozinha, sem precisar mexer no estoque.php). Assim:
-                    // - a descrição do componente não é mais afetada por texto transacional
-                    // - o estoque anterior não é perdido (o Total continua somando tudo)
-                    // - fica visível separadamente o que entrou via importação
-                    $stmtEstoque = mysqli_prepare($connMrp, "
-                        INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem)
-                        VALUES (?, ?, ?, ?, ?)
-                    ");
-                    $origem = 'importacao:' . $linha['processo'];
-                    $descricao = $validacao['descricao'] ?: $linha['descricao'];
-                    $plantaImportacao = 'Importação';
-                    mysqli_stmt_bind_param(
-                        $stmtEstoque, 'ssdss',
-                        $linha['codigo_componente'], $descricao, $linha['quantidade'], $plantaImportacao, $origem
-                    );
-                    mysqli_stmt_execute($stmtEstoque);
-                    mysqli_stmt_close($stmtEstoque);
-                    mysqli_close($connMrp);
+                if ($controlaEstoque) {
+                    $connMrp = conectarMrp();
+                    $validacao = validarComponenteMrp($connMrp, $linha['codigo_componente']);
 
+                    if (!$validacao['valido']) {
+                        // BLOQUEIA — não insere nada no MRP, não marca como integrado.
+                        // O follow.efetiva pode até já estar preenchido (é rastreio
+                        // logístico, continua válido), mas a integração de estoque
+                        // fica pendente até o componente ser corrigido/cadastrado.
+                        $erro = "❌ Integração bloqueada — {$validacao['motivo']}";
+                    } else {
+                        // Componente confirmado no MRP — segue com a integração.
+                        // Usa a descrição CANÔNICA vinda da BOM (não o texto digitado no
+                        // processo de importação, que pode divergir) — com o texto do
+                        // processo como reserva só se a BOM não tiver descrição nenhuma.
+                        //
+                        // A planta é fixada como "Importação" — não a planta física de
+                        // destino (ex.: 2401). Isso faz essa entrada aparecer numa coluna
+                        // PRÓPRIA na tela de Estoque (o site já gera uma coluna por planta
+                        // distinta encontrada nos dados, então basta essa string nova pra
+                        // criar a coluna sozinha, sem precisar mexer no estoque.php). Assim:
+                        // - a descrição do componente não é mais afetada por texto transacional
+                        // - o estoque anterior não é perdido (o Total continua somando tudo)
+                        // - fica visível separadamente o que entrou via importação
+                        $stmtEstoque = mysqli_prepare($connMrp, "
+                            INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem)
+                            VALUES (?, ?, ?, ?, ?)
+                        ");
+                        $origem = 'importacao:' . $linha['processo'];
+                        $descricao = $validacao['descricao'] ?: $linha['descricao'];
+                        $plantaImportacao = 'Importação';
+                        mysqli_stmt_bind_param(
+                            $stmtEstoque, 'ssdss',
+                            $linha['codigo_componente'], $descricao, $linha['quantidade'], $plantaImportacao, $origem
+                        );
+                        mysqli_stmt_execute($stmtEstoque);
+                        mysqli_stmt_close($stmtEstoque);
+                        mysqli_close($connMrp);
+                    }
+                }
+
+                // Se controlaEstoque for false, não passou pelo bloco acima — não
+                // tem erro de validação do MRP possível, então segue direto pra fechar.
+                if ($erro === null) {
                     // Marca o follow como entregue, integrado e FECHADO — o status do
                     // Follow só vira "fechado" neste momento exato, nunca é digitado
                     // manualmente. Também trava contra duplicar (integrado_mrp = 1).
+                    // Aqui "integrado_mrp = 1" marca que o embarque já passou pelo
+                    // fluxo de confirmação (seja alimentando o MRP ou não).
                     $stmtUpdate = mysqli_prepare($conn, "
                         UPDATE follow
                         SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
@@ -195,7 +205,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                     mysqli_stmt_execute($stmtProcessoStatus);
                     mysqli_stmt_close($stmtProcessoStatus);
 
-                    $mensagem = "✅ Entrega confirmada e estoque do MRP atualizado — componente {$linha['codigo_componente']}, quantidade " . number_format((float) $linha['quantidade'], 0, ',', '.') . ".";
+                    $mensagem = $controlaEstoque
+                        ? "✅ Entrega confirmada e estoque do MRP atualizado — componente {$linha['codigo_componente']}, quantidade " . number_format((float) $linha['quantidade'], 0, ',', '.') . "."
+                        : "✅ Entrega confirmada — item marcado como \"não controla estoque\", então NÃO alimentou o estoque do MRP.";
                 }
             } catch (Throwable $e) {
                 $erro = '❌ Erro ao conectar/gravar no MRP: ' . $e->getMessage();
@@ -204,18 +216,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     }
 }
 
-// Lista embarques ainda não integrados, pra tela de confirmação — processos
-// cancelados, e itens marcados "não controla estoque" (tooling, amostra),
-// NUNCA aparecem aqui (mas continuam com o follow salvo, só não entram na
-// fila de integração).
+// Lista embarques ainda não integrados, pra tela de confirmação — só
+// processos cancelados nunca aparecem aqui. Itens marcados "não controla
+// estoque" (tooling, amostra) aparecem normalmente: podem ser confirmados
+// (fecham o rastreio), só não alimentam o estoque do MRP.
 $pendentes = [];
 $resultPendentes = mysqli_query($conn, "
-    SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor
+    SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.controla_estoque
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     WHERE f.integrado_mrp = 0
       AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
-      AND (p.controla_estoque IS NULL OR LOWER(TRIM(p.controla_estoque)) <> 'nao')
     ORDER BY f.efetiva IS NULL, f.efetiva ASC
 ");
 while ($linha = mysqli_fetch_assoc($resultPendentes)) {
@@ -244,6 +255,8 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
+                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
+                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
             </nav>
         </div>
     </header>
@@ -264,7 +277,7 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de alimentar o estoque — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A descrição usada no estoque vem direto da BOM do MRP, não do texto digitado no processo. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de alimentar o estoque — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Itens marcados em Processos como "Controla estoque: Não" (tooling, amostra) também podem ser confirmados aqui, mas <strong>não alimentam o estoque do MRP</strong> — só fecham o rastreio. A descrição usada no estoque vem direto da BOM do MRP, não do texto digitado no processo. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento.</p>
         </section>
 
         <section class="table-card">
@@ -285,13 +298,14 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                             <th>Fornecedor</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
+                            <th>Controla estoque</th>
                             <th>Efetiva</th>
                             <th>Confirmar</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($pendentes)): ?>
-                            <tr><td colspan="8" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
+                            <tr><td colspan="9" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($pendentes as $p): ?>
                                 <?php
@@ -303,6 +317,7 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                                     // mostra num campo de data editável). Sem efetiva cadastrada,
                                     // não tem o que confirmar: botão fica travado em "Aguardando".
                                     $temEfetiva = !empty($p['efetiva']);
+                                    $controlaEstoqueRow = strtolower(trim((string) ($p['controla_estoque'] ?? 'sim'))) !== 'nao';
                                 ?>
                                 <tr>
                                     <td><span class="status-badge status-atencao"><?php echo ucfirst($p['status'] ?: 'aberto'); ?></span></td>
@@ -311,6 +326,11 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                                     <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
                                     <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
+                                    <td>
+                                        <span class="status-badge <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" title="<?php echo $controlaEstoqueRow ? 'Ao confirmar, alimenta o estoque do MRP' : 'Ao confirmar, NÃO alimenta o estoque do MRP — só fecha o rastreio'; ?>">
+                                            <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
+                                        </span>
+                                    </td>
                                     <td>
                                         <?php if ($temEfetiva): ?>
                                             <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
@@ -325,7 +345,7 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                                     </td>
                                     <td>
                                         <?php if ($temEfetiva): ?>
-                                            <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm">Confirmar</button>
+                                            <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm"><?php echo $controlaEstoqueRow ? 'Confirmar' : 'Confirmar (sem estoque)'; ?></button>
                                         <?php else: ?>
                                             <button type="button" class="btn btn-secondary btn-sm" disabled title="Preencha a data efetiva no Follow primeiro">Aguardando</button>
                                         <?php endif; ?>

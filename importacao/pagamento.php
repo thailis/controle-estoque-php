@@ -309,7 +309,8 @@ if (isset($_GET['exportar'])) {
 // ---------- Listagem ----------
 // Lista de processos existentes, pra popular o <select> do cadastro manual —
 // já traz os campos em comum (status, po, fornecedor, moeda, total) pro
-// preview automático via JS (o servidor reconfirma tudo de novo ao salvar).
+// preview automático via JS (o servidor sempre busca esses mesmos valores de
+// novo, direto de "processos", na hora de salvar).
 $processosDisponiveis = [];
 $resProcessos = mysqli_query($conn, "SELECT processo, status, po, fornecedor, moeda, total FROM processos ORDER BY processo");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
@@ -399,6 +400,8 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
+                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
+                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
             </nav>
         </div>
     </header>
