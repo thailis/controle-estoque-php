@@ -125,13 +125,13 @@ try {
         .doc-header input {
             background: transparent;
             border: none;
-            color: #ff9b7a;
+            color: #fff;
             font-weight: 750;
             text-align: center;
             width: 160px;
             font-size: 1.05rem;
         }
-        .doc-header input::placeholder { color: #ffd0bd; }
+        .doc-header input::placeholder { color: #aab5c0; }
 
         .doc-secao-titulo {
             font-weight: 750;
@@ -294,6 +294,8 @@ try {
         .doc-assinatura input:focus { outline: none; background: #f7faff; }
         .doc-assinatura .nome { font-weight: 700; }
         .doc-assinatura .depto, .doc-assinatura .data { display: block; margin: 2px auto 0; font-size: .8rem; }
+        .doc-assinatura-import { font-size: .78rem; color: #3c4c5c; margin-bottom: 6px; }
+        .doc-assinatura-imagem { display: block; max-height: 60px; margin: 0 auto 4px; }
 
         .btn-add-linha { font-size: .78rem; }
 
@@ -331,6 +333,16 @@ try {
         <div class="doc-header">Commercial Invoice: <input type="text" id="invoice_numero" placeholder="0000000000" size="12"></div>
 
         <div class="doc-toolbar-select no-print">
+            <label class="d-block">Processo (puxa os componentes cadastrados)</label>
+            <select id="select_processo" class="form-select form-select-sm" onchange="carregarProcesso()">
+                <option value="">Selecione um processo...</option>
+                <?php foreach ($processosDisponiveis as $p): ?>
+                    <option value="<?php echo h($p); ?>"><?php echo h($p); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <div class="doc-toolbar-select no-print">
             <label class="d-block">Supplier (filial YAPP)</label>
             <select id="select_filial" class="form-select form-select-sm" onchange="aplicarFilial()">
                 <option value="">Selecione uma filial para preencher o Exporter...</option>
@@ -356,12 +368,12 @@ try {
                     <td>
                         <div class="doc-secao-titulo" style="padding-left:0;">EXPORTER</div>
                         <table class="doc-info">
-                            <tr><td class="lbl">Supplier:</td><td><input type="text" id="exp_supplier"></td></tr>
-                            <tr><td class="lbl">CNPJ:</td><td><input type="text" id="exp_cnpj"></td></tr>
-                            <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address"></td></tr>
-                            <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep"></td></tr>
+                            <tr><td class="lbl">Supplier:</td><td><input type="text" id="exp_supplier" placeholder="Razão social do fornecedor"></td></tr>
+                            <tr><td class="lbl">CNPJ:</td><td><input type="text" id="exp_cnpj" placeholder="00.000.000/0000-00"></td></tr>
+                            <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address" placeholder="Endereço"></td></tr>
+                            <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep" placeholder="00.000-000"></td></tr>
                             <tr><td class="lbl">Contact Person:</td><td><input type="text" id="exp_contato" value="Maria Lima"></td></tr>
-                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email"></td></tr>
+                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" placeholder="email@fornecedor.com"></td></tr>
                         </table>
                     </td>
                     <td class="doc-logo-cell">
@@ -376,23 +388,13 @@ try {
         <div class="doc-info-wrap">
             <div class="doc-secao-titulo" style="padding-left:0;">IMPORTER</div>
             <table class="doc-info">
-                <tr><td class="lbl">TAX ID:</td><td><input type="text" id="imp_taxid"></td></tr>
-                <tr><td class="lbl">Address:</td><td><input type="text" id="imp_address"></td></tr>
-                <tr><td class="lbl">CEP:</td><td><input type="text" id="imp_cep"></td></tr>
-                <tr><td class="lbl">Contact Person:</td><td><input type="text" id="imp_contato"></td></tr>
-                <tr><td class="lbl">E-mail:</td><td><input type="text" id="imp_email"></td></tr>
-                <tr><td class="lbl">Phone:</td><td><input type="text" id="imp_phone"></td></tr>
+                <tr><td class="lbl">TAX ID:</td><td><input type="text" id="imp_taxid" placeholder="00.000.000/0000-00"></td></tr>
+                <tr><td class="lbl">Address:</td><td><input type="text" id="imp_address" placeholder="Endereço"></td></tr>
+                <tr><td class="lbl">CEP:</td><td><input type="text" id="imp_cep" placeholder="00.000-000"></td></tr>
+                <tr><td class="lbl">Contact Person:</td><td><input type="text" id="imp_contato" placeholder="Nome do contato comercial"></td></tr>
+                <tr><td class="lbl">E-mail:</td><td><input type="text" id="imp_email" placeholder="email@empresa.com"></td></tr>
+                <tr><td class="lbl">Phone:</td><td><input type="text" id="imp_phone" placeholder="+55 00 00000-0000"></td></tr>
             </table>
-        </div>
-
-        <div class="doc-toolbar-select no-print">
-            <label class="d-block">Processo (puxa os componentes cadastrados)</label>
-            <select id="select_processo" class="form-select form-select-sm" onchange="carregarProcesso()">
-                <option value="">Selecione um processo...</option>
-                <?php foreach ($processosDisponiveis as $p): ?>
-                    <option value="<?php echo h($p); ?>"><?php echo h($p); ?></option>
-                <?php endforeach; ?>
-            </select>
         </div>
 
         <div class="doc-material-titulo">Material Details</div>
@@ -472,6 +474,11 @@ try {
         </div>
 
         <div class="doc-assinatura">
+            <div class="doc-assinatura-import no-print">
+                📎 Importar assinatura (JPG/PNG)<br>
+                <input type="file" id="assinatura_arquivo" accept="image/jpeg,image/png" onchange="carregarAssinatura(event)">
+            </div>
+            <img id="assinatura_imagem" class="doc-assinatura-imagem" src="" alt="Assinatura" style="display:none;">
             <input type="text" id="assinatura_nome" class="nome" value="Maria Lima">
             <input type="text" id="assinatura_depto" class="depto" value="Supply Chain Department">
             <input type="text" id="assinatura_data" class="data" value="<?php echo date('d/m/Y'); ?>">
@@ -644,6 +651,21 @@ try {
                     }
                 })
                 .catch(() => alert('Erro de conexão ao buscar os componentes desse processo.'));
+        }
+
+        // Importa uma imagem de assinatura (JPG/PNG) e mostra ela acima do
+        // nome — a imagem entra no PDF exportado normalmente (window.print
+        // imprime o que está na tela).
+        function carregarAssinatura(event) {
+            const arquivo = event.target.files[0];
+            if (!arquivo) return;
+            const leitor = new FileReader();
+            leitor.onload = function (e) {
+                const img = document.getElementById('assinatura_imagem');
+                img.src = e.target.result;
+                img.style.display = 'block';
+            };
+            leitor.readAsDataURL(arquivo);
         }
 
         // Começa com 1 linha em branco — o normal é escolher um Processo pra
