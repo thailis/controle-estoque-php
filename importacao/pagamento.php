@@ -582,7 +582,13 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_final" data-valor-bruto="<?php echo $r['valor_final'] !== null ? numeroBr($r['valor_final']) : ''; ?>"><?php echo numeroBr($r['valor_final']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="diferenca" data-valor-bruto="<?php echo $r['diferenca'] !== null ? numeroBr($r['diferenca']) : ''; ?>"><?php echo numeroBr($r['diferenca']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="rb" data-valor-bruto="<?php echo h($r['rb'] ?? ''); ?>"><?php echo h($r['rb'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>"><?php echo h($r['oa'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>">
+                                        <?php if (!empty($r['oa'])): ?>
+                                            <a href="<?php echo h($r['oa']); ?>" target="_blank" rel="noopener" onclick="event.stopPropagation();">Abrir</a>
+                                        <?php else: ?>
+                                            —
+                                        <?php endif; ?>
+                                    </td>
                                     <td class="no-print">
                                         <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este pagamento? Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_pagamento">
