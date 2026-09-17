@@ -174,44 +174,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     }
 }
 
-// ---------- Edição ----------
-// Só os campos que continuam editáveis na listagem: numerário/valor inicial e
-// final, diferença (agora digitada diretamente), RB e OA. Advanced1, Advanced2,
-// Despachante e Balance não são mais editados por aqui (mas continuam intactos
-// no banco, só não aparecem mais na tela).
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_pagamento') {
-    $idEditar = (int) ($_POST['id_editar'] ?? 0);
-    if ($idEditar <= 0) {
-        $mensagens[] = '❌ Registro inválido pra edição.';
-    } else {
-        $numerarioInicialEd = parseDataPagamento(trim($_POST['numerario_inicial_editado'] ?? ''));
-        $valorInicialEd = parseNumeroBrPagamento(trim($_POST['valor_inicial_editado'] ?? ''));
-        $numerarioFinalEd = parseDataPagamento(trim($_POST['numerario_final_editado'] ?? ''));
-        $valorFinalEd = parseNumeroBrPagamento(trim($_POST['valor_final_editado'] ?? ''));
-        $diferencaEd = parseNumeroBrPagamento(trim($_POST['diferenca_editado'] ?? ''));
-        $rbEd = trim($_POST['rb_editado'] ?? '') ?: null;
-        $oaEd = trim($_POST['oa_editado'] ?? '') ?: null;
+// ---------- Edição inline (duplo clique) ----------
+// Identifica a linha por "id". Mesmo mecanismo usado em Processos e Follow:
+// duplo clique numa célula, edita direto ali, salva sozinho (sem botão).
+// Campos editáveis: numerário/valor inicial e final, diferença, RB e OA.
+// Advanced1, Advanced2, Despachante e Balance não são editados por aqui.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
 
-        $stmtEditar = mysqli_prepare($conn, "
-            UPDATE pagamento
-            SET numerario_inicial = ?, valor_inicial = ?, numerario_final = ?, valor_final = ?, diferenca = ?, rb = ?, oa = ?
-            WHERE id = ?
-        ");
-        mysqli_stmt_bind_param(
-            $stmtEditar, 'sdsddssi',
-            $numerarioInicialEd, $valorInicialEd, $numerarioFinalEd, $valorFinalEd, $diferencaEd, $rbEd, $oaEd, $idEditar
-        );
-        if (mysqli_stmt_execute($stmtEditar)) {
-            mysqli_stmt_close($stmtEditar);
-            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
-            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-            header('Location: pagamento.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
-            exit;
-        } else {
-            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
-            mysqli_stmt_close($stmtEditar);
-        }
+    $id = (int) ($_POST['id'] ?? 0);
+    $campo = (string) ($_POST['campo'] ?? '');
+    $valor = trim((string) ($_POST['valor'] ?? ''));
+
+    $camposTexto = ['rb', 'oa'];
+    $camposData = ['numerario_inicial', 'numerario_final'];
+    $camposNumericos = ['valor_inicial', 'valor_final', 'diferenca'];
+    $todosCampos = array_merge($camposTexto, $camposData, $camposNumericos);
+
+    if ($id <= 0 || !in_array($campo, $todosCampos, true)) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
     }
+
+    $stmtCheck = mysqli_prepare($conn, "SELECT liquidacao_na FROM pagamento WHERE id = ?");
+    mysqli_stmt_bind_param($stmtCheck, 'i', $id);
+    mysqli_stmt_execute($stmtCheck);
+    $linhaAtual = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
+    mysqli_stmt_close($stmtCheck);
+
+    if (!$linhaAtual) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
+        exit;
+    }
+    if (strtolower(trim((string) $linhaAtual['liquidacao_na'])) === 'fechado') {
+        echo json_encode(['ok' => false, 'erro' => 'Esse pagamento já foi finalizado — não é possível editar mais.']);
+        exit;
+    }
+
+    if (in_array($campo, $camposData, true)) {
+        $valorSalvo = $valor === '' ? null : parseDataPagamento($valor);
+        if ($valor !== '' && $valorSalvo === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE pagamento SET `$campo` = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => dataBr($valorSalvo)]);
+        exit;
+    }
+
+    if (in_array($campo, $camposNumericos, true)) {
+        $valorSalvo = $valor === '' ? null : parseNumeroBrPagamento($valor);
+        if ($valor !== '' && $valorSalvo === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Valor numérico inválido.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE pagamento SET `$campo` = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'di', $valorSalvo, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => numeroBr($valorSalvo)]);
+        exit;
+    }
+
+    // Campos de texto simples (RB, OA)
+    $valorSalvo = $valor === '' ? null : $valor;
+    $stmt = mysqli_prepare($conn, "UPDATE pagamento SET `$campo` = ? WHERE id = ?");
+    mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    echo json_encode(['ok' => true, 'exibido' => $valorSalvo ?? '—']);
+    exit;
 }
 
 // ---------- Exportação CSV ----------
@@ -269,7 +304,6 @@ $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int) $_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-$editandoId = (int) ($_GET['editar'] ?? 0);
 
 $where = '';
 $params = [];
@@ -334,7 +368,8 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; line-height: 1;
         }
         .mrp-table .btn-remover-linha:hover { color: #a12727; }
-        .mrp-table tbody tr[data-editavel="1"]:hover { background: #f7faff; }
+        .celula-editavel { cursor: text; }
+        .celula-editavel:hover { background: #f7faff; }
     </style>
 </head>
 <body>
@@ -486,7 +521,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <div>
                     <span class="eyebrow text-primary">Resultado</span>
                     <h2>Pagamentos</h2>
-                    <p><?php echo numeroBr($total, 0); ?> encontrado(s) <small class="text-muted">— dê duplo-clique numa linha pra editar</small></p>
+                    <p><?php echo numeroBr($total, 0); ?> encontrado(s) <small class="text-muted">— dê duplo clique numa célula pra editar</small></p>
                 </div>
             </div>
             <div class="table-responsive">
@@ -513,6 +548,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
+                                    $id = (int) $r['id'];
                                     $naValor = strtolower(trim((string) ($r['liquidacao_na'] ?? ''))) === 'fechado' ? 'fechado' : 'aberto';
                                     $processoCancelado = strtolower(trim((string) ($r['status'] ?? ''))) === 'cancelado';
                                     if ($processoCancelado) {
@@ -522,18 +558,15 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     } else {
                                         $statusTexto = 'Aberto'; $statusClasse = 'status-atencao';
                                     }
-                                    $emEdicao = $editandoId === (int) $r['id'];
-                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
-                                    $linkEditar = $linkVoltar . '&editar=' . (int) $r['id'];
                                 ?>
-                                <tr<?php if (!$emEdicao): ?> data-editavel="1" style="cursor:pointer;" ondblclick="if(!event.target.closest('a,button,form,input')){ window.location='<?php echo $linkEditar; ?>'; }"<?php endif; ?>>
+                                <tr>
                                     <td>
                                         <?php if ($processoCancelado): ?>
                                             <span class="status-badge <?php echo $statusClasse; ?>"><?php echo h($statusTexto); ?></span>
                                         <?php else: ?>
                                             <form method="POST" class="d-inline m-0">
                                                 <input type="hidden" name="acao" value="toggle_status_pagamento">
-                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="id" value="<?php echo $id; ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $statusClasse; ?>" style="cursor:pointer;" title="Clique pra alternar entre Aberto e Finalizado">
                                                     <?php echo h($statusTexto); ?>
                                                 </button>
@@ -543,73 +576,22 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
-
-                                    <?php if ($emEdicao): ?>
-                                        <td colspan="7">
-                                            <form method="POST" class="row g-2 align-items-end py-2">
-                                                <input type="hidden" name="acao" value="editar_pagamento">
-                                                <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Numerário inicial</label>
-                                                    <input type="text" name="numerario_inicial_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Valor inicial</label>
-                                                    <input type="text" name="valor_inicial_editado" class="form-control form-control-sm" value="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Numerário final</label>
-                                                    <input type="text" name="numerario_final_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['numerario_final'] ? h(dataBr($r['numerario_final'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Valor final</label>
-                                                    <input type="text" name="valor_final_editado" class="form-control form-control-sm" value="<?php echo $r['valor_final'] !== null ? numeroBr($r['valor_final']) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Diferença</label>
-                                                    <input type="text" name="diferenca_editado" class="form-control form-control-sm" value="<?php echo $r['diferenca'] !== null ? numeroBr($r['diferenca']) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-1">
-                                                    <label class="form-label small mb-0">RB</label>
-                                                    <input type="text" name="rb_editado" class="form-control form-control-sm" value="<?php echo h($r['rb'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-1">
-                                                    <label class="form-label small mb-0">OA</label>
-                                                    <input type="text" name="oa_editado" class="form-control form-control-sm" value="<?php echo h($r['oa'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-12 d-flex gap-2 mt-1">
-                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                    <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
-                                                </div>
-                                            </form>
-                                        </td>
-                                        <td></td>
-                                    <?php else: ?>
-                                        <td><?php echo dataBr($r['numerario_inicial']); ?></td>
-                                        <td><?php echo numeroBr($r['valor_inicial']); ?></td>
-                                        <td><?php echo dataBr($r['numerario_final']); ?></td>
-                                        <td><?php echo numeroBr($r['valor_final']); ?></td>
-                                        <td><?php echo numeroBr($r['diferenca']); ?></td>
-                                        <td><?php echo h($r['rb'] ?: '—'); ?></td>
-                                        <td>
-                                            <?php if (!empty($r['oa'])): ?>
-                                                <a href="<?php echo h($r['oa']); ?>" target="_blank" rel="noopener">Abrir</a>
-                                            <?php else: ?>
-                                                —
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="no-print">
-                                            <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este pagamento? Essa ação não pode ser desfeita.');">
-                                                <input type="hidden" name="acao" value="excluir_pagamento">
-                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <button type="submit" class="btn-remover-linha" title="Excluir pagamento">✕</button>
-                                            </form>
-                                        </td>
-                                    <?php endif; ?>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_inicial" data-valor-bruto="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>"><?php echo numeroBr($r['valor_inicial']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_final" data-valor-bruto="<?php echo $r['numerario_final'] ? h(dataBr($r['numerario_final'])) : ''; ?>"><?php echo dataBr($r['numerario_final']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_final" data-valor-bruto="<?php echo $r['valor_final'] !== null ? numeroBr($r['valor_final']) : ''; ?>"><?php echo numeroBr($r['valor_final']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="diferenca" data-valor-bruto="<?php echo $r['diferenca'] !== null ? numeroBr($r['diferenca']) : ''; ?>"><?php echo numeroBr($r['diferenca']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="rb" data-valor-bruto="<?php echo h($r['rb'] ?? ''); ?>"><?php echo h($r['rb'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>"><?php echo h($r['oa'] ?: '—'); ?></td>
+                                    <td class="no-print">
+                                        <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este pagamento? Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_pagamento">
+                                            <input type="hidden" name="id" value="<?php echo $id; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir pagamento">✕</button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -681,5 +663,10 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             document.getElementById('diferenca_manual').value = textoDiferenca;
         }
     </script>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'pagamento.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
 </body>
 </html>
