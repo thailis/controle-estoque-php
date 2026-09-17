@@ -782,6 +782,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                 <a class="btn btn-outline-light btn-sm" href="evolucao_geral.php">Evolução geral</a>
                 <a class="btn btn-outline-light btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
                 <a class="btn btn-outline-light btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
+                <a class="btn btn-outline-light btn-sm" href="https://controle-estoque-php.onrender.com/importacao/follow.php" target="_blank">🚢 Importação</a>
             </nav>
         </div>
     </header>
