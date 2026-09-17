@@ -284,6 +284,8 @@ try {
         .doc-assinatura input:focus { outline: none; background: #f7faff; }
         .doc-assinatura .nome { font-weight: 700; border-top: 1px solid #333; }
         .doc-assinatura .depto, .doc-assinatura .data { display: block; margin: 2px auto 0; padding-top: 4px; font-size: .8rem; }
+        .doc-assinatura-import { font-size: .78rem; color: #3c4c5c; margin-bottom: 6px; }
+        .doc-assinatura-imagem { display: block; max-height: 60px; margin: 0 auto 4px; }
 
         .btn-add-linha { font-size: .78rem; }
 
@@ -455,10 +457,14 @@ try {
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
                 <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes"></td></tr>
             </table>
-            <p class="mt-1 mb-0 no-print" style="font-size:.72rem; color:var(--muted);">Net Weight e Gross Weight são somados automaticamente a partir das linhas de material.</p>
         </div>
 
         <div class="doc-assinatura">
+            <div class="doc-assinatura-import no-print">
+                📎 Importar assinatura (JPG/PNG)<br>
+                <input type="file" id="assinatura_arquivo" accept="image/jpeg,image/png" onchange="carregarAssinatura(event)">
+            </div>
+            <img id="assinatura_imagem" class="doc-assinatura-imagem" src="" alt="Assinatura" style="display:none;">
             <input type="text" id="assinatura_nome" class="nome" value="Maria Lima">
             <input type="text" id="assinatura_depto" class="depto" placeholder="Supply Chain Department" value="Supply Chain Department">
             <input type="text" id="assinatura_data" class="data" value="<?php echo date('d/m/Y'); ?>">
@@ -628,6 +634,20 @@ try {
             });
             document.getElementById('cargo_net_weight').value = formatarNumeroBrDoc(netTotal);
             document.getElementById('cargo_gross_weight').value = formatarNumeroBrDoc(brutoTotal);
+        }
+
+        // Importa uma imagem de assinatura (JPG/PNG) e mostra ela acima da
+        // linha, acima do nome — entra no PDF exportado normalmente.
+        function carregarAssinatura(event) {
+            const arquivo = event.target.files[0];
+            if (!arquivo) return;
+            const leitor = new FileReader();
+            leitor.onload = function (e) {
+                const img = document.getElementById('assinatura_imagem');
+                img.src = e.target.result;
+                img.style.display = 'block';
+            };
+            leitor.readAsDataURL(arquivo);
         }
 
         // Começa com 1 linha em branco — as demais vêm ao escolher um Processo.
