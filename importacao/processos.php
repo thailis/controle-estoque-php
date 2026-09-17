@@ -616,7 +616,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     <title>Processos | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
-    <style>#tabela-processos td { vertical-align: middle; } #tabela-processos td.description-cell { display: table-cell; }</style>
     <style>
         #tabela-processos td, #tabela-processos th { padding: 14px 16px; }
         #tabela-processos td { font-size: .85rem; }
