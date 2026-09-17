@@ -55,6 +55,7 @@ while ($linha = mysqli_fetch_assoc($resProcessos)) {
 // conectar, o dropdown fica vazio e a tela continua funcionando normalmente
 // (Supplier/CNPJ/Address/CEP podem sempre ser digitados na mão).
 $filiaisDisponiveis = [];
+$filiaisDebug = null; // DEBUG TEMPORÁRIO — mostra o motivo real se a conexão falhar.
 try {
     $hostMrp = getenv('MRP_DB_HOST') ?: '';
     $portMrp = (int) (getenv('MRP_DB_PORT') ?: 4000);
@@ -63,24 +64,33 @@ try {
     $passwordMrp = getenv('MRP_DB_PASSWORD') ?: '';
     $sslCaMrp = getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt';
 
-    if ($hostMrp !== '' && $userMrp !== '' && $passwordMrp !== '') {
+    if ($hostMrp === '' || $userMrp === '' || $passwordMrp === '') {
+        $filiaisDebug = 'Variável de ambiente MRP_DB_HOST, MRP_DB_USER ou MRP_DB_PASSWORD não está definida (ou está vazia) neste serviço.';
+    } else {
         $connMrp = mysqli_init();
         mysqli_options($connMrp, MYSQLI_OPT_CONNECT_TIMEOUT, 5);
         mysqli_ssl_set($connMrp, null, null, $sslCaMrp, null, null);
         $conectouMrp = @mysqli_real_connect($connMrp, $hostMrp, $userMrp, $passwordMrp, $dbnameMrp, $portMrp, null, MYSQLI_CLIENT_SSL);
-        if ($conectouMrp) {
+        if (!$conectouMrp) {
+            $filiaisDebug = 'Falha ao conectar no banco do MRP (host=' . $hostMrp . ', porta=' . $portMrp . ', banco=' . $dbnameMrp . ', usuario=' . $userMrp . '): ' . mysqli_connect_error();
+        } else {
             mysqli_set_charset($connMrp, 'utf8mb4');
             $resFiliais = mysqli_query($connMrp, "SELECT nome, razao_social, cnpj, endereco, cep, email FROM filiais ORDER BY nome");
-            if ($resFiliais) {
+            if (!$resFiliais) {
+                $filiaisDebug = 'Conectou no banco (' . $dbnameMrp . '), mas a consulta na tabela filiais falhou: ' . mysqli_error($connMrp);
+            } else {
                 while ($linha = mysqli_fetch_assoc($resFiliais)) {
                     $filiaisDisponiveis[] = $linha;
+                }
+                if (empty($filiaisDisponiveis)) {
+                    $filiaisDebug = 'Conectou certinho no banco ' . $dbnameMrp . ' e a tabela filiais existe, mas veio 0 linhas.';
                 }
             }
             mysqli_close($connMrp);
         }
     }
 } catch (Throwable $e) {
-    // Falha silenciosa — dropdown fica vazio, os campos continuam editáveis na mão.
+    $filiaisDebug = 'Exceção ao tentar conectar no MRP: ' . $e->getMessage();
     $filiaisDisponiveis = [];
 }
 ?>
@@ -337,6 +347,11 @@ try {
             </select>
             <?php if (empty($filiaisDisponiveis)): ?>
                 <small class="text-muted d-block mt-1">Não foi possível carregar a lista de filiais agora — preencha o Exporter manualmente.</small>
+            <?php endif; ?>
+            <?php if ($filiaisDebug !== null): ?>
+                <div class="alert alert-danger mt-2 mb-0" style="font-size:.78rem;">
+                    <strong>DEBUG (temporário):</strong> <?php echo h($filiaisDebug); ?>
+                </div>
             <?php endif; ?>
         </div>
 
