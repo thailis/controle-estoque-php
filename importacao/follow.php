@@ -77,6 +77,65 @@ function calcularCondicaoFollow(?string $prevista): ?string
 
 $mensagens = [];
 
+// ---------- Edição inline (duplo clique) ----------
+// Identifica a linha por "id". Campos calculados (condição) ou que vêm de
+// outra tabela (componente, status ligado ao processo) não entram aqui.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
+    header('Content-Type: application/json; charset=UTF-8');
+
+    $id = (int) ($_POST['id'] ?? 0);
+    $campo = (string) ($_POST['campo'] ?? '');
+    $valor = trim((string) ($_POST['valor'] ?? ''));
+
+    $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente'];
+    $camposData = ['etd', 'eta', 'prevista', 'efetiva'];
+
+    if ($id <= 0 || (!in_array($campo, $camposTexto, true) && !in_array($campo, $camposData, true))) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    if (in_array($campo, $camposData, true)) {
+        $valorSalvo = $valor === '' ? null : parseDataFollow($valor);
+        if ($valor !== '' && $valorSalvo === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
+            exit;
+        }
+        $exibido = dataBr($valorSalvo);
+    } else {
+        $valorSalvo = $valor === '' ? null : $valor;
+        $exibido = $valorSalvo ?? '—';
+    }
+
+    $stmt = mysqli_prepare($conn, "UPDATE follow SET `$campo` = ? WHERE id = ?");
+    mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+
+    echo json_encode(['ok' => true, 'exibido' => $exibido]);
+    exit;
+}
+
+// ---------- Exclusão ----------
+// Remove só da tabela follow — não mexe em processos, pagamento, nem no
+// estoque do MRP (mesmo que esse embarque já tivesse sido integrado antes,
+// o histórico que já foi gravado no MRP permanece intacto).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_follow') {
+    $idExcluir = (int) ($_POST['id_excluir'] ?? 0);
+    if ($idExcluir > 0) {
+        $stmtExcluir = mysqli_prepare($conn, "DELETE FROM follow WHERE id = ?");
+        mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
+        mysqli_stmt_execute($stmtExcluir);
+        mysqli_stmt_close($stmtExcluir);
+    }
+    $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+    $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+    $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'todos');
+    $condicaoFiltroVolta = (string) ($_POST['condicao_atual'] ?? 'todos');
+    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&excluido=1');
+    exit;
+}
+
 // ---------- Cadastro manual de embarque ----------
 // Só permite vincular a um processo JÁ EXISTENTE em "processos" — não dá pra
 // criar um Follow "solto". O componente/descrição NUNCA são digitados aqui:
@@ -139,55 +198,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     }
 }
 
-// ---------- Edição ----------
-// Não permite editar "processo" (é o vínculo com Processos, não deve mudar)
-// nem "status" (é sempre calculado pelo confirmar_entrega.php, nunca digitado).
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_follow') {
-    $idEditar = (int) ($_POST['id_editar'] ?? 0);
-    if ($idEditar <= 0) {
-        $mensagens[] = '❌ Registro inválido pra edição.';
-    } else {
-        $stmtEditar = mysqli_prepare($conn, "
-            UPDATE follow
-            SET origem = ?, destino = ?, transit_dias = ?, ft_dias = ?, armador = ?, trk = ?,
-                pickup = ?, etd = ?, eta = ?, prevista = ?, efetiva = ?, requerente = ?
-            WHERE id = ?
-        ");
-        $origemEd = trim($_POST['origem_editado'] ?? '') ?: null;
-        $destinoEd = trim($_POST['destino_editado'] ?? '') ?: null;
-        $transitDiasEd = trim($_POST['transit_dias_editado'] ?? '');
-        $transitDiasEd = $transitDiasEd !== '' ? (int) $transitDiasEd : null;
-        $ftDiasEd = trim($_POST['ft_dias_editado'] ?? '');
-        $ftDiasEd = $ftDiasEd !== '' ? (int) $ftDiasEd : null;
-        $armadorEd = trim($_POST['armador_editado'] ?? '') ?: null;
-        $trkEd = trim($_POST['trk_editado'] ?? '') ?: null;
-        $pickupEd = parseDataFollow($_POST['pickup_editado'] ?? '');
-        $etdEd = parseDataFollow($_POST['etd_editado'] ?? '');
-        $etaEd = parseDataFollow($_POST['eta_editado'] ?? '');
-        $previstaEd = parseDataFollow($_POST['prevista_editado'] ?? '');
-        $efetivaEd = parseDataFollow($_POST['efetiva_editado'] ?? '');
-        $requerenteEd = trim($_POST['requerente_editado'] ?? '') ?: null;
-        // Condição não é mais editável — sempre calculada a partir da prevista.
-
-        mysqli_stmt_bind_param(
-            $stmtEditar, 'ssiissssssssi',
-            $origemEd, $destinoEd, $transitDiasEd, $ftDiasEd, $armadorEd, $trkEd,
-            $pickupEd, $etdEd, $etaEd, $previstaEd, $efetivaEd, $requerenteEd, $idEditar
-        );
-        if (mysqli_stmt_execute($stmtEditar)) {
-            mysqli_stmt_close($stmtEditar);
-            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
-            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-            $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'todos');
-            header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&editado=1');
-            exit;
-        } else {
-            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
-            mysqli_stmt_close($stmtEditar);
-        }
-    }
-}
-
 // Lista de processos existentes, pra popular o <select> do cadastro manual —
 // já traz componente/descrição junto, pro preview automático via JS.
 $processosDisponiveis = [];
@@ -203,7 +213,6 @@ $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'todos'; // todos | pendente | integrado
 $filtroCondicao = isset($_GET['condicao']) ? trim($_GET['condicao']) : 'todos'; // todos | em_tempo | atencao | atrasado
-$editandoId = (int) ($_GET['editar'] ?? 0);
 
 $condicoes = [];
 $params = [];
@@ -297,8 +306,8 @@ while ($row = mysqli_fetch_assoc($result)) {
 
     <main class="container-fluid dashboard-container py-4">
 
-        <?php if (isset($_GET['editado'])): ?>
-            <div class="alert alert-success">✅ Embarque atualizado com sucesso.</div>
+        <?php if (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success">✅ Embarque excluído do Follow.</div>
         <?php endif; ?>
 
         <?php if (!empty($mensagens)): ?>
@@ -443,12 +452,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1700px;">
+                <table class="table mrp-table mb-0" style="min-width: 1650px;">
                     <thead>
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
-                            <th>Componente</th>
                             <th>Origem</th>
                             <th>Destino</th>
                             <th>Armador</th>
@@ -459,17 +467,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Efetiva</th>
                             <th>Requerente</th>
                             <th>Condição</th>
-                            <th>Ação</th>
+                            <th>Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="14" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="13" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
-                                    $emEdicao = $editandoId === (int) $r['id'];
-                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&status=' . urlencode($filtroStatus) . '&condicao=' . urlencode($filtroCondicao);
+                                    $id = (int) $r['id'];
                                     $statusFollow = $r['status'] ?: 'aberto';
                                     $condicaoCalc = calcularCondicaoFollow($r['prevista']);
                                     $condicaoClasse = ['em tempo' => 'status-ok', 'atencao' => 'status-atencao', 'atrasado' => 'status-critico'][$condicaoCalc] ?? 'status-sem_demanda';
@@ -490,87 +497,27 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         <span class="status-badge <?php echo $statusClasseUnificada; ?>" title="<?php echo $statusProcessoValor === 'cancelado' ? 'Processo cancelado em Processos' : ($statusFollow === 'fechado' ? 'Fechado e integrado ao MRP em ' . h($r['integrado_em'] ?? '') : 'Fecha automaticamente ao confirmar a entrega'); ?>"><?php echo h($statusTexto); ?></span>
                                     </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
-                                    <td title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?? '—'); ?></td>
-
-                                    <?php if ($emEdicao): ?>
-                                        <td colspan="9">
-                                            <form method="POST" class="row g-2 align-items-end py-2">
-                                                <input type="hidden" name="acao" value="editar_follow">
-                                                <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
-                                                <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Origem</label>
-                                                    <input type="text" name="origem_editado" class="form-control form-control-sm" value="<?php echo h($r['origem'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Destino</label>
-                                                    <input type="text" name="destino_editado" class="form-control form-control-sm" value="<?php echo h($r['destino'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-1">
-                                                    <label class="form-label small mb-0">Transit</label>
-                                                    <input type="text" name="transit_dias_editado" class="form-control form-control-sm" value="<?php echo h($r['transit_dias'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-1">
-                                                    <label class="form-label small mb-0">FT</label>
-                                                    <input type="text" name="ft_dias_editado" class="form-control form-control-sm" value="<?php echo h($r['ft_dias'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Armador</label>
-                                                    <input type="text" name="armador_editado" class="form-control form-control-sm" value="<?php echo h($r['armador'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Rastreio</label>
-                                                    <input type="text" name="trk_editado" class="form-control form-control-sm" value="<?php echo h($r['trk'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Requerente</label>
-                                                    <input type="text" name="requerente_editado" class="form-control form-control-sm" value="<?php echo h($r['requerente'] ?? ''); ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Pickup</label>
-                                                    <input type="text" name="pickup_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['pickup'] ? h(dataBr($r['pickup'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">ETD</label>
-                                                    <input type="text" name="etd_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">ETA</label>
-                                                    <input type="text" name="eta_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['eta'] ? h(dataBr($r['eta'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Prevista</label>
-                                                    <input type="text" name="prevista_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['prevista'] ? h(dataBr($r['prevista'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label small mb-0">Efetiva</label>
-                                                    <input type="text" name="efetiva_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>">
-                                                </div>
-                                                <div class="col-md-12 d-flex gap-2 mt-1">
-                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
-                                                    <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
-                                                </div>
-                                            </form>
-                                        </td>
-                                        <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
-                                        <td></td>
-                                    <?php else: ?>
-                                        <td><?php echo h($r['origem'] ?: '—'); ?></td>
-                                        <td><?php echo h($r['destino'] ?: '—'); ?></td>
-                                        <td><?php echo h($r['armador'] ?: '—'); ?></td>
-                                        <td><?php echo h($r['trk'] ?: '—'); ?></td>
-                                        <td><?php echo dataBr($r['etd']); ?></td>
-                                        <td><?php echo dataBr($r['eta']); ?></td>
-                                        <td><?php echo dataBr($r['prevista']); ?></td>
-                                        <td><?php echo dataBr($r['efetiva']); ?></td>
-                                        <td><?php echo h($r['requerente'] ?: '—'); ?></td>
-                                        <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
-                                        <td>
-                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
-                                        </td>
-                                    <?php endif; ?>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="origem" data-valor-bruto="<?php echo h($r['origem'] ?? ''); ?>"><?php echo h($r['origem'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="destino" data-valor-bruto="<?php echo h($r['destino'] ?? ''); ?>"><?php echo h($r['destino'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="armador" data-valor-bruto="<?php echo h($r['armador'] ?? ''); ?>"><?php echo h($r['armador'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="trk" data-valor-bruto="<?php echo h($r['trk'] ?? ''); ?>"><?php echo h($r['trk'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="etd" data-valor-bruto="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>"><?php echo dataBr($r['etd']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="eta" data-valor-bruto="<?php echo $r['eta'] ? h(dataBr($r['eta'])) : ''; ?>"><?php echo dataBr($r['eta']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="prevista" data-valor-bruto="<?php echo $r['prevista'] ? h(dataBr($r['prevista'])) : ''; ?>"><?php echo dataBr($r['prevista']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="efetiva" data-valor-bruto="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>"><?php echo dataBr($r['efetiva']); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="requerente" data-valor-bruto="<?php echo h($r['requerente'] ?? ''); ?>"><?php echo h($r['requerente'] ?: '—'); ?></td>
+                                    <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
+                                    <td>
+                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir este embarque do Follow? Isso não afeta o Processo nem o estoque do MRP.');">
+                                            <input type="hidden" name="acao" value="excluir_follow">
+                                            <input type="hidden" name="id_excluir" value="<?php echo $id; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
+                                            <input type="hidden" name="condicao_atual" value="<?php echo h($filtroCondicao); ?>">
+                                            <button type="submit" class="btn btn-outline-danger btn-sm" title="Excluir do Follow">✕</button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -657,5 +604,10 @@ while ($row = mysqli_fetch_assoc($result)) {
             campoPrevistaVisivel.value = formatarDataBrJs(previstaIso);
         }
     </script>
+    <script>
+        window.INLINE_EDIT_ENDPOINT = 'follow.php';
+        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+    </script>
+    <script src="assets/inline-edit.js"></script>
 </body>
 </html>
