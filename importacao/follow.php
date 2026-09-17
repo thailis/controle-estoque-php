@@ -256,10 +256,21 @@ $totalPaginas = max(1, (int) ceil($total / $porPagina));
 // Total de pendentes, pra mostrar no cabeçalho independente do filtro aplicado
 $totalPendentes = (int) mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total FROM follow WHERE integrado_mrp = 0"))['total'];
 
+// Um mesmo "processo" pode ter várias linhas em processos (uma por
+// componente) — sem agrupar antes de juntar, o LEFT JOIN multiplicava cada
+// embarque do Follow por linha de componente, duplicando a linha na tela.
 $sql = "
     SELECT f.*, p.codigo_componente, p.descricao, p.quantidade, p.status AS status_processo
     FROM follow f
-    LEFT JOIN processos p ON p.processo = f.processo
+    LEFT JOIN (
+        SELECT processo,
+               MIN(codigo_componente) AS codigo_componente,
+               MIN(descricao) AS descricao,
+               MIN(quantidade) AS quantidade,
+               MIN(status) AS status
+        FROM processos
+        GROUP BY processo
+    ) p ON p.processo = f.processo
     $where
     ORDER BY f.criado_em DESC
     LIMIT ? OFFSET ?
