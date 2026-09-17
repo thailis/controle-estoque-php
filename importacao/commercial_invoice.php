@@ -132,6 +132,19 @@ try {
             font-size: 1.05rem;
         }
         .doc-header input::placeholder { color: #aab5c0; }
+        .doc-header select {
+            background: var(--navy);
+            border: 1px solid #4a6178;
+            color: #fff;
+            font-weight: 750;
+            text-align: center;
+            text-align-last: center;
+            max-width: 260px;
+            font-size: .95rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .doc-header select option { color: #17212b; }
 
         .doc-secao-titulo {
             font-weight: 750;
@@ -330,11 +343,8 @@ try {
     </header>
 
     <div class="doc-sheet" id="doc-sheet">
-        <div class="doc-header">Commercial Invoice: <input type="text" id="invoice_numero" placeholder="0000000000" size="12"></div>
-
-        <div class="doc-toolbar-select no-print">
-            <label class="d-block">Processo (puxa os componentes cadastrados)</label>
-            <select id="select_processo" class="form-select form-select-sm" onchange="carregarProcesso()">
+        <div class="doc-header">Commercial Invoice:
+            <select id="select_processo" onchange="carregarProcesso()">
                 <option value="">Selecione um processo...</option>
                 <?php foreach ($processosDisponiveis as $p): ?>
                     <option value="<?php echo h($p); ?>"><?php echo h($p); ?></option>
