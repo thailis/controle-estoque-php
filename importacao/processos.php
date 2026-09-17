@@ -137,13 +137,6 @@ $importados = 0;
 $erros = 0;
 
 // ---------- Toggle Aberto / Cancelado ----------
-// Age por "processo" (não por id de uma linha só), porque um mesmo processo
-// pode ter várias linhas (vários componentes) — cancelar o processo cancela
-// todas elas juntas, e também "alimenta" (cascata) o status em Pagamento.
-// O Follow não guarda cópia do status — ele mostra ao vivo, direto de
-// Processos, então não precisa de cascata lá.
-// Uma vez "finalizado" (via confirmar_entrega.php), o botão trava — não dá
-// pra cancelar nem reabrir um processo que já foi entregue de verdade.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_status_processo') {
     $processoToggle = trim($_POST['processo'] ?? '');
     if ($processoToggle === '') {
@@ -165,7 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
             mysqli_stmt_execute($stmtUpdateProc);
             mysqli_stmt_close($stmtUpdateProc);
 
-            // Cascata pro Pagamento (guarda uma cópia do status, não é ao vivo)
             $stmtUpdatePag = mysqli_prepare($conn, "UPDATE pagamento SET status = ? WHERE processo = ?");
             mysqli_stmt_bind_param($stmtUpdatePag, 'ss', $novoStatus, $processoToggle);
             mysqli_stmt_execute($stmtUpdatePag);
@@ -180,10 +172,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 }
 
 // ---------- Toggle Controla Estoque (Sim / Não) ----------
-// Diferente do toggle de Status acima, esse age por LINHA específica (id),
-// não pelo processo inteiro — porque um mesmo processo pode ter itens que
-// controlam estoque (entram na fila do Confirmar Entrega) e itens que não
-// controlam (tooling, amostra), misturados.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_controla_estoque') {
     $idToggle = (int) ($_POST['id'] ?? 0);
     if ($idToggle <= 0) {
@@ -212,98 +200,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
             exit;
         }
     }
-}
-
-// ---------- Edição inline (duplo clique) ----------
-// Identifica a linha por "id". Quantidade e Preço, ao serem editados,
-// recalculam e gravam o Total também (nunca é digitado diretamente).
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar_campo') {
-    header('Content-Type: application/json; charset=UTF-8');
-
-    $id = (int) ($_POST['id'] ?? 0);
-    $campo = (string) ($_POST['campo'] ?? '');
-    $valor = trim((string) ($_POST['valor'] ?? ''));
-
-    $camposTexto = ['categoria', 'planta', 'po', 'modal', 'projeto', 'material', 'codigo_componente', 'descricao', 'hscode', 'ncm', 'fornecedor', 'moeda', 'tipo', 'ffw', 'obs'];
-    $camposData = ['solicitacao'];
-    $camposNumericos = ['quantidade', 'preco'];
-    $todosCampos = array_merge($camposTexto, $camposData, $camposNumericos);
-
-    if ($id <= 0 || !in_array($campo, $todosCampos, true)) {
-        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
-        exit;
-    }
-
-    $stmtCheck = mysqli_prepare($conn, "SELECT status FROM processos WHERE id = ?");
-    mysqli_stmt_bind_param($stmtCheck, 'i', $id);
-    mysqli_stmt_execute($stmtCheck);
-    $linhaAtual = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
-    mysqli_stmt_close($stmtCheck);
-
-    if (!$linhaAtual) {
-        echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
-        exit;
-    }
-    if (strtolower(trim((string) $linhaAtual['status'])) === 'finalizado') {
-        echo json_encode(['ok' => false, 'erro' => 'Esse processo já foi finalizado — não é possível editar mais.']);
-        exit;
-    }
-
-    if (in_array($campo, $camposData, true)) {
-        $valorSalvo = $valor === '' ? null : parseDataProcessos($valor);
-        if ($valor !== '' && $valorSalvo === null) {
-            echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
-            exit;
-        }
-        $stmt = mysqli_prepare($conn, "UPDATE processos SET `$campo` = ? WHERE id = ?");
-        mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
-        echo json_encode(['ok' => true, 'exibido' => dataBr($valorSalvo)]);
-        exit;
-    }
-
-    if (in_array($campo, $camposNumericos, true)) {
-        $valorSalvo = $valor === '' ? null : parseNumeroBrProcessos($valor);
-        if ($valor !== '' && $valorSalvo === null) {
-            echo json_encode(['ok' => false, 'erro' => 'Valor numérico inválido.']);
-            exit;
-        }
-        $stmt = mysqli_prepare($conn, "UPDATE processos SET `$campo` = ? WHERE id = ?");
-        mysqli_stmt_bind_param($stmt, 'di', $valorSalvo, $id);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
-
-        // Total nunca é digitado — recalcula e grava de novo (quantidade × preço)
-        // sempre que um dos dois muda.
-        $stmtAtuais = mysqli_prepare($conn, "SELECT quantidade, preco FROM processos WHERE id = ?");
-        mysqli_stmt_bind_param($stmtAtuais, 'i', $id);
-        mysqli_stmt_execute($stmtAtuais);
-        $atuais = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtuais));
-        mysqli_stmt_close($stmtAtuais);
-
-        $novoTotal = ($atuais['quantidade'] !== null && $atuais['preco'] !== null)
-            ? (float) $atuais['quantidade'] * (float) $atuais['preco']
-            : null;
-
-        $stmtTotal = mysqli_prepare($conn, "UPDATE processos SET total = ? WHERE id = ?");
-        mysqli_stmt_bind_param($stmtTotal, 'di', $novoTotal, $id);
-        mysqli_stmt_execute($stmtTotal);
-        mysqli_stmt_close($stmtTotal);
-
-        $exibido = $campo === 'quantidade' ? numeroBr($valorSalvo, 0) : numeroBr($valorSalvo);
-        echo json_encode(['ok' => true, 'exibido' => $exibido]);
-        exit;
-    }
-
-    // Campos de texto simples
-    $valorSalvo = $valor === '' ? null : $valor;
-    $stmt = mysqli_prepare($conn, "UPDATE processos SET `$campo` = ? WHERE id = ?");
-    mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
-    mysqli_stmt_execute($stmt);
-    mysqli_stmt_close($stmt);
-    echo json_encode(['ok' => true, 'exibido' => $valorSalvo ?? '—']);
-    exit;
 }
 
 // ---------- Importação de CSV ----------
@@ -335,8 +231,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'planta' => ['planta'],
                     'po' => ['po'],
                     'modal' => ['modal'],
-                    'projeto' => ['projeto'],
-                    'material' => ['material'],
                     'codigo_componente' => ['codigo_componente', 'componente'],
                     'descricao' => ['descricao'],
                     'quantidade' => ['quantidade'],
@@ -367,7 +261,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $lote = [];
                     $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
                         if (empty($lote)) return;
-                        $campos = ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'projeto', 'material', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs', 'controla_estoque'];
+                        $campos = ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs', 'controla_estoque'];
                         $linhasSql = [];
                         $todosValores = [];
                         foreach ($lote as $linhaLote) {
@@ -402,22 +296,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $total = parseNumeroBrProcessos($get('total'));
                         $solicitacao = parseDataProcessos($get('solicitacao'));
 
-                        // Aceita variações comuns no CSV (sim/não, s/n, yes/no, 1/0).
-                        // Sem a coluna no arquivo, ou com valor não reconhecido, assume
-                        // "sim" — a maioria dos itens de importação são de estoque normal.
                         $controlaEstoqueTexto = mb_strtolower($get('controla_estoque'), 'UTF-8');
                         $controlaEstoque = in_array($controlaEstoqueTexto, ['nao', 'não', 'n', 'no', '0'], true) ? 'nao' : 'sim';
 
                         $lote[] = [
                             $processo,
-                            'aberto', // status nunca vem do CSV — só o confirmar_entrega.php fecha ele
+                            'aberto',
                             $solicitacao,
                             $get('categoria') ?: null,
                             $get('planta') ?: null,
                             $get('po') ?: null,
                             $get('modal') ?: null,
-                            $get('projeto') ?: null,
-                            $get('material') ?: null,
                             $get('codigo_componente') ?: null,
                             $get('descricao') ?: null,
                             $quantidade,
@@ -454,10 +343,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
 // ---------- Cadastro manual ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual') {
-    // O processo nunca é digitado no cadastro manual — é sempre gerado, e só
-    // depois que os 4 campos que compõem o código estiverem preenchidos
-    // (Categoria, Planta, Solicitação, Modal). Fornecedor NÃO entra no código
-    // e não é mais obrigatório.
     $categoria = trim($_POST['categoria_manual'] ?? '') ?: null;
     $planta = trim($_POST['planta_manual'] ?? '') ?: null;
     $solicitacaoTexto = trim($_POST['solicitacao_manual'] ?? '');
@@ -479,36 +364,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         } else {
         $processo = $geracao['codigo'];
         $stmt = mysqli_prepare($conn, "
-            INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, projeto, material, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs, controla_estoque)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs, controla_estoque)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
-        $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
+        $status = 'aberto';
         $solicitacao = parseDataProcessos($solicitacaoTexto);
         $po = trim($_POST['po_manual'] ?? '') ?: null;
-        $projeto = trim($_POST['projeto_manual'] ?? '') ?: null;
-        $material = trim($_POST['material_manual'] ?? '') ?: null;
         $codigoComponente = trim($_POST['codigo_componente_manual'] ?? '') ?: null;
         $descricao = trim($_POST['descricao_manual'] ?? '') ?: null;
         $quantidade = parseNumeroBrProcessos(trim($_POST['quantidade_manual'] ?? ''));
         $hscode = trim($_POST['hscode_manual'] ?? '') ?: null;
         $ncm = trim($_POST['ncm_manual'] ?? '') ?: null;
         $preco = parseNumeroBrProcessos(trim($_POST['preco_manual'] ?? ''));
-        // Total nunca é digitado — sempre calculado: quantidade × preço.
         $total = ($quantidade !== null && $preco !== null) ? $quantidade * $preco : null;
         $moeda = trim($_POST['moeda_manual'] ?? '') ?: null;
         $tipo = trim($_POST['tipo_manual'] ?? '') ?: null;
         $ffw = trim($_POST['ffw_manual'] ?? '') ?: null;
         $obs = trim($_POST['obs_manual'] ?? '') ?: null;
-        // Checkbox desmarcado não vem no POST — ausência = "nao". Padrão do
-        // formulário é vir marcado (checked), então o normal é chegar "sim".
         $controlaEstoqueManual = isset($_POST['controla_estoque_manual']) ? 'sim' : 'nao';
 
-        // Tipos: processo(s) status(s) solicitacao(s) categoria(s) planta(s) po(s) modal(s)
-        // projeto(s) material(s) codigo_componente(s) descricao(s) quantidade(d) hscode(s)
-        // ncm(s) fornecedor(s) preco(d) total(d) moeda(s) tipo(s) ffw(s) obs(s) controla_estoque(s)
         mysqli_stmt_bind_param(
-            $stmt, 'sssssssssssdsssddsssss',
-            $processo, $status, $solicitacao, $categoria, $planta, $po, $modal, $projeto, $material, $codigoComponente,
+            $stmt, 'sssssssssdsssddsssss',
+            $processo, $status, $solicitacao, $categoria, $planta, $po, $modal, $codigoComponente,
             $descricao, $quantidade, $hscode, $ncm, $fornecedor, $preco, $total, $moeda, $tipo, $ffw, $obs,
             $controlaEstoqueManual
         );
@@ -522,6 +399,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     }
 }
 
+// ---------- Edição ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_registro') {
+    $idEditar = (int) ($_POST['id_editar'] ?? 0);
+    if ($idEditar <= 0) {
+        $mensagens[] = '❌ Registro inválido pra edição.';
+    } else {
+        $stmtEditar = mysqli_prepare($conn, "
+            UPDATE processos
+            SET solicitacao = ?, categoria = ?, planta = ?, po = ?, modal = ?, codigo_componente = ?,
+                descricao = ?, quantidade = ?, hscode = ?, ncm = ?, fornecedor = ?, preco = ?, total = ?,
+                moeda = ?, tipo = ?, ffw = ?, obs = ?
+            WHERE id = ?
+        ");
+        $solicitacaoEd = parseDataProcessos(trim($_POST['solicitacao_editado'] ?? ''));
+        $categoriaEd = trim($_POST['categoria_editado'] ?? '') ?: null;
+        $plantaEd = trim($_POST['planta_editado'] ?? '') ?: null;
+        $poEd = trim($_POST['po_editado'] ?? '') ?: null;
+        $modalEd = trim($_POST['modal_editado'] ?? '') ?: null;
+        $codigoComponenteEd = trim($_POST['codigo_componente_editado'] ?? '') ?: null;
+        $descricaoEd = trim($_POST['descricao_editado'] ?? '') ?: null;
+        $quantidadeEd = parseNumeroBrProcessos(trim($_POST['quantidade_editado'] ?? ''));
+        $hscodeEd = trim($_POST['hscode_editado'] ?? '') ?: null;
+        $ncmEd = trim($_POST['ncm_editado'] ?? '') ?: null;
+        $fornecedorEd = trim($_POST['fornecedor_editado'] ?? '') ?: null;
+        $precoEd = parseNumeroBrProcessos(trim($_POST['preco_editado'] ?? ''));
+        $totalEd = ($quantidadeEd !== null && $precoEd !== null) ? $quantidadeEd * $precoEd : null;
+        $moedaEd = trim($_POST['moeda_editado'] ?? '') ?: null;
+        $tipoEd = trim($_POST['tipo_editado'] ?? '') ?: null;
+        $ffwEd = trim($_POST['ffw_editado'] ?? '') ?: null;
+        $obsEd = trim($_POST['obs_editado'] ?? '') ?: null;
+
+        mysqli_stmt_bind_param(
+            $stmtEditar, 'sssssssdsssddssssi',
+            $solicitacaoEd, $categoriaEd, $plantaEd, $poEd, $modalEd, $codigoComponenteEd,
+            $descricaoEd, $quantidadeEd, $hscodeEd, $ncmEd, $fornecedorEd, $precoEd, $totalEd,
+            $moedaEd, $tipoEd, $ffwEd, $obsEd, $idEditar
+        );
+        if (mysqli_stmt_execute($stmtEditar)) {
+            mysqli_stmt_close($stmtEditar);
+            $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
+            $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&editado=1');
+            exit;
+        } else {
+            $mensagens[] = '❌ Erro ao atualizar: ' . mysqli_stmt_error($stmtEditar);
+            mysqli_stmt_close($stmtEditar);
+        }
+    }
+}
+
 // ---------- Exportação CSV ----------
 if (isset($_GET['exportar'])) {
     $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
@@ -529,6 +456,7 @@ if (isset($_GET['exportar'])) {
     $filtroComponenteExp = trim($_GET['componente'] ?? '');
     $filtroCategoriaExp = trim($_GET['categoria'] ?? '');
     $filtroFornecedorExp = trim($_GET['fornecedor'] ?? '');
+    $filtroStatusExp = trim($_GET['status'] ?? '');
 
     $condicoesExp = [];
     $paramsExp = [];
@@ -559,6 +487,11 @@ if (isset($_GET['exportar'])) {
         $paramsExp[] = $filtroFornecedorExp;
         $tiposExp .= 's';
     }
+    if ($filtroStatusExp !== '') {
+        $condicoesExp[] = "status = ?";
+        $paramsExp[] = $filtroStatusExp;
+        $tiposExp .= 's';
+    }
     $where = !empty($condicoesExp) ? ('WHERE ' . implode(' AND ', $condicoesExp)) : '';
 
     $sqlExport = "SELECT * FROM processos $where ORDER BY criado_em DESC";
@@ -575,11 +508,11 @@ if (isset($_GET['exportar'])) {
     header('Content-Disposition: attachment; filename="processos.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'projeto', 'material', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs'], ';', '"', '');
+    fputcsv($saida, ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linha['processo'], $linha['status'], $linha['solicitacao'], $linha['categoria'], $linha['planta'],
-            $linha['po'], $linha['modal'], $linha['projeto'], $linha['material'], $linha['codigo_componente'], $linha['descricao'],
+            $linha['po'], $linha['modal'], $linha['codigo_componente'], $linha['descricao'],
             $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 2, ',', '') : '',
             $linha['hscode'], $linha['ncm'], $linha['fornecedor'],
             $linha['preco'] !== null ? number_format((float) $linha['preco'], 2, ',', '') : '',
@@ -600,8 +533,9 @@ $filtroPlanta = trim($_GET['planta'] ?? '');
 $filtroComponente = trim($_GET['componente'] ?? '');
 $filtroCategoria = trim($_GET['categoria'] ?? '');
 $filtroFornecedor = trim($_GET['fornecedor'] ?? '');
+$filtroStatus = trim($_GET['status'] ?? '');
+$editandoId = (int) ($_GET['editar'] ?? 0);
 
-// Listas pros filtros em dropdown (só valores que já existem de verdade na base)
 $plantasDisponiveis = [];
 $res = mysqli_query($conn, "SELECT DISTINCT planta FROM processos WHERE planta IS NOT NULL AND TRIM(planta) <> '' ORDER BY planta");
 while ($linha = mysqli_fetch_assoc($res)) { $plantasDisponiveis[] = $linha['planta']; }
@@ -614,6 +548,10 @@ $fornecedoresDisponiveis = [];
 $res = mysqli_query($conn, "SELECT DISTINCT fornecedor FROM processos WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
 while ($linha = mysqli_fetch_assoc($res)) { $fornecedoresDisponiveis[] = $linha['fornecedor']; }
 
+// Lista de status pro filtro — sempre os 3 valores possíveis (aberto,
+// cancelado, finalizado), independente de já existirem na base ou não.
+$statusDisponiveis = ['aberto', 'cancelado', 'finalizado'];
+
 $condicoes = [];
 $params = [];
 $tipos = '';
@@ -623,9 +561,6 @@ if ($busca !== '') {
     $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
     $tipos .= 'ssss';
 }
-// Os 4 filtros abaixo são independentes entre si e da busca livre — combinam
-// com AND (cada um restringe mais o resultado), diferente da busca livre
-// (que usa OR entre as colunas pra achar qualquer correspondência).
 if ($filtroPlanta !== '') {
     $condicoes[] = "planta = ?";
     $params[] = $filtroPlanta;
@@ -644,6 +579,11 @@ if ($filtroCategoria !== '') {
 if ($filtroFornecedor !== '') {
     $condicoes[] = "fornecedor = ?";
     $params[] = $filtroFornecedor;
+    $tipos .= 's';
+}
+if ($filtroStatus !== '') {
+    $condicoes[] = "status = ?";
+    $params[] = $filtroStatus;
     $tipos .= 's';
 }
 
@@ -677,25 +617,13 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
     <style>
-        /* Espaçamento extra — a tabela tem muitas colunas, então o padding
-           padrão do dashboard.css (12px) fica meio apertado nessa tela. */
         #tabela-processos td, #tabela-processos th { padding: 14px 16px; }
         #tabela-processos td { font-size: .85rem; }
-        /* Descrição e Obs podem vir com texto longo sem espaço nenhum (ex.: uma
-           palavra gigante) — sem isso, o texto "vaza" por cima da célula vizinha
-           em vez de truncar com reticências. */
         #tabela-processos .description-cell {
             max-width: 220px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            /* dashboard.css define .description-cell com "display: block", o que
-               tira a célula do alinhamento vertical normal da tabela (o texto sobe
-               pro topo em vez de ficar centralizado como as outras colunas). Aqui
-               a gente sobrescreve isso só nesta tabela, voltando pro comportamento
-               padrão de célula. */
-            display: table-cell;
-            vertical-align: middle;
         }
     </style>
 </head>
@@ -712,13 +640,15 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <a class="btn btn-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
             </nav>
         </div>
     </header>
 
     <main class="container-fluid dashboard-container py-4">
+
+        <?php if (isset($_GET['editado'])): ?>
+            <div class="alert alert-success">✅ Registro atualizado com sucesso.</div>
+        <?php endif; ?>
 
         <?php if (isset($_GET['status_alterado'])): ?>
             <div class="alert alert-success">✅ Status do processo atualizado.</div>
@@ -752,7 +682,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </form>
                 <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
                     Colunas esperadas (primeira linha = cabeçalho, qualquer ordem):<br>
-                    <code>processo, solicitacao, categoria, planta, po, modal, projeto, material, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs</code><br>
+                    <code>processo, solicitacao, categoria, planta, po, modal, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs</code><br>
                     Só <code>processo</code> é obrigatório — as demais colunas podem faltar. <strong>Não existe coluna <code>status</code></strong>: todo processo nasce "aberto" automaticamente, e só vira "finalizado" quando o embarque correspondente é confirmado na tela Confirmar Entrega. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                 </p>
             </details>
@@ -786,14 +716,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <div class="col-md-2">
                         <label class="form-label">Modal *</label>
                         <input type="text" name="modal_manual" class="form-control" placeholder="aereo / sea / road / courrier" required>
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Projeto</label>
-                        <input type="text" name="projeto_manual" class="form-control">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Material</label>
-                        <input type="text" name="material_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Componente</label>
@@ -865,6 +787,15 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-md-2">
+                    <label class="form-label">Status</label>
+                    <select name="status" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach ($statusDisponiveis as $st): ?>
+                            <option value="<?php echo h($st); ?>" <?php echo $filtroStatus === $st ? 'selected' : ''; ?>><?php echo h(ucfirst($st)); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
                     <label class="form-label">Planta</label>
                     <select name="planta" class="form-select">
                         <option value="">Todas</option>
@@ -902,7 +833,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <a href="processos.php" class="btn btn-outline-secondary w-100">Limpar filtros</a>
                 </div>
                 <div class="col-md-2">
-                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
+                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
                 </div>
             </form>
         </section>
@@ -916,7 +847,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" id="tabela-processos" style="min-width: 2050px;">
+                <table class="table mrp-table mb-0" id="tabela-processos" style="min-width: 1900px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -927,8 +858,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Planta</th>
                             <th>PO</th>
                             <th>Modal</th>
-                            <th>Projeto</th>
-                            <th>Material</th>
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
@@ -941,19 +870,21 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Tipo</th>
                             <th>FFW</th>
                             <th>Obs</th>
+                            <th>Ação</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="22" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="21" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
-                                    $id = (int) $r['id'];
                                     $statusAtualRow = strtolower(trim((string) ($r['status'] ?? '')));
                                     $statusFinalizado = $statusAtualRow === 'finalizado';
                                     $statusCancelado = $statusAtualRow === 'cancelado';
                                     $controlaEstoqueRow = strtolower(trim((string) ($r['controla_estoque'] ?? 'sim'))) === 'sim';
+                                    $emEdicao = $editandoId === (int) $r['id'];
+                                    $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca);
                                 ?>
                                 <tr>
                                     <td>
@@ -979,7 +910,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                         <?php else: ?>
                                             <form method="POST" class="d-inline m-0">
                                                 <input type="hidden" name="acao" value="toggle_controla_estoque">
-                                                <input type="hidden" name="id" value="<?php echo $id; ?>">
+                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
                                                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" style="cursor:pointer;" title="Clique pra alternar — 'Não' significa que esse item não entra no Confirmar Entrega (ex.: tooling, amostra)">
@@ -989,25 +920,112 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                         <?php endif; ?>
                                     </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="solicitacao" data-valor-bruto="<?php echo $r['solicitacao'] ? h(dataBr($r['solicitacao'])) : ''; ?>"><?php echo dataBr($r['solicitacao']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="categoria" data-valor-bruto="<?php echo h($r['categoria'] ?? ''); ?>"><?php echo h($r['categoria'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="planta" data-valor-bruto="<?php echo h($r['planta'] ?? ''); ?>"><?php echo h($r['planta'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="po" data-valor-bruto="<?php echo h($r['po'] ?? ''); ?>"><?php echo h($r['po'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="modal" data-valor-bruto="<?php echo h($r['modal'] ?? ''); ?>"><?php echo h($r['modal'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="projeto" data-valor-bruto="<?php echo h($r['projeto'] ?? ''); ?>"><?php echo h($r['projeto'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="material" data-valor-bruto="<?php echo h($r['material'] ?? ''); ?>"><?php echo h($r['material'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="codigo_componente" data-valor-bruto="<?php echo h($r['codigo_componente'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
-                                    <td class="celula-editavel description-cell" data-id="<?php echo $id; ?>" data-campo="descricao" data-valor-bruto="<?php echo h($r['descricao'] ?? ''); ?>" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
-                                    <td class="celula-editavel col-quantidade" data-id="<?php echo $id; ?>" data-campo="quantidade" data-valor-bruto="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>"><?php echo numeroBr($r['quantidade'], 0); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="hscode" data-valor-bruto="<?php echo h($r['hscode'] ?? ''); ?>"><?php echo h($r['hscode'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="ncm" data-valor-bruto="<?php echo h($r['ncm'] ?? ''); ?>"><?php echo h($r['ncm'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="fornecedor" data-valor-bruto="<?php echo h($r['fornecedor'] ?? ''); ?>"><?php echo h($r['fornecedor'] ?: '—'); ?></td>
-                                    <td class="celula-editavel col-preco" data-id="<?php echo $id; ?>" data-campo="preco" data-valor-bruto="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>"><?php echo numeroBr($r['preco']); ?></td>
-                                    <td class="col-total"><?php echo numeroBr($r['total']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="moeda" data-valor-bruto="<?php echo h($r['moeda'] ?? ''); ?>"><?php echo h($r['moeda'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="tipo" data-valor-bruto="<?php echo h($r['tipo'] ?? ''); ?>"><?php echo h($r['tipo'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="ffw" data-valor-bruto="<?php echo h($r['ffw'] ?? ''); ?>"><?php echo h($r['ffw'] ?: '—'); ?></td>
-                                    <td class="celula-editavel description-cell" data-id="<?php echo $id; ?>" data-campo="obs" data-valor-bruto="<?php echo h($r['obs'] ?? ''); ?>" title="<?php echo h($r['obs'] ?? ''); ?>"><?php echo h($r['obs'] ?: '—'); ?></td>
+
+                                    <?php if ($emEdicao): ?>
+                                        <td colspan="17">
+                                            <form method="POST" class="row g-2 align-items-end py-2">
+                                                <input type="hidden" name="acao" value="editar_registro">
+                                                <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
+                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                                <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Solicitação</label>
+                                                    <input type="text" name="solicitacao_editado" class="form-control form-control-sm" placeholder="dd/mm/aaaa" value="<?php echo $r['solicitacao'] ? h(dataBr($r['solicitacao'])) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Categoria</label>
+                                                    <input type="text" name="categoria_editado" class="form-control form-control-sm" value="<?php echo h($r['categoria'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Planta</label>
+                                                    <input type="text" name="planta_editado" class="form-control form-control-sm" value="<?php echo h($r['planta'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">PO</label>
+                                                    <input type="text" name="po_editado" class="form-control form-control-sm" value="<?php echo h($r['po'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Modal</label>
+                                                    <input type="text" name="modal_editado" class="form-control form-control-sm" value="<?php echo h($r['modal'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Componente</label>
+                                                    <input type="text" name="codigo_componente_editado" class="form-control form-control-sm" value="<?php echo h($r['codigo_componente'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small mb-0">Descrição</label>
+                                                    <input type="text" name="descricao_editado" class="form-control form-control-sm" value="<?php echo h($r['descricao'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Quantidade</label>
+                                                    <input type="text" name="quantidade_editado" id="quantidade_editado" class="form-control form-control-sm" value="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>" oninput="calcularTotalProcessoEdicao()">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">HS Code</label>
+                                                    <input type="text" name="hscode_editado" class="form-control form-control-sm" value="<?php echo h($r['hscode'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">NCM</label>
+                                                    <input type="text" name="ncm_editado" class="form-control form-control-sm" value="<?php echo h($r['ncm'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Fornecedor</label>
+                                                    <input type="text" name="fornecedor_editado" class="form-control form-control-sm" value="<?php echo h($r['fornecedor'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Preço</label>
+                                                    <input type="text" name="preco_editado" id="preco_editado" class="form-control form-control-sm" value="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>" oninput="calcularTotalProcessoEdicao()">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Total <small class="text-muted">(qtd×preço)</small></label>
+                                                    <input type="text" id="total_editado_display" class="form-control form-control-sm" readonly value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
+                                                    <input type="hidden" name="total_editado" id="total_editado" value="<?php echo $r['total'] !== null ? numeroBr($r['total']) : ''; ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Moeda</label>
+                                                    <input type="text" name="moeda_editado" class="form-control form-control-sm" value="<?php echo h($r['moeda'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">Tipo</label>
+                                                    <input type="text" name="tipo_editado" class="form-control form-control-sm" value="<?php echo h($r['tipo'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <label class="form-label small mb-0">FFW</label>
+                                                    <input type="text" name="ffw_editado" class="form-control form-control-sm" value="<?php echo h($r['ffw'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">Obs</label>
+                                                    <input type="text" name="obs_editado" class="form-control form-control-sm" value="<?php echo h($r['obs'] ?? ''); ?>">
+                                                </div>
+                                                <div class="col-md-12 d-flex gap-2 mt-1">
+                                                    <button type="submit" class="btn btn-success btn-sm">Salvar</button>
+                                                    <a href="<?php echo $linkVoltar; ?>" class="btn btn-outline-secondary btn-sm">Cancelar</a>
+                                                </div>
+                                            </form>
+                                        </td>
+                                        <td></td>
+                                    <?php else: ?>
+                                        <td><?php echo dataBr($r['solicitacao']); ?></td>
+                                        <td><?php echo h($r['categoria'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['planta'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['po'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['modal'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
+                                        <td class="description-cell" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
+                                        <td><?php echo numeroBr($r['quantidade'], 0); ?></td>
+                                        <td><?php echo h($r['hscode'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['ncm'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
+                                        <td><?php echo numeroBr($r['preco']); ?></td>
+                                        <td><?php echo numeroBr($r['total']); ?></td>
+                                        <td><?php echo h($r['moeda'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['tipo'] ?: '—'); ?></td>
+                                        <td><?php echo h($r['ffw'] ?: '—'); ?></td>
+                                        <td class="description-cell" title="<?php echo h($r['obs'] ?? ''); ?>"><?php echo h($r['obs'] ?: '—'); ?></td>
+                                        <td>
+                                            <a href="<?php echo $linkVoltar; ?>&editar=<?php echo (int) $r['id']; ?>" class="btn btn-outline-secondary btn-sm">Editar</a>
+                                        </td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -1034,7 +1052,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
     <script>
-        // Converte texto em formato BR ("1.234,56") ou número puro em float JS.
         function parseNumeroBrProcJs(texto) {
             if (!texto) return 0;
             texto = String(texto).trim();
@@ -1045,7 +1062,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             return isNaN(n) ? 0 : n;
         }
 
-        // Total = Quantidade × Preço. Nunca digitado — sempre recalculado.
         function calcularTotalProcesso() {
             const quantidade = parseNumeroBrProcJs(document.getElementById('quantidade_manual').value);
             const preco = parseNumeroBrProcJs(document.getElementById('preco_manual').value);
@@ -1055,28 +1071,17 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             document.getElementById('total_manual').value = textoTotal;
         }
 
-        // A tabela recalcula o Total da linha ao vivo (sem reload) sempre que
-        // Quantidade ou Preço são editados por duplo clique — o servidor também
-        // já grava o total recalculado, isso só evita esperar a página recarregar.
-        document.addEventListener('inline-edit:salvo', function (evento) {
-            const campo = evento.detail && evento.detail.campo;
-            if (campo !== 'quantidade' && campo !== 'preco') return;
-            const linha = evento.target.closest('tr');
-            if (!linha) return;
-            const celQtd = linha.querySelector('.col-quantidade');
-            const celPreco = linha.querySelector('.col-preco');
-            const celTotal = linha.querySelector('.col-total');
-            if (!celQtd || !celPreco || !celTotal) return;
-            const quantidade = parseNumeroBrProcJs(celQtd.dataset.valorBruto);
-            const preco = parseNumeroBrProcJs(celPreco.dataset.valorBruto);
+        function calcularTotalProcessoEdicao() {
+            const qtdEl = document.getElementById('quantidade_editado');
+            const precoEl = document.getElementById('preco_editado');
+            if (!qtdEl || !precoEl) return;
+            const quantidade = parseNumeroBrProcJs(qtdEl.value);
+            const preco = parseNumeroBrProcJs(precoEl.value);
             const total = quantidade * preco;
-            celTotal.textContent = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        });
+            const textoTotal = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('total_editado_display').value = textoTotal;
+            document.getElementById('total_editado').value = textoTotal;
+        }
     </script>
-    <script>
-        window.INLINE_EDIT_ENDPOINT = 'processos.php';
-        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
-    </script>
-    <script src="assets/inline-edit.js"></script>
 </body>
 </html>

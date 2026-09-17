@@ -81,10 +81,6 @@ $importados = 0;
 $erros = 0;
 
 // ---------- Toggle de Liquidação OR / Liquidação NA ----------
-// Regra de consistência: OR aberto sempre implica NA aberto (não existe OR
-// aberto com NA fechado). Por isso:
-//  - Reabrir OR (fechado -> aberto) também força NA de volta pra aberto junto.
-//  - Fechar NA só é permitido se OR já estiver fechado — senão, bloqueia.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['toggle_liquidacao_or', 'toggle_liquidacao_na'], true)) {
     $idPagamento = (int) ($_POST['id'] ?? 0);
     $acaoToggle = $_POST['acao'];
@@ -103,11 +99,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['to
 
         if ($acaoToggle === 'toggle_liquidacao_or') {
             if ($orAtual === 'aberto') {
-                // Fechar OR — não mexe na NA (continua aberto, como já estava)
                 $novoOr = 'fechado';
                 $novoNa = $naAtual;
             } else {
-                // Reabrir OR — força NA de volta pra aberto junto (regra de consistência)
                 $novoOr = 'aberto';
                 $novoNa = 'aberto';
             }
@@ -115,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['to
             mysqli_stmt_bind_param($stmtUpdate, 'ssi', $novoOr, $novoNa, $idPagamento);
             mysqli_stmt_execute($stmtUpdate);
             mysqli_stmt_close($stmtUpdate);
-        } else { // toggle_liquidacao_na
+        } else {
             if ($naAtual === 'aberto') {
                 if ($orAtual !== 'fechado') {
                     $mensagens[] = '❌ Não é possível fechar a Liquidação NA enquanto a Liquidação OR estiver aberta. Feche a OR primeiro.';
@@ -126,7 +120,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['acao'] ?? '', ['to
                     mysqli_stmt_close($stmtUpdate);
                 }
             } else {
-                // Reabrir NA é sempre permitido (não afeta a OR)
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE pagamento SET liquidacao_na = 'aberto' WHERE id = ?");
                 mysqli_stmt_bind_param($stmtUpdate, 'i', $idPagamento);
                 mysqli_stmt_execute($stmtUpdate);
@@ -142,10 +135,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     if ($processo === '') {
         $mensagens[] = '❌ Escolha um processo já cadastrado em Processos.';
     } else {
-        // Os campos em comum com "processos" (status, po, fornecedor, moeda, total)
-        // NUNCA vêm do formulário — são sempre buscados direto da tabela processos,
-        // que é a fonte única pra esses dados. O <select> no formulário só decide
-        // QUAL processo; o preview em tela é só visual, o servidor sempre reconfirma.
         $stmtProc = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM processos WHERE processo = ? LIMIT 1");
         mysqli_stmt_bind_param($stmtProc, 's', $processo);
         mysqli_stmt_execute($stmtProc);
@@ -167,8 +156,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $advanced1 = parseNumeroBrPagamento(trim($_POST['advanced1_manual'] ?? ''));
         $advanced2 = parseNumeroBrPagamento(trim($_POST['advanced2_manual'] ?? ''));
         $balance = parseNumeroBrPagamento(trim($_POST['balance_manual'] ?? ''));
-        // Liquidação OR e NA nunca são digitadas — todo pagamento novo nasce com
-        // as duas "aberto". A partir daí, só o botão de alternância na listagem muda.
         $liquidacaoOr = 'aberto';
         $despachante = trim($_POST['despachante_manual'] ?? '') ?: null;
         $numerarioInicial = parseDataPagamento(trim($_POST['numerario_inicial_manual'] ?? ''));
@@ -180,9 +167,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $rb = trim($_POST['rb_manual'] ?? '') ?: null;
         $oa = trim($_POST['oa_manual'] ?? '') ?: null;
 
-        // Tipos: processo(s) status(s) po(s) fornecedor(s) moeda(s) total(d) advanced1(d) advanced2(d)
-        // balance(d) liquidacao_or(s) despachante(s) numerario_inicial(s) valor_inicial(d)
-        // numerario_final(s) valor_final(d) diferenca(d) liquidacao_na(s) rb(s) oa(s)
         mysqli_stmt_bind_param(
             $stmt, 'sssssddddsssdsddsss',
             $processo, $status, $po, $fornecedor, $moeda, $total, $advanced1, $advanced2, $balance,
@@ -200,10 +184,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 }
 
 // ---------- Edição ----------
-// Não edita: processo (vínculo com Processos), status/po/fornecedor/moeda/total
-// (vêm de Processos, só lá se corrige), liquidacao_or/liquidacao_na (têm botão
-// de alternância próprio). Balance e Diferença são RECALCULADOS aqui de novo,
-// nunca aceitos direto do formulário — mesma regra da criação.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_pagamento') {
     $idEditar = (int) ($_POST['id_editar'] ?? 0);
     if ($idEditar <= 0) {
@@ -307,10 +287,6 @@ if (isset($_GET['exportar'])) {
 }
 
 // ---------- Listagem ----------
-// Lista de processos existentes, pra popular o <select> do cadastro manual —
-// já traz os campos em comum (status, po, fornecedor, moeda, total) pro
-// preview automático via JS (o servidor sempre busca esses mesmos valores de
-// novo, direto de "processos", na hora de salvar).
 $processosDisponiveis = [];
 $resProcessos = mysqli_query($conn, "SELECT processo, status, po, fornecedor, moeda, total FROM processos ORDER BY processo");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
@@ -363,10 +339,6 @@ mysqli_stmt_execute($stmt);
 $result = mysqli_stmt_get_result($stmt);
 $rows = [];
 while ($row = mysqli_fetch_assoc($result)) {
-    // Prioriza o valor AO VIVO de processos — só cai pra cópia armazenada em
-    // pagamento se, por algum motivo, o processo não existir mais lá (ex.:
-    // tabela processos foi limpa/reimportada e esse processo específico não
-    // veio de volta no novo arquivo).
     $row['status'] = $row['status_processo_vivo'] ?? $row['status'];
     $row['po'] = $row['po_vivo'] ?? $row['po'];
     $row['fornecedor'] = $row['fornecedor_vivo'] ?? $row['fornecedor'];
@@ -375,7 +347,6 @@ while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
 
-// Soma geral (visão rápida de quanto está em aberto no total)
 $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_total, SUM(balance) AS soma_balance FROM pagamento"));
 ?>
 <!DOCTYPE html>
@@ -400,8 +371,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
             </nav>
         </div>
     </header>
@@ -542,20 +511,13 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 2100px;">
+                <table class="table mrp-table mb-0" style="min-width: 1500px;">
                     <thead>
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
-                            <th>Moeda</th>
-                            <th>Total</th>
-                            <th>Advanced 1</th>
-                            <th>Advanced 2</th>
-                            <th>Balance</th>
-                            <th>Liquidação OR</th>
-                            <th>Despachante</th>
                             <th>Numerário inicial</th>
                             <th>Valor inicial</th>
                             <th>Numerário final</th>
@@ -569,7 +531,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="20" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="13" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -582,10 +544,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     } else {
                                         $statusCalc = 'finalizado'; $statusClasse = 'status-ok';
                                     }
-                                    // Se o processo foi cancelado em Processos, isso SOBREPÕE o
-                                    // status calculado (aberto/parcial/finalizado) — mesmo que a
-                                    // liquidação já estivesse toda fechada. O campo "status" aqui
-                                    // é a cópia que já recebe a cascata do toggle em processos.php.
                                     if (strtolower(trim((string) ($r['status'] ?? ''))) === 'cancelado') {
                                         $statusCalc = 'cancelado'; $statusClasse = 'status-critico';
                                     }
@@ -597,11 +555,9 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['moeda'] ?: '—'); ?></td>
-                                    <td><?php echo numeroBr($r['total']); ?></td>
 
                                     <?php if ($emEdicao): ?>
-                                        <td colspan="13">
+                                        <td colspan="8">
                                             <form method="POST" class="row g-2 align-items-end py-2">
                                                 <input type="hidden" name="acao" value="editar_pagamento">
                                                 <input type="hidden" name="id_editar" value="<?php echo (int) $r['id']; ?>">
@@ -654,19 +610,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                         </td>
                                         <td></td>
                                     <?php else: ?>
-                                        <td><?php echo numeroBr($r['advanced1']); ?></td>
-                                        <td><?php echo numeroBr($r['advanced2']); ?></td>
-                                        <td class="<?php echo ((float) ($r['balance'] ?? 0)) > 0 ? 'purchase-value' : ''; ?>"><?php echo numeroBr($r['balance']); ?></td>
-                                        <td>
-                                            <form method="POST" class="d-inline m-0">
-                                                <input type="hidden" name="acao" value="toggle_liquidacao_or">
-                                                <input type="hidden" name="id" value="<?php echo (int) $r['id']; ?>">
-                                                <button type="submit" class="status-badge border-0 <?php echo $orValor === 'fechado' ? 'status-ok' : 'status-atencao'; ?>" style="cursor:pointer;" title="Clique pra alternar (reabrir a OR também reabre a NA junto)">
-                                                    <?php echo ucfirst($orValor); ?>
-                                                </button>
-                                            </form>
-                                        </td>
-                                        <td><?php echo h($r['despachante'] ?: '—'); ?></td>
                                         <td><?php echo dataBr($r['numerario_inicial']); ?></td>
                                         <td><?php echo numeroBr($r['valor_inicial']); ?></td>
                                         <td><?php echo dataBr($r['numerario_final']); ?></td>
@@ -719,10 +662,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
         <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
     <script>
-        // Ao escolher um processo, mostra os campos que já existem cadastrados
-        // nele (status, PO, fornecedor, moeda, total) — só pra visualização.
-        // O servidor sempre busca esses mesmos valores de novo, direto de
-        // "processos", na hora de salvar — o que aparece aqui nunca é enviado.
         function atualizarPreviewProcessoPagamento() {
             const select = document.getElementById('processo_manual');
             const opcao = select.options[select.selectedIndex];
@@ -733,8 +672,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             document.getElementById('preview_total').value = opcao.dataset.total || '—';
         }
 
-        // Converte texto em formato BR ("1.234,56" ou só "1234,56") pra número
-        // JS de verdade. Aceita também número puro sem formatação nenhuma.
         function parseNumeroBrJs(texto) {
             if (!texto) return 0;
             texto = String(texto).trim();
@@ -749,8 +686,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
-        // Balance = Advanced 1 + Advanced 2 − Total (do processo escolhido).
-        // Nunca digitado — sempre recalculado ao mudar qualquer um dos três.
         function calcularBalancePagamento() {
             const select = document.getElementById('processo_manual');
             const opcao = select.options[select.selectedIndex];
@@ -763,8 +698,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             document.getElementById('balance_manual').value = textoBalance;
         }
 
-        // Diferença = Valor final − Valor inicial. Nunca digitada — sempre
-        // recalculada ao mudar qualquer um dos dois.
         function calcularDiferencaPagamento() {
             const valorInicial = parseNumeroBrJs(document.getElementById('valor_inicial_manual').value);
             const valorFinal = parseNumeroBrJs(document.getElementById('valor_final_manual').value);
