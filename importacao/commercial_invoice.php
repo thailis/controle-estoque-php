@@ -305,9 +305,9 @@ try {
             width: 260px; padding-top: 4px; font-size: .85rem;
         }
         .doc-assinatura input:focus { outline: none; background: #f7faff; }
-        .doc-assinatura .nome { font-weight: 700; }
+        .doc-assinatura .nome { font-weight: 700; border-top: 1px solid #333; }
         .doc-assinatura .depto {
-            border-top: 1px solid #333; display: block; margin: 2px auto 0; padding-top: 4px; font-size: .8rem;
+            display: block; margin: 2px auto 0; padding-top: 4px; font-size: .8rem;
         }
         .doc-assinatura .data { display: block; margin: 2px auto 0; font-size: .8rem; }
         .doc-assinatura-import { font-size: .78rem; color: #3c4c5c; margin-bottom: 6px; }

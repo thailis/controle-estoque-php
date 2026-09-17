@@ -105,6 +105,19 @@ try {
             font-size: 1.05rem;
             font-weight: 700;
         }
+        .doc-header select {
+            background: var(--navy);
+            border: 1px solid #4a6178;
+            color: #fff;
+            font-weight: 750;
+            text-align: center;
+            text-align-last: center;
+            max-width: 260px;
+            font-size: .95rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .doc-header select option { color: #17212b; background: #fff; }
 
         .doc-secao-titulo {
             font-weight: 750;
@@ -265,12 +278,12 @@ try {
 
         .doc-assinatura { text-align: center; padding: 40px 16px 24px; }
         .doc-assinatura input {
-            border: none; border-top: 1px solid #333; background: transparent; text-align: center;
+            border: none; background: transparent; text-align: center;
             width: 260px; padding-top: 4px; font-size: .85rem;
         }
         .doc-assinatura input:focus { outline: none; background: #f7faff; }
-        .doc-assinatura .nome { font-weight: 700; }
-        .doc-assinatura .depto, .doc-assinatura .data { display: block; margin: 2px auto 0; font-size: .8rem; }
+        .doc-assinatura .nome { font-weight: 700; border-top: 1px solid #333; }
+        .doc-assinatura .depto, .doc-assinatura .data { display: block; margin: 2px auto 0; padding-top: 4px; font-size: .8rem; }
 
         .btn-add-linha { font-size: .78rem; }
 
@@ -305,7 +318,14 @@ try {
     </header>
 
     <div class="doc-sheet" id="doc-sheet">
-        <div class="doc-header">Packing List:</div>
+        <div class="doc-header">Packing List:
+            <select id="select_processo" onchange="carregarProcesso()">
+                <option value="">Selecione um processo...</option>
+                <?php foreach ($processosDisponiveis as $p): ?>
+                    <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
 
         <div class="doc-seletor-wrap no-print">
             <div>
@@ -324,15 +344,6 @@ try {
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div>
-                <label for="select_processo">Processo (puxa os componentes cadastrados)</label>
-                <select id="select_processo" class="form-select form-select-sm" onchange="carregarProcesso()">
-                    <option value="">Selecione o processo…</option>
-                    <?php foreach ($processosDisponiveis as $p): ?>
-                        <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
         </div>
 
         <div class="doc-info-wrap">
@@ -341,12 +352,12 @@ try {
                     <td>
                         <div class="doc-secao-titulo" style="padding-left:0;">EXPORTER</div>
                         <table class="doc-info">
-                            <tr><td class="lbl">Supplier:</td><td><input type="text" id="exp_supplier"></td></tr>
-                            <tr><td class="lbl">CNPJ:</td><td><input type="text" id="exp_cnpj"></td></tr>
-                            <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address"></td></tr>
-                            <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep"></td></tr>
+                            <tr><td class="lbl">Supplier:</td><td><input type="text" id="exp_supplier" placeholder="Razão social do fornecedor"></td></tr>
+                            <tr><td class="lbl">CNPJ:</td><td><input type="text" id="exp_cnpj" placeholder="00.000.000/0000-00"></td></tr>
+                            <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address" placeholder="Endereço"></td></tr>
+                            <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep" placeholder="00.000-000"></td></tr>
                             <tr><td class="lbl">Contact Person:</td><td><input type="text" id="exp_contato" value="Maria Lima"></td></tr>
-                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email"></td></tr>
+                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" placeholder="email@fornecedor.com"></td></tr>
                         </table>
                     </td>
                     <td class="doc-logo-cell">
@@ -361,12 +372,12 @@ try {
         <div class="doc-info-wrap">
             <div class="doc-secao-titulo" style="padding-left:0;">IMPORTER</div>
             <table class="doc-info">
-                <tr><td class="lbl">TAX ID:</td><td><input type="text" id="imp_taxid"></td></tr>
-                <tr><td class="lbl">Address:</td><td><input type="text" id="imp_address"></td></tr>
-                <tr><td class="lbl">CEP:</td><td><input type="text" id="imp_cep"></td></tr>
-                <tr><td class="lbl">Contact Person:</td><td><input type="text" id="imp_contato"></td></tr>
-                <tr><td class="lbl">E-mail:</td><td><input type="text" id="imp_email"></td></tr>
-                <tr><td class="lbl">Phone:</td><td><input type="text" id="imp_phone"></td></tr>
+                <tr><td class="lbl">TAX ID:</td><td><input type="text" id="imp_taxid" placeholder="00.000.000/0000-00"></td></tr>
+                <tr><td class="lbl">Address:</td><td><input type="text" id="imp_address" placeholder="Endereço"></td></tr>
+                <tr><td class="lbl">CEP:</td><td><input type="text" id="imp_cep" placeholder="00.000-000"></td></tr>
+                <tr><td class="lbl">Contact Person:</td><td><input type="text" id="imp_contato" placeholder="Nome do contato comercial"></td></tr>
+                <tr><td class="lbl">E-mail:</td><td><input type="text" id="imp_email" placeholder="email@empresa.com"></td></tr>
+                <tr><td class="lbl">Phone:</td><td><input type="text" id="imp_phone" placeholder="+55 00 00000-0000"></td></tr>
             </table>
         </div>
 
