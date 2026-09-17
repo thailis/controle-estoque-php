@@ -201,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 // Lista de processos existentes, pra popular o <select> do cadastro manual —
 // já traz componente/descrição junto, pro preview automático via JS.
 $processosDisponiveis = [];
-$resProcessos = mysqli_query($conn, "SELECT processo, codigo_componente, descricao FROM processos ORDER BY processo");
+$resProcessos = mysqli_query($conn, "SELECT processo, MIN(codigo_componente) AS codigo_componente, MIN(descricao) AS descricao FROM processos GROUP BY processo ORDER BY processo");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
     $processosDisponiveis[] = $linhaProc;
 }
@@ -332,7 +332,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <option value="">Escolha um processo já cadastrado...</option>
                             <?php foreach ($processosDisponiveis as $p): ?>
                                 <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['codigo_componente'] ?? ''); ?>" data-descricao="<?php echo h($p['descricao'] ?? ''); ?>">
-                                    <?php echo h($p['processo']); ?><?php echo $p['codigo_componente'] ? ' — ' . h($p['codigo_componente']) : ''; ?>
+                                    <?php echo h($p['processo']); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
