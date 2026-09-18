@@ -331,6 +331,33 @@ while ($row = mysqli_fetch_assoc($result)) {
     <title>Follow | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        /* Larguras fixas só nesta tabela — mesma causa/solução do "buraco" já
+           corrigido em confirmar_entrega.php: sem isso, o navegador redistribui
+           o espaço sobrante conforme o texto de cada linha muda (Origem,
+           Destino, Armador, Requerente são texto livre de tamanho variável),
+           desencaixando as colunas de uma linha pra outra. Travando aqui (sem
+           mexer no dashboard.css, compartilhado com Processos/Pagamento/
+           Confirmar entrega) cada coluna fica com largura previsível e só
+           Requerente absorve o espaço que sobra. */
+        .table-follow { table-layout: fixed; }
+        .table-follow th:nth-child(1), .table-follow td:nth-child(1) { width: 150px; }
+        .table-follow th:nth-child(2), .table-follow td:nth-child(2) { width: 150px; }
+        .table-follow th:nth-child(3), .table-follow td:nth-child(3) { width: 120px; }
+        .table-follow th:nth-child(4), .table-follow td:nth-child(4) { width: 120px; }
+        .table-follow th:nth-child(5), .table-follow td:nth-child(5) { width: 130px; }
+        .table-follow th:nth-child(6), .table-follow td:nth-child(6) { width: 140px; }
+        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 100px; }
+        .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 100px; }
+        .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 100px; }
+        .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 100px; }
+        .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: auto; }
+        .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 130px; }
+        .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 80px; }
+        .table-follow td.celula-editavel {
+            overflow-wrap: break-word;
+        }
+    </style>
 </head>
 <body>
     <header class="topbar">
@@ -499,7 +526,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1650px;">
+                <table class="table mrp-table table-follow mb-0" style="min-width: 1650px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -525,23 +552,35 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 <?php
                                     $id = (int) $r['id'];
                                     $statusFollow = $r['status'] ?: 'aberto';
+                                    $temEfetivaFollow = !empty($r['efetiva']);
                                     // Status unificado: se o processo estiver cancelado, isso
                                     // SOBREPÕE o status do follow (mesmo que já estivesse fechado).
+                                    // O follow só vira "fechado" quando alguém clica em Confirmar
+                                    // em confirmar_entrega.php (isso é o que grava a Programação
+                                    // no MRP) — preencher a Efetiva aqui no Follow é só o primeiro
+                                    // passo, ainda pendente dessa confirmação. Por isso, com
+                                    // Efetiva já preenchida mas ainda não fechado, mostra
+                                    // "Aguardando confirmação" em vez do genérico "Aberto" — é
+                                    // exatamente a janela que confirmar_entrega.php espera pra
+                                    // liberar o botão "Confirmar" daquela tela.
                                     $statusProcessoValor = strtolower(trim((string) ($r['status_processo'] ?? 'aberto')));
                                     if ($statusProcessoValor === 'cancelado') {
                                         $statusTexto = 'Cancelado'; $statusClasseUnificada = 'status-critico';
                                     } elseif ($statusFollow === 'fechado') {
                                         $statusTexto = 'Fechado'; $statusClasseUnificada = 'status-ok';
+                                    } elseif ($temEfetivaFollow) {
+                                        $statusTexto = 'Aguardando confirmação'; $statusClasseUnificada = 'status-atencao';
                                     } else {
                                         $statusTexto = 'Aberto'; $statusClasseUnificada = 'status-atencao';
                                     }
                                     // Condição só faz sentido enquanto o embarque ainda está em
-                                    // trânsito (comparando hoje com a data prevista) — depois de
-                                    // Fechado, a entrega já aconteceu de verdade (efetiva
-                                    // registrada em confirmar_entrega.php), então a condição vira
-                                    // "Finalizada" em vez de continuar calculando em tempo/atenção/
-                                    // atrasado a partir da prevista.
-                                    if ($statusFollow === 'fechado') {
+                                    // trânsito (comparando hoje com a data prevista). Assim que a
+                                    // Efetiva é preenchida, a entrega já aconteceu de verdade —
+                                    // mesmo que a confirmação formal em confirmar_entrega.php (que
+                                    // fecha o follow e lança no MRP) ainda não tenha sido feita —
+                                    // então a condição já vira "Finalizada" em vez de continuar
+                                    // calculando em tempo/atenção/atrasado a partir da prevista.
+                                    if ($statusFollow === 'fechado' || $temEfetivaFollow) {
                                         $condicaoClasse = 'status-ok';
                                         $condicaoTexto = 'Finalizada';
                                     } else {
