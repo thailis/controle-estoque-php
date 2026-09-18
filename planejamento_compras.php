@@ -207,11 +207,25 @@ function calcularParcelasCompraPlanejamento(
         }
 
         // Antes de sugerir uma compra NOVA, verifica se a programação que JÁ FOI colocada
-        // (mesmo atrasada — ela ainda vai chegar) resolve esse mergulho sozinha até o fim da
-        // janela de urgência. Um mergulho temporário que se recupera com o que já está no
-        // pipeline é um problema de PRAZO de entrega (acompanhar o fornecedor), não de
-        // quantidade — não deve virar mais uma compra em cima da que já foi feita.
-        if ($saldoPorDia[$iFimUrgencia] >= $pisoNoDia($iFimUrgencia)) {
+        // (mesmo atrasada — ela ainda vai chegar) resolve esse mergulho sozinha. IMPORTANTE:
+        // a checagem parte do PRÓPRIO dia do furo ($iPior) pra frente — e não do fim da
+        // janela de urgência do checkpoint ($iFimUrgencia). Um furo detectado bem na borda
+        // dessa janela (porque o piso de 30 dias já "enxerga" um evento futuro) nunca
+        // conseguiria ver uma recuperação que só acontece um pouco depois dessa borda,
+        // mesmo que ela já esteja garantida por uma entrada programada. A janela de
+        // recuperação usa o mesmo horizonte do Estoque Mínimo (minDias): se dentro desse
+        // prazo o saldo volta a ficar igual ou acima do piso (também recalculado dia a dia),
+        // é só um problema de PRAZO de entrega — não dispara uma compra nova em cima da que
+        // já está a caminho.
+        $fimRecuperacao = min($n - 1, $iPior + $minDias);
+        $recuperaSozinho = false;
+        for ($k = $iPior; $k <= $fimRecuperacao; $k++) {
+            if ($saldoPorDia[$k] >= $pisoNoDia($k)) {
+                $recuperaSozinho = true;
+                break;
+            }
+        }
+        if ($recuperaSozinho) {
             continue;
         }
 
