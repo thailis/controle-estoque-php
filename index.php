@@ -638,10 +638,23 @@ try {
                 // A coluna "Comprar" passa a usar a quantidade do cálculo preciso (que
                 // considera todo o horizonte, MOQ, programação etc.) em vez do cálculo
                 // simples do período de 90 dias, que ficava zerado sempre que a necessidade
-                // real estava fora dessa janela (ex.: itens em "Planejar").
-                if ($resultadoMrp['quantidade'] > 0) {
-                    $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
+                // real estava fora dessa janela (ex.: itens em "Planejar"). Sempre atribui
+                // (inclusive 0), pois se já existe programação cobrindo a necessidade, o
+                // cálculo preciso é quem sabe disso — deixar o valor simples (sem considerar
+                // programação) só quando o preciso for > 0 fazia a coluna ficar inflada.
+                $linhaRef['necessidade_compra'] = $resultadoMrp['quantidade'];
+
+                // A coluna "Saldo" também passa a considerar a programação pendente dentro da
+                // janela de 90 dias do Dashboard, em vez de mostrar sempre estoque - demanda
+                // (que ignorava pedidos de compra já colocados e ainda não recebidos).
+                $limite90Dias = $hojeMrp->modify('+90 days')->format('Y-m-d');
+                $programacaoDentroJanela = 0.0;
+                foreach ($progComp as $dataProg => $qtdProg) {
+                    if ($dataProg >= $hojeChaveDash && $dataProg <= $limite90Dias) {
+                        $programacaoDentroJanela += (float) $qtdProg;
+                    }
                 }
+                $linhaRef['saldo_final'] = $linhaRef['estoque_atual'] + $programacaoDentroJanela - $linhaRef['demanda_total'];
 
                 // Se dentro dos 90 dias está tudo ok, mas existe uma necessidade real mais à
                 // frente (fora da janela imediata), vira "Planejar" em vez de sumir como "ok".
