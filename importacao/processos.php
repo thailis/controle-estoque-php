@@ -136,6 +136,88 @@ $mensagens = [];
 $importados = 0;
 $erros = 0;
 
+// ---------- Toggle Aberto / Cancelado (AJAX — sem recarregar a página) ----------
+// Mesma regra da versão com reload abaixo, só que devolve JSON pra JS trocar
+// a badge no lugar, sem sair da posição de scroll.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_status_processo') {
+    header('Content-Type: application/json; charset=UTF-8');
+
+    $processoToggle = trim($_POST['processo'] ?? '');
+    if ($processoToggle === '') {
+        echo json_encode(['ok' => false, 'erro' => 'Processo inválido.']);
+        exit;
+    }
+
+    $stmtAtual = mysqli_prepare($conn, "SELECT status FROM processos WHERE processo = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmtAtual, 's', $processoToggle);
+    mysqli_stmt_execute($stmtAtual);
+    $statusAtual = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtual))['status'] ?? 'aberto';
+    mysqli_stmt_close($stmtAtual);
+
+    if (strtolower(trim($statusAtual)) === 'finalizado') {
+        echo json_encode(['ok' => false, 'erro' => 'Esse processo já foi finalizado (entrega confirmada) — não é possível cancelar nem reabrir.']);
+        exit;
+    }
+
+    $novoStatus = strtolower(trim($statusAtual)) === 'cancelado' ? 'aberto' : 'cancelado';
+
+    $stmtUpdateProc = mysqli_prepare($conn, "UPDATE processos SET status = ? WHERE processo = ?");
+    mysqli_stmt_bind_param($stmtUpdateProc, 'ss', $novoStatus, $processoToggle);
+    mysqli_stmt_execute($stmtUpdateProc);
+    mysqli_stmt_close($stmtUpdateProc);
+
+    $stmtUpdatePag = mysqli_prepare($conn, "UPDATE pagamento SET status = ? WHERE processo = ?");
+    mysqli_stmt_bind_param($stmtUpdatePag, 'ss', $novoStatus, $processoToggle);
+    mysqli_stmt_execute($stmtUpdatePag);
+    mysqli_stmt_close($stmtUpdatePag);
+
+    echo json_encode([
+        'ok' => true,
+        'texto' => $novoStatus === 'cancelado' ? 'Cancelado' : 'Aberto',
+        'classe' => $novoStatus === 'cancelado' ? 'status-critico' : 'status-atencao',
+    ]);
+    exit;
+}
+
+// ---------- Toggle Controla Estoque (AJAX — sem recarregar a página) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_controla_estoque') {
+    header('Content-Type: application/json; charset=UTF-8');
+
+    $idToggle = (int) ($_POST['id'] ?? 0);
+    if ($idToggle <= 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro inválido.']);
+        exit;
+    }
+
+    $stmtAtualCE = mysqli_prepare($conn, "SELECT controla_estoque, status FROM processos WHERE id = ?");
+    mysqli_stmt_bind_param($stmtAtualCE, 'i', $idToggle);
+    mysqli_stmt_execute($stmtAtualCE);
+    $linhaAtualCE = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAtualCE));
+    mysqli_stmt_close($stmtAtualCE);
+
+    if (!$linhaAtualCE) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
+        exit;
+    }
+    if (strtolower(trim((string) $linhaAtualCE['status'])) === 'finalizado') {
+        echo json_encode(['ok' => false, 'erro' => 'Esse item já foi finalizado (entrega confirmada) — não é possível mudar o controle de estoque agora.']);
+        exit;
+    }
+
+    $novoControla = strtolower(trim((string) $linhaAtualCE['controla_estoque'])) === 'sim' ? 'nao' : 'sim';
+    $stmtToggleCE = mysqli_prepare($conn, "UPDATE processos SET controla_estoque = ? WHERE id = ?");
+    mysqli_stmt_bind_param($stmtToggleCE, 'si', $novoControla, $idToggle);
+    mysqli_stmt_execute($stmtToggleCE);
+    mysqli_stmt_close($stmtToggleCE);
+
+    echo json_encode([
+        'ok' => true,
+        'texto' => $novoControla === 'sim' ? 'Sim' : 'Não',
+        'classe' => $novoControla === 'sim' ? 'status-ok' : 'status-sem_demanda',
+    ]);
+    exit;
+}
+
 // ---------- Toggle Aberto / Cancelado ----------
 // Age por "processo" (não por id de uma linha só), porque um mesmo processo
 // pode ter várias linhas (vários componentes) — cancelar o processo cancela
@@ -144,6 +226,7 @@ $erros = 0;
 // Processos, então não precisa de cascata lá.
 // Uma vez "finalizado" (via confirmar_entrega.php), o botão trava — não dá
 // pra cancelar nem reabrir um processo que já foi entregue de verdade.
+// (Mantido como fallback caso o JS não carregue — recarrega a página normalmente.)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_status_processo') {
     $processoToggle = trim($_POST['processo'] ?? '');
     if ($processoToggle === '') {
@@ -1138,14 +1221,45 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         });
     </script>
     <script>
-        // Os botões de Status, Controla estoque e Excluir recarregam a página
-        // inteira (form POST + redirect) — sem isso, o navegador volta pro
-        // topo depois do reload. Guarda a posição do scroll antes de enviar
-        // e restaura assim que a página volta a carregar.
+        // Status e Controla estoque agora trocam a badge por AJAX (sem
+        // recarregar a página, então o scroll nem se mexe). Excluir continua
+        // recarregando (a linha some da lista), então só ele guarda/restaura
+        // a posição do scroll.
         document.addEventListener('submit', function (evento) {
-            const acaoInput = evento.target.querySelector('input[name="acao"]');
-            const acoesComReload = ['toggle_status_processo', 'toggle_controla_estoque', 'excluir_processo'];
-            if (acaoInput && acoesComReload.includes(acaoInput.value)) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (!acaoInput) return;
+            const acao = acaoInput.value;
+
+            if (acao === 'toggle_status_processo' || acao === 'toggle_controla_estoque') {
+                evento.preventDefault();
+                const dados = new URLSearchParams(new FormData(form));
+                dados.set('acao', 'ajax_' + acao);
+
+                fetch('processos.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: dados.toString(),
+                })
+                    .then((resposta) => resposta.json())
+                    .then((json) => {
+                        if (!json.ok) {
+                            alert(json.erro || 'Não foi possível atualizar.');
+                            return;
+                        }
+                        const botao = form.querySelector('button[type="submit"]');
+                        if (!botao) return;
+                        botao.textContent = json.texto;
+                        botao.classList.remove('status-ok', 'status-atencao', 'status-critico', 'status-sem_demanda');
+                        botao.classList.add(json.classe);
+                    })
+                    .catch(() => {
+                        alert('Erro de conexão ao atualizar. Tente de novo.');
+                    });
+                return;
+            }
+
+            if (acao === 'excluir_processo') {
                 sessionStorage.setItem('processos_scroll', String(window.scrollY));
             }
         });
