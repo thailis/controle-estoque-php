@@ -224,11 +224,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 // consulta do Follow mais abaixo), então agrupa por processo aqui também —
 // senão o mesmo processo aparecia repetido no <select>, uma vez pra cada
 // componente cadastrado nele.
+// "codigo_componente"/"descricao" aqui já vêm resumidos (só o primeiro + contagem),
+// pra caber na linha do <select> — um processo com muitos componentes gerava uma
+// lista gigante e quebrava o layout do dropdown. O preview ao lado (que tem mais
+// espaço, é um campo de texto normal) mostra a lista completa, guardada à parte
+// em "todos_componentes"/"todas_descricoes".
 $processosDisponiveis = [];
 $resProcessos = mysqli_query($conn, "
     SELECT processo,
-        GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY codigo_componente SEPARATOR ', ') AS codigo_componente,
-        GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS descricao
+        MIN(NULLIF(TRIM(codigo_componente), '')) AS codigo_componente,
+        COUNT(DISTINCT NULLIF(TRIM(codigo_componente), '')) AS total_componentes,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY codigo_componente SEPARATOR ', ') AS todos_componentes,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS todas_descricoes
     FROM processos
     GROUP BY processo
     ORDER BY processo
@@ -369,8 +376,17 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcesso()">
                             <option value="">Escolha um processo já cadastrado...</option>
                             <?php foreach ($processosDisponiveis as $p): ?>
-                                <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['codigo_componente'] ?? ''); ?>" data-descricao="<?php echo h($p['descricao'] ?? ''); ?>">
-                                    <?php echo h($p['processo']); ?><?php echo $p['codigo_componente'] ? ' — ' . h($p['codigo_componente']) : ''; ?>
+                                <?php
+                                    $sufixo = '';
+                                    if ($p['codigo_componente']) {
+                                        $sufixo = ' — ' . $p['codigo_componente'];
+                                        if ((int) $p['total_componentes'] > 1) {
+                                            $sufixo .= ' (+' . ((int) $p['total_componentes'] - 1) . ')';
+                                        }
+                                    }
+                                ?>
+                                <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['todos_componentes'] ?? ''); ?>" data-descricao="<?php echo h($p['todas_descricoes'] ?? ''); ?>">
+                                    <?php echo h($p['processo']) . h($sufixo); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
