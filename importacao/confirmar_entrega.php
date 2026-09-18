@@ -323,6 +323,31 @@ if ($resultContagem) {
     <title>Confirmar Entrega | Controle de Importação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        /* Larguras fixas só nesta tabela — a .mrp-table compartilhada (dashboard.css)
+           não trava largura de coluna nenhuma, então o navegador distribui o espaço
+           sobrante (ela força min-width: 1460px) de forma inconsistente conforme o
+           texto de cada linha muda, criando um "buraco" em branco entre Descrição e
+           Quantidade. Travando aqui (sem mexer no dashboard.css, que é usado também
+           por Follow/Processos/Pagamento) cada coluna fica com largura previsível e
+           só a Descrição absorve o espaço que sobra. */
+        .table-confirmar { table-layout: fixed; }
+        .table-confirmar th:nth-child(1), .table-confirmar td:nth-child(1) { width: 110px; }
+        .table-confirmar th:nth-child(2), .table-confirmar td:nth-child(2) { width: 150px; }
+        .table-confirmar th:nth-child(3), .table-confirmar td:nth-child(3) { width: 130px; }
+        .table-confirmar th:nth-child(4), .table-confirmar td:nth-child(4) { width: 150px; }
+        .table-confirmar th:nth-child(5), .table-confirmar td:nth-child(5) { width: auto; }
+        .table-confirmar th:nth-child(6), .table-confirmar td:nth-child(6) { width: 110px; }
+        .table-confirmar th:nth-child(7), .table-confirmar td:nth-child(7) { width: 150px; }
+        .table-confirmar th:nth-child(8), .table-confirmar td:nth-child(8) { width: 170px; }
+        .table-confirmar td.description-cell,
+        .table-confirmar .description-cell {
+            display: block;
+            max-width: none;
+            white-space: normal;
+            overflow-wrap: break-word;
+        }
+    </style>
 </head>
 <body>
     <header class="topbar">
@@ -405,7 +430,7 @@ if ($resultContagem) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0">
+                <table class="table mrp-table mb-0 table-confirmar">
                     <thead>
                         <tr>
                             <th>Status</th>
