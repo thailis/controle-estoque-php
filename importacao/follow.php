@@ -116,7 +116,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     exit;
 }
 
-// ---------- Exclusão ----------
+// ---------- Exclusão via AJAX ----------
+// Mesma exclusão de baixo, só que sem reload — devolve JSON e o JS remove a
+// linha na hora, mantendo a posição de rolagem da página (não precisa de
+// reload nem de restaurar scroll via sessionStorage).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_excluir_follow') {
+    header('Content-Type: application/json; charset=UTF-8');
+    $idExcluir = (int) ($_POST['id_excluir'] ?? 0);
+    if ($idExcluir <= 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro inválido.']);
+        exit;
+    }
+    $stmtExcluir = mysqli_prepare($conn, "DELETE FROM follow WHERE id = ?");
+    mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
+    mysqli_stmt_execute($stmtExcluir);
+    $linhasAfetadas = mysqli_stmt_affected_rows($stmtExcluir);
+    mysqli_stmt_close($stmtExcluir);
+    echo json_encode(['ok' => $linhasAfetadas > 0]);
+    exit;
+}
+
+// ---------- Exclusão (fallback sem JS) ----------
 // Remove só da tabela follow — não mexe em processos, pagamento, nem no
 // estoque do MRP (mesmo que esse embarque já tivesse sido integrado antes,
 // o histórico que já foi gravado no MRP permanece intacto).
@@ -457,7 +477,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <div>
                     <span class="eyebrow text-primary">Resultado</span>
                     <h2>Embarques</h2>
-                    <p><?php echo numeroBr($total); ?> encontrado(s)</p>
+                    <p id="contador-embarques"><?php echo numeroBr($total); ?> encontrado(s)</p>
                 </div>
             </div>
             <div class="table-responsive">
@@ -517,7 +537,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="requerente" data-valor-bruto="<?php echo h($r['requerente'] ?? ''); ?>"><?php echo h($r['requerente'] ?: '—'); ?></td>
                                     <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
                                     <td>
-                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir este embarque do Follow? Isso não afeta o Processo nem o estoque do MRP.');">
+                                        <form method="POST" class="m-0 form-excluir-follow">
                                             <input type="hidden" name="acao" value="excluir_follow">
                                             <input type="hidden" name="id_excluir" value="<?php echo $id; ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
@@ -618,5 +638,52 @@ while ($row = mysqli_fetch_assoc($result)) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // Exclusão via AJAX: em vez de recarregar a página (o que perdia a
+        // posição de rolagem), remove só a linha na hora, mantendo tudo o
+        // resto do jeito que estava — filtros, página, e principalmente onde
+        // o usuário estava olhando na tabela.
+        document.addEventListener('submit', function (evento) {
+            const formulario = evento.target;
+            if (!formulario.matches('.form-excluir-follow')) {
+                return;
+            }
+            evento.preventDefault();
+
+            if (!confirm('Excluir este embarque do Follow? Isso não afeta o Processo nem o estoque do MRP.')) {
+                return;
+            }
+
+            const idExcluir = formulario.querySelector('[name="id_excluir"]').value;
+            const botao = formulario.querySelector('button[type="submit"]');
+            if (botao) { botao.disabled = true; }
+
+            fetch(window.INLINE_EDIT_ENDPOINT, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'acao=ajax_excluir_follow&id_excluir=' + encodeURIComponent(idExcluir)
+            })
+                .then((resposta) => resposta.json())
+                .then((dados) => {
+                    if (!dados.ok) {
+                        alert(dados.erro || 'Não foi possível excluir esse embarque.');
+                        if (botao) { botao.disabled = false; }
+                        return;
+                    }
+                    const linha = formulario.closest('tr');
+                    if (linha) { linha.remove(); }
+
+                    const contador = document.getElementById('contador-embarques');
+                    if (contador) {
+                        const numeroAtual = parseInt(contador.textContent.replace(/\D/g, ''), 10) || 0;
+                        contador.textContent = Math.max(0, numeroAtual - 1) + ' encontrado(s)';
+                    }
+                })
+                .catch(() => {
+                    alert('Erro de conexão ao excluir. Tente novamente.');
+                    if (botao) { botao.disabled = false; }
+                });
+        });
+    </script>
 </body>
 </html>
