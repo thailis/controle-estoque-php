@@ -1138,6 +1138,26 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         });
     </script>
     <script>
+        // Os botões de Status, Controla estoque e Excluir recarregam a página
+        // inteira (form POST + redirect) — sem isso, o navegador volta pro
+        // topo depois do reload. Guarda a posição do scroll antes de enviar
+        // e restaura assim que a página volta a carregar.
+        document.addEventListener('submit', function (evento) {
+            const acaoInput = evento.target.querySelector('input[name="acao"]');
+            const acoesComReload = ['toggle_status_processo', 'toggle_controla_estoque', 'excluir_processo'];
+            if (acaoInput && acoesComReload.includes(acaoInput.value)) {
+                sessionStorage.setItem('processos_scroll', String(window.scrollY));
+            }
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            const scrollSalvo = sessionStorage.getItem('processos_scroll');
+            if (scrollSalvo !== null) {
+                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
+                sessionStorage.removeItem('processos_scroll');
+            }
+        });
+    </script>
+    <script>
         window.INLINE_EDIT_ENDPOINT = 'processos.php';
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
