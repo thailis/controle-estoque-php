@@ -216,22 +216,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     }
 }
 
+// ---------- Filtros ----------
+$filtroProcesso = trim($_GET['processo'] ?? '');
+$filtroComponente = trim($_GET['componente'] ?? '');
+$filtroStatus = trim($_GET['status'] ?? 'todos'); // todos | aguardando | pronto
+
 // Lista embarques ainda não integrados, pra tela de confirmação — só
 // processos cancelados nunca aparecem aqui. Itens marcados "não controla
 // estoque" (tooling, amostra) aparecem normalmente: podem ser confirmados
 // (fecham o rastreio), só não alimentam o estoque do MRP.
+$condicoesPendentes = ["f.integrado_mrp = 0", "(p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')"];
+$paramsPendentes = [];
+$tiposPendentes = '';
+
+if ($filtroProcesso !== '') {
+    $condicoesPendentes[] = "f.processo LIKE ?";
+    $paramsPendentes[] = '%' . $filtroProcesso . '%';
+    $tiposPendentes .= 's';
+}
+if ($filtroComponente !== '') {
+    $condicoesPendentes[] = "p.codigo_componente LIKE ?";
+    $paramsPendentes[] = '%' . $filtroComponente . '%';
+    $tiposPendentes .= 's';
+}
+if ($filtroStatus === 'aguardando') {
+    $condicoesPendentes[] = "(f.efetiva IS NULL OR f.efetiva = '')";
+} elseif ($filtroStatus === 'pronto') {
+    $condicoesPendentes[] = "(f.efetiva IS NOT NULL AND f.efetiva <> '')";
+}
+
+$wherePendentes = 'WHERE ' . implode(' AND ', $condicoesPendentes);
+
 $pendentes = [];
-$resultPendentes = mysqli_query($conn, "
+$sqlPendentes = "
     SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.controla_estoque
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
-    WHERE f.integrado_mrp = 0
-      AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
+    $wherePendentes
     ORDER BY f.efetiva IS NULL, f.efetiva ASC
-");
+";
+$stmtPendentes = mysqli_prepare($conn, $sqlPendentes);
+if (!empty($paramsPendentes)) {
+    mysqli_stmt_bind_param($stmtPendentes, $tiposPendentes, ...$paramsPendentes);
+}
+mysqli_stmt_execute($stmtPendentes);
+$resultPendentes = mysqli_stmt_get_result($stmtPendentes);
 while ($linha = mysqli_fetch_assoc($resultPendentes)) {
     $pendentes[] = $linha;
 }
+mysqli_stmt_close($stmtPendentes);
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -281,6 +314,37 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
             <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de alimentar o estoque — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Itens marcados em Processos como "Controla estoque: Não" (tooling, amostra) também podem ser confirmados aqui, mas <strong>não alimentam o estoque do MRP</strong> — só fecham o rastreio. A descrição usada no estoque vem direto da BOM do MRP, não do texto digitado no processo. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento.</p>
         </section>
 
+        <section class="filter-panel mb-4">
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow text-primary">Filtros</span>
+                    <h2>Buscar embarques pendentes</h2>
+                </div>
+            </div>
+            <form method="GET" class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Processo</label>
+                    <input type="text" name="processo" class="form-control" value="<?php echo h($filtroProcesso); ?>" placeholder="Ex.: Y26S1P0002">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Componente</label>
+                    <input type="text" name="componente" class="form-control" value="<?php echo h($filtroComponente); ?>" placeholder="Ex.: 11001199">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Status</label>
+                    <select name="status" class="form-select">
+                        <option value="todos" <?php echo $filtroStatus === 'todos' ? 'selected' : ''; ?>>Todos</option>
+                        <option value="aguardando" <?php echo $filtroStatus === 'aguardando' ? 'selected' : ''; ?>>Aguardando</option>
+                        <option value="pronto" <?php echo $filtroStatus === 'pronto' ? 'selected' : ''; ?>>Pronto pra confirmar</option>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary w-100">Buscar</button>
+                    <a href="confirmar_entrega.php" class="btn btn-outline-secondary">Limpar</a>
+                </div>
+            </form>
+        </section>
+
         <section class="table-card">
             <div class="table-toolbar">
                 <div>
@@ -299,14 +363,13 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                             <th>Fornecedor</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
-                            <th>Controla estoque</th>
                             <th>Efetiva</th>
                             <th>Confirmar</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($pendentes)): ?>
-                            <tr><td colspan="9" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
+                            <tr><td colspan="8" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($pendentes as $p): ?>
                                 <?php
@@ -327,11 +390,6 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                                     <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
                                     <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
-                                    <td>
-                                        <span class="status-badge <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" title="<?php echo $controlaEstoqueRow ? 'Ao confirmar, alimenta o estoque do MRP' : 'Ao confirmar, NÃO alimenta o estoque do MRP — só fecha o rastreio'; ?>">
-                                            <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
-                                        </span>
-                                    </td>
                                     <td>
                                         <?php if ($temEfetiva): ?>
                                             <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
