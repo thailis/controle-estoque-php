@@ -229,9 +229,21 @@ function calcularParcelasCompraPlanejamento(
             continue;
         }
 
-        // $dias[$iPior] é o dia do evento que causa o furo. A necessidade real, pra fins de
-        // planejamento, é sempre 30 dias antes (tempo de receber, conferir e disponibilizar).
-        $dataNecessidade = $dias[$iPior]->modify('-30 days');
+        // IMPORTANTE: $iPior é o dia em que o PISO (que olha pra frente) primeiro flagra o
+        // problema — não necessariamente o dia do evento de demanda real que causa o furo.
+        // Um evento distante, capturado só pela pré-visualização do piso, faria a data de
+        // necessidade recuar semanas/meses antes do tempo (e virar "urgente" à toa). Por
+        // isso caminha a partir de $iPior até achar o primeiro dia com demanda real — esse
+        // é o evento de fato, e é a partir dele que a necessidade (30 dias antes, tempo de
+        // receber/conferir/disponibilizar) deve ser calculada.
+        $iEvento = $iPior;
+        while ($iEvento < $n && $demandaPorDia[$iEvento] <= 0) {
+            $iEvento++;
+        }
+        if ($iEvento >= $n) {
+            $iEvento = $iPior;
+        }
+        $dataNecessidade = $dias[$iEvento]->modify('-30 days');
         $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
 
         // Quantidade: cobre o pior déficit dentro da PRÓPRIA janela de urgência (mês da
@@ -254,11 +266,15 @@ function calcularParcelasCompraPlanejamento(
             ? $quantidadeBase * (1 + $setupPercentual / 100)
             : $quantidadeBase;
 
-        $status = $dataSugerida <= $hoje ? 'urgente' : 'programada';
+        // Urgente = a data sugerida já passou OU cai dentro dos próximos 7 dias (ainda dá
+        // tempo de agir esta semana, mas não sobra folga pra esperar a próxima revisão
+        // mensal). A partir de 8 dias de folga, entra como "planejar" — normal, com tempo
+        // de decidir.
+        $status = $dataSugerida <= $hoje->modify('+7 days') ? 'urgente' : 'programada';
 
         $parcelas[] = [
             'status' => $status,
-            'data' => $dataSugerida <= $hoje ? $hoje : $dataSugerida,
+            'data' => $status === 'urgente' ? $hoje : $dataSugerida,
             'data_necessidade' => $dataNecessidade,
             'quantidade' => $quantidadeFinal,
             'quantidade_base' => $quantidadeBase,

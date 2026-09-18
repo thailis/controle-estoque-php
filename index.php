@@ -61,40 +61,56 @@ function calcularStatusJanela(
         if ($d < $hojeChave) { $saidaAtrasada += $q; }
     }
 
-    $saldoAnterior = $estoqueAtual + $entradaAtrasada - $saidaAtrasada;
-    $minSaldo = $saldoAnterior;
-    $maxSaldo = $saldoAnterior;
+    $saldoInicial = $estoqueAtual + $entradaAtrasada - $saidaAtrasada;
 
+    // Guarda o saldo e a demanda de CADA dia (não só o min/max), pra poder recalcular o
+    // piso do Estoque Mínimo/Máximo a partir do dia exato do pior/melhor ponto — ver
+    // comentário mais abaixo, onde isso é usado.
+    $saldoPorDia = [];
+    $demandaPorDia = [];
+    $saldoAnterior = $saldoInicial;
     $cursor = $hoje;
     $fimJanela = $hoje->modify("+{$diasJanela} days");
+    $i = 0;
     while ($cursor <= $fimJanela) {
         $chave = $cursor->format('Y-m-d');
         $entrada = $programacaoPorData[$chave] ?? 0.0;
         $saida = $demandaPorData[$chave] ?? 0.0;
         $saldoAnterior = $saldoAnterior + $entrada - $saida;
-        $minSaldo = min($minSaldo, $saldoAnterior);
-        $maxSaldo = max($maxSaldo, $saldoAnterior);
+        $saldoPorDia[$i] = $saldoAnterior;
+        $demandaPorDia[$i] = $saida;
+        $i++;
         $cursor = $cursor->modify('+1 day');
     }
+    $n = $i;
 
-    // Min/Max em quantidade = soma direta de toda demanda JÁ CONHECIDA dentro dos
-    // respectivos períodos (sem inventar uma taxa diária média, que distorce muito
-    // quando a demanda vem em picos, como é o caso do EDI).
-    $fimMinChave = $hoje->modify("+{$minDias} days")->format('Y-m-d');
-    $fimMaxChave = $hoje->modify("+{$maxDias} days")->format('Y-m-d');
-    $minQtd = 0.0;
-    $maxQtd = 0.0;
-    foreach ($demandaPorData as $d => $q) {
-        if ($d < $hojeChave) {
-            continue; // atrasado já foi absorvido no saldo inicial, não conta de novo aqui
-        }
-        if ($d <= $fimMinChave) {
-            $minQtd += $q;
-        }
-        if ($d <= $fimMaxChave) {
-            $maxQtd += $q;
-        }
+    // Min/Max saldo — o saldo de "antes de hoje" (com atrasado já líquido) também entra
+    // como candidato, igual ao comportamento original; se o mínimo/máximo acabar sendo
+    // esse valor inicial, usa o dia 0 (hoje) como referência pro cálculo dinâmico abaixo.
+    $minSaldo = $saldoInicial;
+    $maxSaldo = $saldoInicial;
+    $iMinSaldo = 0;
+    $iMaxSaldo = 0;
+    for ($k = 0; $k < $n; $k++) {
+        if ($saldoPorDia[$k] < $minSaldo) { $minSaldo = $saldoPorDia[$k]; $iMinSaldo = $k; }
+        if ($saldoPorDia[$k] > $maxSaldo) { $maxSaldo = $saldoPorDia[$k]; $iMaxSaldo = $k; }
     }
+
+    // Prefixo de demanda pra somar rápido "quanto de demanda existe do dia k em diante".
+    $prefixoDemanda = array_fill(0, $n + 1, 0.0);
+    for ($k = 0; $k < $n; $k++) {
+        $prefixoDemanda[$k + 1] = $prefixoDemanda[$k] + $demandaPorDia[$k];
+    }
+
+    // Min/Max em quantidade = demanda JÁ CONHECIDA dentro dos respectivos períodos, contada
+    // a partir do dia do PRÓPRIO pior/melhor ponto — não mais fixo a partir de hoje. Contar
+    // a partir de hoje inflava o piso quando um evento grande de demanda caía dentro da
+    // janela de Min dias: o saldo logo depois desse evento (mesmo positivo e já coberto)
+    // parecia "abaixo do mínimo" só porque aquele evento fazia parte da conta do próprio piso.
+    $fimMin = min($n, $iMinSaldo + $minDias);
+    $minQtd = $prefixoDemanda[$fimMin] - $prefixoDemanda[$iMinSaldo];
+    $fimMax = min($n, $iMaxSaldo + $maxDias);
+    $maxQtd = $prefixoDemanda[$fimMax] - $prefixoDemanda[$iMaxSaldo];
 
     if ($minSaldo < $segurancaQtd) {
         // Antes de marcar "crítico" (precisa de uma NOVA compra urgente), verifica se o
@@ -243,7 +259,8 @@ function calcularDataSugeridaCompra(
         $prefixo[$i + 1] = $prefixo[$i] + $demandaPorDia[$i];
     }
 
-    $inicioBusca = $hoje->modify('+' . ($frozenDias + $transitDias) . ' days');
+    $leadDias = $frozenDias + $transitDias;
+    $inicioBusca = $hoje->modify("+{$leadDias} days");
 
     for ($i = 0; $i < $n; $i++) {
         if ($dias[$i] < $inicioBusca) {
@@ -255,12 +272,31 @@ function calcularDataSugeridaCompra(
         // o piso é sempre 0 — comportamento idêntico ao de antes (só dispara quando o
         // saldo físico fica negativo).
         if ($saldoPorDia[$i] < $segurancaQtd) {
+            // Antes de tratar isso como a necessidade real, verifica se a programação que
+            // JÁ FOI colocada (mesmo atrasada — ela ainda vai chegar) resolve esse mergulho
+            // sozinha dentro do próprio Lead Time — ou seja, nem uma compra nova conseguiria
+            // chegar mais rápido que essa recuperação natural. Um mergulho temporário assim
+            // é um problema de PRAZO de entrega (acompanhar o fornecedor), não de
+            // quantidade — segue procurando a PRÓXIMA necessidade real em vez de disparar
+            // aqui.
+            $fimRecuperacao = min($n - 1, $i + $leadDias);
+            $recuperaSozinho = false;
+            for ($k = $i; $k <= $fimRecuperacao; $k++) {
+                if ($saldoPorDia[$k] >= $segurancaQtd) {
+                    $recuperaSozinho = true;
+                    break;
+                }
+            }
+            if ($recuperaSozinho) {
+                continue;
+            }
+
             // O dia em que o saldo estoura é o dia do PRÓPRIO evento que consome o
             // estoque. A necessidade real, pra fins de planejamento, é 30 dias antes
             // desse evento (tempo de receber, conferir e disponibilizar o material) —
             // mesma margem usada no Planejamento de Compras.
             $dataNecessidade = $dias[$i]->modify('-30 days');
-            $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
+            $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
 
             // Quantidade alvo = soma direta da demanda JÁ CONHECIDA nos próximos Max dias
             // a partir da necessidade (sem taxa diária fabricada, que distorce muito com
@@ -274,7 +310,10 @@ function calcularDataSugeridaCompra(
                 : $segurancaQtd - $saldoPorDia[$i];
             $quantidadeSugerida = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
 
-            if ($dataSugerida <= $hoje) {
+            // Urgente = a data sugerida já passou OU cai dentro dos próximos 7 dias (ainda dá
+            // tempo de agir esta semana, mas sem folga pra esperar). A partir de 8 dias de
+            // folga, entra como "planejar".
+            if ($dataSugerida <= $hoje->modify('+7 days')) {
                 return ['status' => 'urgente', 'data' => null, 'quantidade' => $quantidadeSugerida];
             }
             return ['status' => 'programada', 'data' => $dataSugerida, 'quantidade' => $quantidadeSugerida];
