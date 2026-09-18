@@ -201,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 // Lista de processos existentes, pra popular o <select> do cadastro manual —
 // já traz componente/descrição junto, pro preview automático via JS.
 $processosDisponiveis = [];
-$resProcessos = mysqli_query($conn, "SELECT processo, MIN(codigo_componente) AS codigo_componente, MIN(descricao) AS descricao FROM processos GROUP BY processo ORDER BY processo");
+$resProcessos = mysqli_query($conn, "SELECT processo, codigo_componente, descricao FROM processos ORDER BY processo");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
     $processosDisponiveis[] = $linhaProc;
 }
@@ -256,21 +256,17 @@ $totalPaginas = max(1, (int) ceil($total / $porPagina));
 // Total de pendentes, pra mostrar no cabeçalho independente do filtro aplicado
 $totalPendentes = (int) mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total FROM follow WHERE integrado_mrp = 0"))['total'];
 
-// Um mesmo "processo" pode ter várias linhas em processos (uma por
-// componente) — sem agrupar antes de juntar, o LEFT JOIN multiplicava cada
-// embarque do Follow por linha de componente, duplicando a linha na tela.
+// Subconsulta em vez de LEFT JOIN: "processos" tem uma linha por
+// componente/item dentro do mesmo processo (um processo pode ter vários
+// componentes), então um JOIN direto duplicava cada linha do Follow uma vez
+// pra cada componente cadastrado naquele processo. O toggle de status em
+// processos.php atualiza TODAS as linhas daquele processo de uma vez (UPDATE
+// ... WHERE processo = ?), então todas elas sempre têm o mesmo status — por
+// isso um LIMIT 1 aqui já garante um valor único e correto por processo.
 $sql = "
-    SELECT f.*, p.codigo_componente, p.descricao, p.quantidade, p.status AS status_processo
+    SELECT f.*,
+        (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo
     FROM follow f
-    LEFT JOIN (
-        SELECT processo,
-               MIN(codigo_componente) AS codigo_componente,
-               MIN(descricao) AS descricao,
-               MIN(quantidade) AS quantidade,
-               MIN(status) AS status
-        FROM processos
-        GROUP BY processo
-    ) p ON p.processo = f.processo
     $where
     ORDER BY f.criado_em DESC
     LIMIT ? OFFSET ?
@@ -343,7 +339,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <option value="">Escolha um processo já cadastrado...</option>
                             <?php foreach ($processosDisponiveis as $p): ?>
                                 <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['codigo_componente'] ?? ''); ?>" data-descricao="<?php echo h($p['descricao'] ?? ''); ?>">
-                                    <?php echo h($p['processo']); ?>
+                                    <?php echo h($p['processo']); ?><?php echo $p['codigo_componente'] ? ' — ' . h($p['codigo_componente']) : ''; ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
