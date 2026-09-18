@@ -149,6 +149,19 @@ function calcularParcelasCompraPlanejamento(
         $indicePorData[$dia->format('Y-m-d')] = $i;
     }
 
+    // Prefixo de demanda: soma rápida de "quanto de demanda existe do dia k em diante,
+    // por N dias" — usado pra calcular o piso do Estoque Mínimo de forma DINÂMICA, dia a
+    // dia (ver comentário mais abaixo), sem precisar refazer a soma em cada iteração.
+    $prefixoDemanda = array_fill(0, $n + 1, 0.0);
+    for ($i = 0; $i < $n; $i++) {
+        $prefixoDemanda[$i + 1] = $prefixoDemanda[$i] + $demandaPorDia[$i];
+    }
+    $pisoNoDia = function (int $indiceDia) use ($prefixoDemanda, $n, $minDias, $segurancaQtd): float {
+        $fim = min($n, $indiceDia + $minDias);
+        $minQtdNoDia = $prefixoDemanda[$fim] - $prefixoDemanda[$indiceDia];
+        return max($segurancaQtd, $minQtdNoDia);
+    };
+
     $leadDias = $frozenDias + $transitDias;
 
     // Pontos de revisão mensal, do hoje até o fim do horizonte.
@@ -167,34 +180,30 @@ function calcularParcelasCompraPlanejamento(
             continue;
         }
 
-        // Piso de ação = o maior entre o Estoque de Segurança calculado e a quantidade
-        // equivalente ao Estoque Mínimo (dias) cadastrado, contados a partir do mês da
-        // revisão — reage antes de furar o mínimo, não só quando o saldo já é negativo.
-        $fimMinChave = $checkpoint->modify("+{$minDias} days")->format('Y-m-d');
-        $minQtd = 0.0;
-        foreach ($demandaPorData as $d => $q) {
-            if ($d >= $chaveCheckpoint && $d <= $fimMinChave) {
-                $minQtd += $q;
-            }
-        }
-        $pisoAcao = max($segurancaQtd, $minQtd);
-
         // Só age agora se o furo acontecer dentro do prazo de reação (até a próxima
         // revisão mensal + Lead Time) — um furo mais distante espera a revisão do mês dele.
         $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days"));
         $iFimUrgencia = $indicePorData[$fimUrgencia->format('Y-m-d')] ?? ($n - 1);
 
-        $piorSaldo = null;
+        // Piso do Estoque Mínimo calculado DIA A DIA, olhando pra frente a partir de CADA
+        // dia (não fixo a partir da data da revisão) — se calculássemos uma vez só a partir
+        // do checkpoint, um evento grande de demanda dentro da janela de min dias inflava o
+        // piso a ponto de um saldo positivo logo após esse mesmo evento (já coberto, sem
+        // furar) parecer "abaixo do mínimo" só porque aquele evento generoso fazia parte da
+        // conta do próprio piso. Calculando a partir do dia sendo avaliado, o piso reflete
+        // só a demanda que ainda ESTÁ POR VIR dali pra frente.
+        $piorDeficit = null;
         $iPior = null;
         for ($k = $iCheckpoint; $k <= $iFimUrgencia; $k++) {
-            if ($piorSaldo === null || $saldoPorDia[$k] < $piorSaldo) {
-                $piorSaldo = $saldoPorDia[$k];
+            $deficit = $pisoNoDia($k) - $saldoPorDia[$k];
+            if ($piorDeficit === null || $deficit > $piorDeficit) {
+                $piorDeficit = $deficit;
                 $iPior = $k;
             }
         }
 
-        if ($piorSaldo === null || $piorSaldo >= $pisoAcao) {
-            continue; // nada a fazer nesta revisão
+        if ($piorDeficit === null || $piorDeficit <= 0) {
+            continue; // nenhum dia fura o piso dinâmico nesta janela — nada a fazer
         }
 
         // Antes de sugerir uma compra NOVA, verifica se a programação que JÁ FOI colocada
@@ -202,7 +211,7 @@ function calcularParcelasCompraPlanejamento(
         // janela de urgência. Um mergulho temporário que se recupera com o que já está no
         // pipeline é um problema de PRAZO de entrega (acompanhar o fornecedor), não de
         // quantidade — não deve virar mais uma compra em cima da que já foi feita.
-        if ($saldoPorDia[$iFimUrgencia] >= $pisoAcao) {
+        if ($saldoPorDia[$iFimUrgencia] >= $pisoNoDia($iFimUrgencia)) {
             continue;
         }
 
@@ -211,14 +220,14 @@ function calcularParcelasCompraPlanejamento(
         $dataNecessidade = $dias[$iPior]->modify('-30 days');
         $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
 
-        // Quantidade: cobre o pior saldo dentro da PRÓPRIA janela de urgência (mês da
+        // Quantidade: cobre o pior déficit dentro da PRÓPRIA janela de urgência (mês da
         // revisão + Lead Time) — o lote fica proporcional ao problema real desse mês, sem
         // olhar mais além (é isso que faz o lote ficar pequeno/mensal em vez de somar tudo
         // de uma janela larga). O Estoque Máximo (dias) cadastrado segue usado só como
         // referência de excesso/alerta (no Dashboard e no status desta tela), não entra
         // mais no tamanho do lote — senão voltaria a inflar a parcela com necessidades
         // distantes que ainda nem estão perto de virar problema.
-        $quantidadeAlvo = $pisoAcao - $piorSaldo;
+        $quantidadeAlvo = $piorDeficit;
         if ($quantidadeAlvo <= 0) {
             continue;
         }
