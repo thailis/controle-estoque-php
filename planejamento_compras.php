@@ -197,6 +197,15 @@ function calcularParcelasCompraPlanejamento(
             continue; // nada a fazer nesta revisão
         }
 
+        // Antes de sugerir uma compra NOVA, verifica se a programação que JÁ FOI colocada
+        // (mesmo atrasada — ela ainda vai chegar) resolve esse mergulho sozinha até o fim da
+        // janela de urgência. Um mergulho temporário que se recupera com o que já está no
+        // pipeline é um problema de PRAZO de entrega (acompanhar o fornecedor), não de
+        // quantidade — não deve virar mais uma compra em cima da que já foi feita.
+        if ($saldoPorDia[$iFimUrgencia] >= $pisoAcao) {
+            continue;
+        }
+
         // $dias[$iPior] é o dia do evento que causa o furo. A necessidade real, pra fins de
         // planejamento, é sempre 30 dias antes (tempo de receber, conferir e disponibilizar).
         $dataNecessidade = $dias[$iPior]->modify('-30 days');
