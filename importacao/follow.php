@@ -376,17 +376,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcesso()">
                             <option value="">Escolha um processo já cadastrado...</option>
                             <?php foreach ($processosDisponiveis as $p): ?>
-                                <?php
-                                    $sufixo = '';
-                                    if ($p['codigo_componente']) {
-                                        $sufixo = ' — ' . $p['codigo_componente'];
-                                        if ((int) $p['total_componentes'] > 1) {
-                                            $sufixo .= ' (+' . ((int) $p['total_componentes'] - 1) . ')';
-                                        }
-                                    }
-                                ?>
                                 <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['todos_componentes'] ?? ''); ?>" data-descricao="<?php echo h($p['todas_descricoes'] ?? ''); ?>">
-                                    <?php echo h($p['processo']) . h($sufixo); ?>
+                                    <?php echo h($p['processo']); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
