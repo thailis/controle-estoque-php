@@ -219,9 +219,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
 }
 
 // Lista de processos existentes, pra popular o <select> do cadastro manual —
-// já traz componente/descrição junto, pro preview automático via JS.
+// já traz componente/descrição junto, pro preview automático via JS. "processos"
+// tem uma linha por componente dentro do mesmo processo (igual explicado na
+// consulta do Follow mais abaixo), então agrupa por processo aqui também —
+// senão o mesmo processo aparecia repetido no <select>, uma vez pra cada
+// componente cadastrado nele.
 $processosDisponiveis = [];
-$resProcessos = mysqli_query($conn, "SELECT processo, codigo_componente, descricao FROM processos ORDER BY processo");
+$resProcessos = mysqli_query($conn, "
+    SELECT processo,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY codigo_componente SEPARATOR ', ') AS codigo_componente,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS descricao
+    FROM processos
+    GROUP BY processo
+    ORDER BY processo
+");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
     $processosDisponiveis[] = $linhaProc;
 }
