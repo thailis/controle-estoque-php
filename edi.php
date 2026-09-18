@@ -346,6 +346,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 }
 
 // Alternar o status "atendido" de um evento EDI, sem apagar a linha
+//
+// Versão AJAX: mesma lógica acima, mas responde em JSON pra atualizar o
+// botão sem recarregar a página.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_alternar_atendido') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $idAlternar = (int) ($_POST['id'] ?? 0);
+    if ($idAlternar <= 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
+    mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
+    mysqli_stmt_execute($stmtToggle);
+    mysqli_stmt_close($stmtToggle);
+
+    $stmtCheck = mysqli_prepare($conn, "SELECT atendido FROM edi WHERE _tidb_rowid = ?");
+    mysqli_stmt_bind_param($stmtCheck, 'i', $idAlternar);
+    mysqli_stmt_execute($stmtCheck);
+    $itemEdi = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
+    mysqli_stmt_close($stmtCheck);
+
+    if (!$itemEdi) {
+        echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
+        exit;
+    }
+
+    $novoAtendido = (int) $itemEdi['atendido'] === 1;
+    echo json_encode([
+        'ok' => true,
+        'atendido' => $novoAtendido,
+        'texto' => $novoAtendido ? 'Atendido' : 'Pendente',
+        'classe' => $novoAtendido ? 'is-atendido' : 'is-pendente',
+        'title' => $novoAtendido ? 'Clique para reabrir' : 'Clique para marcar como atendido',
+    ]);
+    exit;
+}
+
+// Mantido como fallback caso o JS não carregue (reload completo da página).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
     exigirComprador();
     $idAlternar = (int) ($_POST['id'] ?? 0);
@@ -998,8 +1043,49 @@ while ($row = mysqli_fetch_assoc($result)) {
     <script>
         window.INLINE_EDIT_ENDPOINT = 'edi.php';
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
+        window.FILTRO_ATUAL = <?php echo json_encode($filtro); ?>;
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // Alterna "Pendente"/"Atendido" via AJAX, sem recarregar a página.
+        // Se a linha deixar de bater com o filtro atual (ex.: filtro=pendente
+        // e a linha virou atendida), ela é removida da tabela na hora.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (!acaoInput || acaoInput.value !== 'alternar_atendido') return;
+
+            evento.preventDefault();
+            const dados = new URLSearchParams(new FormData(form));
+            dados.set('acao', 'ajax_alternar_atendido');
+
+            fetch('edi.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados.toString()
+            })
+                .then(r => r.json())
+                .then(json => {
+                    if (!json.ok) { alert(json.erro || 'Não foi possível atualizar.'); return; }
+
+                    const linha = form.closest('tr');
+                    const filtroAtual = window.FILTRO_ATUAL || '';
+                    if ((filtroAtual === 'pendente' && json.atendido) || (filtroAtual === 'atendido' && !json.atendido)) {
+                        linha.remove();
+                        return;
+                    }
+
+                    const botao = form.querySelector('button[type="submit"]');
+                    if (botao) {
+                        botao.classList.remove('is-atendido', 'is-pendente');
+                        botao.classList.add(json.classe);
+                        botao.title = json.title;
+                        botao.innerHTML = '<span class="dot"></span> ' + json.texto;
+                    }
+                })
+                .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'));
+        });
+    </script>
     <script>
         // Fallback pra garantir o scroll até a linha certa — a âncora (#linha-x)
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/
