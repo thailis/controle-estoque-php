@@ -123,121 +123,196 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
         if (!$linha) {
             $erro = 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.';
         } elseif ((int) $linha['integrado_mrp'] === 1) {
-            $erro = 'Esse embarque já foi integrado ao MRP anteriormente — não é possível integrar de novo (evita duplicar).';
+            $erro = 'Esse embarque já foi confirmado anteriormente — não é possível confirmar de novo (evita duplicar).';
         } elseif (strtolower(trim((string) ($linha['status_processo'] ?? ''))) === 'cancelado') {
             // Trava no servidor — mesmo que alguém envie o follow_id direto (sem passar
             // pela lista, que já filtra isso), a confirmação é bloqueada aqui também.
-            $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega nem alimentar o MRP.";
-        } elseif (strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) === 'nao') {
-            // Mesma lógica: item marcado como "não controla estoque" (tooling,
-            // amostra) em Processos — nunca deveria chegar aqui, mas trava de
-            // qualquer forma se alguém enviar o follow_id direto.
-            $erro = "❌ O item do processo \"{$linha['processo']}\" está marcado como \"não controla estoque\" — não alimenta o MRP.";
+            $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega.";
         } else {
-            try {
-                $connMrp = conectarMrp();
-                $validacao = validarComponenteMrp($connMrp, $linha['codigo_componente']);
+            // Item marcado "não controla estoque" (tooling, amostra) em Processos:
+            // ainda passa por aqui e finaliza normalmente no site de Importação
+            // (Follow vira "fechado", Processo vira "finalizado"), mas PULA
+            // completamente a parte de MRP — não conecta no MRP, não grava nada
+            // em programacao. É só um fechamento de rastreio logístico.
+            $controlaEstoque = strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) !== 'nao';
+            $quantidadeConfirmada = (float) $linha['quantidade'];
+            $prosseguirComFechamento = true;
+            $complementoMensagem = '';
 
-                if (!$validacao['valido']) {
-                    // BLOQUEIA — não grava nada no MRP, não marca como integrado.
-                    // O follow.efetiva pode até já estar preenchido (é rastreio
-                    // logístico, continua válido), mas a integração fica pendente
-                    // até o componente ser corrigido/cadastrado.
-                    $erro = "❌ Integração bloqueada — {$validacao['motivo']}";
-                } else {
-                    // Componente confirmado no MRP — segue com a integração.
-                    //
-                    // Em vez de alimentar o estoque físico direto (o que inflava o
-                    // saldo na hora, duplicando o que já estava planejado em
-                    // Programação), a confirmação de entrega agora grava dentro de
-                    // "programacao" do MRP — comparando por componente + processo:
-                    // - se já existe uma linha de programação pra esse componente+
-                    //   processo (cadastrada manualmente ou via CSV), só atualiza a
-                    //   coluna "importado" dela com a quantidade confirmada agora
-                    //   (SUBSTITUI o valor anterior, nunca soma — em entregas
-                    //   parciais, "importado" sempre mostra o último valor
-                    //   confirmado);
-                    // - se não existir nenhuma linha ainda pra esse componente+
-                    //   processo, cria uma nova (Quantidade = 0, já que não houve
-                    //   planejamento manual prévio; "importado" já preenchido com o
-                    //   valor confirmado).
-                    // Em nenhum dos dois casos isso marca a linha como "Atendido" —
-                    // isso continua sendo decisão manual de quem usa o MRP, feita na
-                    // tela de Programação. É o clique manual em "Atendido" que, de
-                    // fato, soma a quantidade no estoque físico.
-                    $processoTrim = trim((string) $linha['processo']);
-                    $quantidadeConfirmada = (float) $linha['quantidade'];
+            if ($controlaEstoque) {
+                try {
+                    $connMrp = conectarMrp();
+                    $validacao = validarComponenteMrp($connMrp, $linha['codigo_componente']);
 
-                    $stmtBuscaProg = mysqli_prepare($connMrp, "
-                        SELECT id FROM programacao
-                        WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ?
-                        LIMIT 1
-                    ");
-                    mysqli_stmt_bind_param($stmtBuscaProg, 'ss', $linha['codigo_componente'], $processoTrim);
-                    mysqli_stmt_execute($stmtBuscaProg);
-                    $progExistente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaProg));
-                    mysqli_stmt_close($stmtBuscaProg);
-
-                    if ($progExistente) {
-                        $stmtAtualizaProg = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ? WHERE id = ?");
-                        mysqli_stmt_bind_param($stmtAtualizaProg, 'di', $quantidadeConfirmada, $progExistente['id']);
-                        mysqli_stmt_execute($stmtAtualizaProg);
-                        mysqli_stmt_close($stmtAtualizaProg);
+                    if (!$validacao['valido']) {
+                        // BLOQUEIA — não grava nada no MRP, não fecha o Follow/Processo.
+                        // O follow.efetiva pode até já estar preenchido (é rastreio
+                        // logístico, continua válido), mas a integração fica pendente
+                        // até o componente ser corrigido/cadastrado.
+                        $erro = "❌ Integração bloqueada — {$validacao['motivo']}";
+                        $prosseguirComFechamento = false;
                     } else {
-                        $stmtInsereProg = mysqli_prepare($connMrp, "
-                            INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado)
-                            VALUES (?, ?, ?, 0, ?)
+                        // Componente confirmado no MRP — segue com a integração.
+                        //
+                        // Em vez de alimentar o estoque físico direto (o que inflava o
+                        // saldo na hora, duplicando o que já estava planejado em
+                        // Programação), a confirmação de entrega grava dentro de
+                        // "programacao" do MRP — comparando por componente + processo:
+                        // - se já existe uma linha de programação pra esse componente+
+                        //   processo (cadastrada manualmente ou via CSV), só atualiza a
+                        //   coluna "importado" dela com a quantidade confirmada agora
+                        //   (SUBSTITUI o valor anterior, nunca soma — em entregas
+                        //   parciais, "importado" sempre mostra o último valor
+                        //   confirmado);
+                        // - se não existir nenhuma linha ainda pra esse componente+
+                        //   processo, cria uma nova (Quantidade = 0, já que não houve
+                        //   planejamento manual prévio; "importado" já preenchido com o
+                        //   valor confirmado).
+                        // Em nenhum dos dois casos isso marca a linha como "Atendido" —
+                        // isso continua sendo decisão manual de quem usa o MRP, feita na
+                        // tela de Programação. É o clique manual em "Atendido" que, de
+                        // fato, soma a quantidade no estoque físico.
+                        $processoTrim = trim((string) $linha['processo']);
+
+                        $stmtBuscaProg = mysqli_prepare($connMrp, "
+                            SELECT id FROM programacao
+                            WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ?
+                            LIMIT 1
                         ");
-                        mysqli_stmt_bind_param($stmtInsereProg, 'sssd', $linha['codigo_componente'], $processoTrim, $dataEfetiva, $quantidadeConfirmada);
-                        mysqli_stmt_execute($stmtInsereProg);
-                        mysqli_stmt_close($stmtInsereProg);
+                        mysqli_stmt_bind_param($stmtBuscaProg, 'ss', $linha['codigo_componente'], $processoTrim);
+                        mysqli_stmt_execute($stmtBuscaProg);
+                        $progExistente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaProg));
+                        mysqli_stmt_close($stmtBuscaProg);
+
+                        if ($progExistente) {
+                            $stmtAtualizaProg = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ? WHERE id = ?");
+                            mysqli_stmt_bind_param($stmtAtualizaProg, 'di', $quantidadeConfirmada, $progExistente['id']);
+                            mysqli_stmt_execute($stmtAtualizaProg);
+                            mysqli_stmt_close($stmtAtualizaProg);
+                        } else {
+                            $stmtInsereProg = mysqli_prepare($connMrp, "
+                                INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado)
+                                VALUES (?, ?, ?, 0, ?)
+                            ");
+                            mysqli_stmt_bind_param($stmtInsereProg, 'sssd', $linha['codigo_componente'], $processoTrim, $dataEfetiva, $quantidadeConfirmada);
+                            mysqli_stmt_execute($stmtInsereProg);
+                            mysqli_stmt_close($stmtInsereProg);
+                        }
+                        mysqli_close($connMrp);
+
+                        $complementoMensagem = " lançada em Programação do MRP (coluna \"Importado\").";
                     }
-                    mysqli_close($connMrp);
-
-                    // Marca o follow como entregue, integrado e FECHADO — o status do
-                    // Follow só vira "fechado" neste momento exato, nunca é digitado
-                    // manualmente. Também trava contra duplicar (integrado_mrp = 1).
-                    $stmtUpdate = mysqli_prepare($conn, "
-                        UPDATE follow
-                        SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
-                        WHERE id = ?
-                    ");
-                    mysqli_stmt_bind_param($stmtUpdate, 'si', $dataEfetiva, $followId);
-                    mysqli_stmt_execute($stmtUpdate);
-                    mysqli_stmt_close($stmtUpdate);
-
-                    // O status do Processo segue o mesmo gatilho: nasce "aberto",
-                    // e só vira "finalizado" neste exato momento — nunca digitado.
-                    $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
-                    mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
-                    mysqli_stmt_execute($stmtProcessoStatus);
-                    mysqli_stmt_close($stmtProcessoStatus);
-
-                    $mensagem = "✅ Entrega confirmada — componente {$linha['codigo_componente']}, quantidade " . number_format($quantidadeConfirmada, 0, ',', '.') . " lançada em Programação do MRP (coluna \"Importado\").";
+                } catch (Throwable $e) {
+                    $erro = '❌ Erro ao conectar/gravar no MRP: ' . $e->getMessage();
+                    $prosseguirComFechamento = false;
                 }
-            } catch (Throwable $e) {
-                $erro = '❌ Erro ao conectar/gravar no MRP: ' . $e->getMessage();
+            } else {
+                // Não controla estoque: não faz NENHUMA chamada ao MRP.
+                $complementoMensagem = ' — item não controla estoque, apenas o status foi atualizado no site de Importação (sem lançamento no MRP).';
+            }
+
+            if ($prosseguirComFechamento) {
+                // Marca o follow como entregue, "confirmado" e FECHADO — o status do
+                // Follow só vira "fechado" neste momento exato, nunca é digitado
+                // manualmente. integrado_mrp aqui significa "já passou por essa
+                // confirmação" (trava contra duplicar), mesmo quando o item não
+                // controla estoque e não tocou o MRP de verdade.
+                $stmtUpdate = mysqli_prepare($conn, "
+                    UPDATE follow
+                    SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
+                    WHERE id = ?
+                ");
+                mysqli_stmt_bind_param($stmtUpdate, 'si', $dataEfetiva, $followId);
+                mysqli_stmt_execute($stmtUpdate);
+                mysqli_stmt_close($stmtUpdate);
+
+                // O status do Processo segue o mesmo gatilho: nasce "aberto",
+                // e só vira "finalizado" neste exato momento — nunca digitado.
+                $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
+                mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
+                mysqli_stmt_execute($stmtProcessoStatus);
+                mysqli_stmt_close($stmtProcessoStatus);
+
+                $mensagem = "✅ Entrega confirmada — componente {$linha['codigo_componente']}, quantidade " . number_format($quantidadeConfirmada, 0, ',', '.') . $complementoMensagem;
             }
         }
     }
 }
 
-// Lista embarques ainda não integrados, pra tela de confirmação — processos
-// cancelados, e itens marcados "não controla estoque" (tooling, amostra),
-// NUNCA aparecem aqui (mas continuam com o follow salvo, só não entram na
-// fila de integração).
-$pendentes = [];
-$resultPendentes = mysqli_query($conn, "
-    SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor
+// Filtros da tela (busca livre por componente/fornecedor/processo + status).
+// A lista mostra TUDO por padrão (pendente, confirmado e cancelado) — o item
+// não some mais da tela depois de confirmado, só muda de badge/situação.
+// Itens "não controla estoque" (tooling, amostra) também aparecem aqui e
+// podem ser confirmados normalmente — só que a confirmação deles finaliza
+// apenas Follow/Processo no site de Importação, sem tocar no MRP.
+$buscaComponente = trim($_GET['componente'] ?? '');
+$buscaFornecedor = trim($_GET['fornecedor'] ?? '');
+$buscaProcesso   = trim($_GET['processo'] ?? '');
+$filtroStatus    = trim($_GET['status'] ?? ''); // '', 'pendente', 'confirmado', 'cancelado'
+
+$condicoesLista = [];
+$paramsLista = [];
+$tiposLista = '';
+
+if ($buscaComponente !== '') {
+    $condicoesLista[] = "p.codigo_componente LIKE ?";
+    $paramsLista[] = "%$buscaComponente%";
+    $tiposLista .= 's';
+}
+if ($buscaFornecedor !== '') {
+    $condicoesLista[] = "p.fornecedor LIKE ?";
+    $paramsLista[] = "%$buscaFornecedor%";
+    $tiposLista .= 's';
+}
+if ($buscaProcesso !== '') {
+    $condicoesLista[] = "f.processo LIKE ?";
+    $paramsLista[] = "%$buscaProcesso%";
+    $tiposLista .= 's';
+}
+if ($filtroStatus === 'pendente') {
+    $condicoesLista[] = "f.integrado_mrp = 0 AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')";
+} elseif ($filtroStatus === 'confirmado') {
+    $condicoesLista[] = "f.integrado_mrp = 1";
+} elseif ($filtroStatus === 'cancelado') {
+    $condicoesLista[] = "LOWER(TRIM(p.status)) = 'cancelado'";
+}
+
+$whereLista = $condicoesLista ? ('WHERE ' . implode(' AND ', $condicoesLista)) : '';
+
+$sqlLista = "
+    SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, f.integrado_mrp,
+           p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.status AS status_processo, p.controla_estoque
+    FROM follow f
+    LEFT JOIN processos p ON p.processo = f.processo
+    $whereLista
+    ORDER BY f.integrado_mrp ASC, f.efetiva IS NULL, f.efetiva ASC
+";
+
+$registros = [];
+if (!empty($paramsLista)) {
+    $stmtLista = mysqli_prepare($conn, $sqlLista);
+    mysqli_stmt_bind_param($stmtLista, $tiposLista, ...$paramsLista);
+    mysqli_stmt_execute($stmtLista);
+    $resultLista = mysqli_stmt_get_result($stmtLista);
+} else {
+    $resultLista = mysqli_query($conn, $sqlLista);
+}
+while ($linha = mysqli_fetch_assoc($resultLista)) {
+    $registros[] = $linha;
+}
+
+// Contagem de pendentes de verdade (ignora os filtros da tela) — só pra dar
+// o número no cabeçalho, sem depender do que está sendo exibido no momento.
+$totalPendentesReal = 0;
+$resultContagem = mysqli_query($conn, "
+    SELECT COUNT(*) AS total
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     WHERE f.integrado_mrp = 0
       AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
-      AND (p.controla_estoque IS NULL OR LOWER(TRIM(p.controla_estoque)) <> 'nao')
-    ORDER BY f.efetiva IS NULL, f.efetiva ASC
 ");
-while ($linha = mysqli_fetch_assoc($resultPendentes)) {
-    $pendentes[] = $linha;
+if ($resultContagem) {
+    $totalPendentesReal = (int) (mysqli_fetch_assoc($resultContagem)['total'] ?? 0);
 }
 ?>
 <!DOCTYPE html>
@@ -255,7 +330,7 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
             <div>
                 <span class="eyebrow">Controle de Importação • Integração com o MRP</span>
                 <h1>Confirmar Entrega</h1>
-                <p class="mb-0"><?php echo count($pendentes); ?> embarque(s) pendente(s) de integração</p>
+                <p class="mb-0"><?php echo $totalPendentesReal; ?> embarque(s) pendente(s) de integração</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
@@ -282,15 +357,51 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+        </section>
+
+        <section class="filter-panel mb-4">
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow text-primary">Filtros</span>
+                    <h2>Buscar embarques</h2>
+                </div>
+            </div>
+            <form method="GET" class="row g-2 align-items-end">
+                <div class="col-12 col-md-3">
+                    <label class="form-label small mb-1">Componente</label>
+                    <input type="text" name="componente" class="form-control form-control-sm" placeholder="Ex.: 12000630" value="<?php echo h($buscaComponente); ?>">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="form-label small mb-1">Fornecedor</label>
+                    <input type="text" name="fornecedor" class="form-control form-control-sm" placeholder="Ex.: YAPP CN" value="<?php echo h($buscaFornecedor); ?>">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="form-label small mb-1">Processo</label>
+                    <input type="text" name="processo" class="form-control form-control-sm" placeholder="Ex.: YAMCS276-26YP" value="<?php echo h($buscaProcesso); ?>">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="form-label small mb-1">Status</label>
+                    <select name="status" class="form-select form-select-sm">
+                        <option value="" <?php echo $filtroStatus === '' ? 'selected' : ''; ?>>Todos</option>
+                        <option value="pendente" <?php echo $filtroStatus === 'pendente' ? 'selected' : ''; ?>>Pendente</option>
+                        <option value="confirmado" <?php echo $filtroStatus === 'confirmado' ? 'selected' : ''; ?>>Confirmado</option>
+                        <option value="cancelado" <?php echo $filtroStatus === 'cancelado' ? 'selected' : ''; ?>>Cancelado</option>
+                    </select>
+                </div>
+                <div class="col-12 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary btn-sm">Buscar</button>
+                    <a href="confirmar_entrega.php" class="btn btn-outline-secondary btn-sm">Limpar filtros</a>
+                </div>
+            </form>
         </section>
 
         <section class="table-card">
             <div class="table-toolbar">
                 <div>
                     <span class="eyebrow text-primary">Resultado</span>
-                    <h2>Embarques pendentes de integração</h2>
-                    <p><?php echo count($pendentes); ?> encontrado(s)</p>
+                    <h2>Embarques</h2>
+                    <p><?php echo count($registros); ?> encontrado(s)</p>
                 </div>
             </div>
             <div class="table-responsive">
@@ -308,10 +419,10 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (empty($pendentes)): ?>
-                            <tr><td colspan="8" class="empty-state">Nenhum embarque pendente — tudo integrado.</td></tr>
+                        <?php if (empty($registros)): ?>
+                            <tr><td colspan="8" class="empty-state">Nenhum embarque encontrado com esses filtros.</td></tr>
                         <?php else: ?>
-                            <?php foreach ($pendentes as $p): ?>
+                            <?php foreach ($registros as $p): ?>
                                 <?php
                                     $formId = 'form-confirmar-' . (int) $p['id'];
                                     // A data que vai pra Programação é sempre a EFETIVA, puxada do
@@ -321,28 +432,54 @@ while ($linha = mysqli_fetch_assoc($resultPendentes)) {
                                     // mostra num campo de data editável). Sem efetiva cadastrada,
                                     // não tem o que confirmar: botão fica travado em "Aguardando".
                                     $temEfetiva = !empty($p['efetiva']);
+                                    $statusProcesso = strtolower(trim((string) ($p['status_processo'] ?? '')));
+                                    $integrado = (int) ($p['integrado_mrp'] ?? 0) === 1;
+                                    $cancelado = $statusProcesso === 'cancelado';
+                                    $controlaEstoqueLinha = strtolower(trim((string) ($p['controla_estoque'] ?? 'sim'))) !== 'nao';
+
+                                    if ($cancelado) {
+                                        $badgeClasseSituacao = 'bg-danger';
+                                        $badgeTextoSituacao = 'Cancelado';
+                                    } elseif ($integrado && $controlaEstoqueLinha) {
+                                        $badgeClasseSituacao = 'bg-success';
+                                        $badgeTextoSituacao = 'Confirmado';
+                                    } elseif ($integrado && !$controlaEstoqueLinha) {
+                                        $badgeClasseSituacao = 'bg-info text-dark';
+                                        $badgeTextoSituacao = 'Finalizado';
+                                    } else {
+                                        $badgeClasseSituacao = 'bg-warning text-dark';
+                                        $badgeTextoSituacao = ucfirst($p['status'] ?: 'Aberto');
+                                    }
                                 ?>
                                 <tr>
-                                    <td><span class="status-badge status-atencao"><?php echo ucfirst($p['status'] ?: 'aberto'); ?></span></td>
+                                    <td><span class="badge <?php echo $badgeClasseSituacao; ?>"><?php echo h($badgeTextoSituacao); ?></span></td>
                                     <td><span class="component-code"><?php echo h($p['processo']); ?></span></td>
                                     <td><?php echo h($p['codigo_componente'] ?? '—'); ?></td>
                                     <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
                                     <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
                                     <td>
-                                        <?php if ($temEfetiva): ?>
+                                        <?php if ($temEfetiva && !$integrado && !$cancelado): ?>
                                             <form id="<?php echo h($formId); ?>" method="POST" class="m-0">
                                                 <input type="hidden" name="acao" value="confirmar_entrega">
                                                 <input type="hidden" name="follow_id" value="<?php echo (int) $p['id']; ?>">
                                                 <input type="hidden" name="data_efetiva" value="<?php echo h($p['efetiva']); ?>">
                                                 <input type="text" class="form-control form-control-sm" value="<?php echo h(dataBrConfirmar($p['efetiva'])); ?>" disabled>
                                             </form>
+                                        <?php elseif ($temEfetiva): ?>
+                                            <?php echo h(dataBrConfirmar($p['efetiva'])); ?>
                                         <?php else: ?>
                                             <span class="text-muted" title="Preencha a data efetiva no Follow pra liberar a confirmação">— sem efetiva —</span>
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <?php if ($temEfetiva): ?>
+                                        <?php if ($integrado && $controlaEstoqueLinha): ?>
+                                            <span class="text-success" title="Já confirmado — Programação do MRP atualizada">✅ Confirmado</span>
+                                        <?php elseif ($integrado && !$controlaEstoqueLinha): ?>
+                                            <span class="text-info" title="Não controla estoque — status finalizado só no site de Importação, sem lançamento no MRP">☑️ Finalizado (sem estoque)</span>
+                                        <?php elseif ($cancelado): ?>
+                                            <span class="text-muted" title="Processo cancelado — não é possível confirmar">— cancelado —</span>
+                                        <?php elseif ($temEfetiva): ?>
                                             <button type="submit" form="<?php echo h($formId); ?>" class="btn btn-success btn-sm">Confirmar</button>
                                         <?php else: ?>
                                             <button type="button" class="btn btn-secondary btn-sm" disabled title="Preencha a data efetiva no Follow primeiro">Aguardando</button>
