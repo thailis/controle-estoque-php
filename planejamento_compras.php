@@ -498,9 +498,11 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        fputcsv($saida, ['Data sugerida', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Data de necessidade', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
-            $dataTexto = $r['status'] === 'urgente' ? 'URGENTE' : $r['data']->format('d/m/Y');
+            // Mostra a data de necessidade sempre, mesmo quando o status é "urgente" —
+            // a coluna Status já indica a urgência, então não faz sentido esconder a data.
+            $dataTexto = $r['data']->format('d/m/Y');
             fputcsv($saida, [
                 $dataTexto,
                 $r['codigo_componente'],
@@ -646,7 +648,7 @@ try {
                 <table class="table mrp-table align-middle mb-0">
                     <thead>
                         <tr>
-                            <th>Data sugerida</th>
+                            <th>Data de necessidade</th>
                             <th>Código</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
@@ -671,7 +673,9 @@ try {
                                     <tr class="mes-divisor"><td colspan="9"><?php echo h($mesLabel); ?></td></tr>
                                 <?php endif; ?>
                                 <tr>
-                                    <td><?php echo $r['status'] === 'urgente' ? '—' : h($r['data']->format('d/m/Y')); ?></td>
+                                    <?php /* Sempre mostra a data de necessidade, mesmo quando "urgente" — o badge de Status já
+                                             diferencia a urgência; esconder a data aqui só tirava informação de quem olha a tela. */ ?>
+                                    <td><?php echo h($r['data']->format('d/m/Y')); ?></td>
                                     <td>
                                         <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
                                         <?php if ($r['total_parcelas'] > 1): ?>
