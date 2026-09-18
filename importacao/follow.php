@@ -525,9 +525,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 <?php
                                     $id = (int) $r['id'];
                                     $statusFollow = $r['status'] ?: 'aberto';
-                                    $condicaoCalc = calcularCondicaoFollow($r['prevista']);
-                                    $condicaoClasse = ['em tempo' => 'status-ok', 'atencao' => 'status-atencao', 'atrasado' => 'status-critico'][$condicaoCalc] ?? 'status-sem_demanda';
-                                    $condicaoTexto = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][$condicaoCalc] ?? '—';
                                     // Status unificado: se o processo estiver cancelado, isso
                                     // SOBREPÕE o status do follow (mesmo que já estivesse fechado).
                                     $statusProcessoValor = strtolower(trim((string) ($r['status_processo'] ?? 'aberto')));
@@ -537,6 +534,20 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         $statusTexto = 'Fechado'; $statusClasseUnificada = 'status-ok';
                                     } else {
                                         $statusTexto = 'Aberto'; $statusClasseUnificada = 'status-atencao';
+                                    }
+                                    // Condição só faz sentido enquanto o embarque ainda está em
+                                    // trânsito (comparando hoje com a data prevista) — depois de
+                                    // Fechado, a entrega já aconteceu de verdade (efetiva
+                                    // registrada em confirmar_entrega.php), então a condição vira
+                                    // "Finalizada" em vez de continuar calculando em tempo/atenção/
+                                    // atrasado a partir da prevista.
+                                    if ($statusFollow === 'fechado') {
+                                        $condicaoClasse = 'status-ok';
+                                        $condicaoTexto = 'Finalizada';
+                                    } else {
+                                        $condicaoCalc = calcularCondicaoFollow($r['prevista']);
+                                        $condicaoClasse = ['em tempo' => 'status-ok', 'atencao' => 'status-atencao', 'atrasado' => 'status-critico'][$condicaoCalc] ?? 'status-sem_demanda';
+                                        $condicaoTexto = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][$condicaoCalc] ?? '—';
                                     }
                                 ?>
                                 <tr>
