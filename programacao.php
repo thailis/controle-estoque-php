@@ -146,6 +146,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 $indiceComponente = localizarColunaComponente($cabecalho);
                 $paresDataQuantidade = detectarParesDataQuantidade($cabecalho);
+                $indiceProcesso = array_search('processo', $cabecalho, true);
+                if ($indiceProcesso === false) {
+                    $indiceProcesso = null;
+                }
 
                 if ($indiceComponente === null) {
                     $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'componente' ou 'codigo_componente' no cabeçalho.";
@@ -157,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "🗑️ Tabela 'programacao' esvaziada antes da importação.";
                 }
 
-                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, data, quantidade) VALUES (?, ?, ?)");
+                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade) VALUES (?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT id FROM programacao WHERE TRIM(codigo_componente) = ? AND data = ? LIMIT 1");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ? WHERE id = ?");
 
@@ -183,6 +187,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $mensagens[] = "⚠️ Linha $linhaNum ignorada: componente vazio.";
                         continue;
                     }
+                    $processoLinha = $indiceProcesso !== null ? trim($linha[$indiceProcesso] ?? '') : '';
+                    $processoLinha = $processoLinha !== '' ? $processoLinha : null;
 
                     // Uma linha da planilha pode gerar várias entradas de programação
                     // (Programação 1, Programação 2, Programação 3...).
@@ -234,7 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             continue;
                         }
 
-                        mysqli_stmt_bind_param($stmtInsert, "ssd", $codigoComponente, $data, $quantidade);
+                        mysqli_stmt_bind_param($stmtInsert, "sssd", $codigoComponente, $processoLinha, $data, $quantidade);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
                         } else {
@@ -463,13 +469,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
     $componenteManual = trim($_POST['componente_manual'] ?? '');
+    $processoManual = trim($_POST['processo_manual'] ?? '');
+    $processoManual = $processoManual !== '' ? $processoManual : null;
     $dataManual = parseDataProgramacao(trim($_POST['data_manual'] ?? ''));
     $quantidadeManual = parseQuantidade(trim($_POST['quantidade_manual'] ?? ''));
 
     $flash = 'erro_dados';
     if ($componenteManual !== '' && $dataManual !== null && $quantidadeManual !== null) {
-        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, data, quantidade) VALUES (?, ?, ?)");
-        mysqli_stmt_bind_param($stmtInsManual, "ssd", $componenteManual, $dataManual, $quantidadeManual);
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade) VALUES (?, ?, ?, ?)");
+        mysqli_stmt_bind_param($stmtInsManual, "sssd", $componenteManual, $processoManual, $dataManual, $quantidadeManual);
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
         $flash = 'inserido';
@@ -500,7 +508,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade'], true)) {
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'processo'], true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
@@ -517,6 +525,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     }
     if ((int) $item['atendido'] === 1) {
         echo json_encode(['ok' => false, 'erro' => 'Reabra o item antes de editar.']);
+        exit;
+    }
+
+    if ($campo === 'processo') {
+        $processoEditado = $valor !== '' ? $valor : null;
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET processo = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $processoEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $processoEditado ?? '']);
         exit;
     }
 
@@ -656,7 +674,7 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.data, p.quantidade, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
+    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -669,10 +687,10 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'Data', 'Quantidade', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'Processo', 'Data', 'Quantidade', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
-       
+
         $quantidadeExportada = number_format(
     (float) $linha['quantidade'],
     0,
@@ -682,7 +700,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 
 fputcsv(
     $saida,
-    [$linha['codigo_componente'], $data, $quantidadeExportada, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
+    [$linha['codigo_componente'], $linha['processo'] ?? '', $data, $quantidadeExportada, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
     ';',
     '"',
     ''
@@ -692,7 +710,7 @@ fputcsv(
     exit;
 }
 
-$sql = "SELECT p.id, p.codigo_componente, p.data, p.quantidade, p.atendido,
+$sql = "SELECT p.id, p.codigo_componente, p.processo, p.data, p.quantidade, p.atendido,
                bg.descricao, bg.fornecedores
         FROM programacao p
         LEFT JOIN (
@@ -853,7 +871,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Formato simples</strong> (uma programação por linha):<br>
-                        <code>codigo_componente, data, quantidade</code><br><br>
+                        <code>codigo_componente, processo, data, quantidade</code><br>
+                        A coluna <code>processo</code> é opcional.<br><br>
                         <strong>Formato da planilha</strong> (várias programações na mesma linha, como no Excel):<br>
                         <code>Componente, ..., Programação 1, Quantidade, Programação 2, Quantidade 2, Programação 3, Quantidade...</code><br>
                         Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Deixe em branco as programações que não existirem.<br><br>
@@ -886,6 +905,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <div class="col-auto">
                     <label class="form-label small mb-1">Componente</label>
                     <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" placeholder="Ex.: 12000586" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Processo</label>
+                    <input type="text" name="processo_manual" class="form-control form-control-sm" placeholder="Opcional">
                 </div>
                 <div class="col-auto">
                     <label class="form-label small mb-1">Data</label>
@@ -928,6 +951,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <thead>
                         <tr>
                             <th>Situação</th>
+                            <th>Processo</th>
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
@@ -938,7 +962,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="7" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -963,11 +987,18 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             </button>
                                         </form>
                                     </td>
+                                    <?php $podeEditarLinha = !$estaAtendido; ?>
+                                    <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
+                                        <?php if ($podeEditarLinha): ?>
+                                        data-id="<?php echo $idLinha; ?>" data-campo="processo"
+                                        data-valor-bruto="<?php echo h($row['processo'] ?? ''); ?>"
+                                        title="Duplo clique para editar"
+                                        <?php endif; ?>
+                                    ><?php echo h($row['processo'] ?? ''); ?></td>
                                     <td><strong><?php echo h($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? ''); ?></span></td>
 
-                                    <?php $podeEditarLinha = !$estaAtendido; ?>
                                     <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
                                         <?php if ($podeEditarLinha): ?>
                                         data-id="<?php echo $idLinha; ?>" data-campo="data"
@@ -1063,10 +1094,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
 
                     const idLinha = form.querySelector('input[name="id"]').value;
-                    const celulaData = linha.children[4];
-                    const celulaQtd = linha.children[5];
-                    if (celulaData && celulaQtd) {
+                    const celulaProcesso = linha.children[1];
+                    const celulaData = linha.children[5];
+                    const celulaQtd = linha.children[6];
+                    if (celulaProcesso && celulaData && celulaQtd) {
                         if (json.atendido) {
+                            celulaProcesso.className = '';
+                            celulaProcesso.removeAttribute('data-id');
+                            celulaProcesso.removeAttribute('data-campo');
+                            celulaProcesso.removeAttribute('data-valor-bruto');
+                            celulaProcesso.removeAttribute('title');
                             celulaData.className = '';
                             celulaData.removeAttribute('data-id');
                             celulaData.removeAttribute('data-campo');
@@ -1078,6 +1115,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                             celulaQtd.removeAttribute('data-valor-bruto');
                             celulaQtd.removeAttribute('title');
                         } else {
+                            celulaProcesso.className = 'celula-editavel';
+                            celulaProcesso.setAttribute('data-id', idLinha);
+                            celulaProcesso.setAttribute('data-campo', 'processo');
+                            celulaProcesso.setAttribute('data-valor-bruto', celulaProcesso.textContent.trim());
+                            celulaProcesso.setAttribute('title', 'Duplo clique para editar');
                             celulaData.className = 'celula-editavel';
                             celulaData.setAttribute('data-id', idLinha);
                             celulaData.setAttribute('data-campo', 'data');
