@@ -173,7 +173,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 
             $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
             $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status_alterado=1');
+            $plantaVolta = (string) ($_POST['planta_atual'] ?? '');
+            $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
+            $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
+            $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&status_alterado=1');
             exit;
         }
     }
@@ -208,7 +212,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 
             $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
             $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&controla_alterado=1');
+            $plantaVolta = (string) ($_POST['planta_atual'] ?? '');
+            $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
+            $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
+            $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&controla_alterado=1');
             exit;
         }
     }
@@ -225,7 +233,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     }
     $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-    header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&excluido=1');
+    $plantaVolta = (string) ($_POST['planta_atual'] ?? '');
+    $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
+    $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
+    $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
+    header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&excluido=1');
     exit;
 }
 
@@ -996,6 +1008,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="processo" value="<?php echo h($r['processo']); ?>">
                                                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <input type="hidden" name="planta_atual" value="<?php echo h($filtroPlanta); ?>">
+                                                <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
+                                                <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
+                                                <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $statusCancelado ? 'status-critico' : 'status-atencao'; ?>" style="cursor:pointer;" title="Clique pra alternar entre Aberto e Cancelado">
                                                     <?php echo $statusCancelado ? 'Cancelado' : 'Aberto'; ?>
                                                 </button>
@@ -1013,6 +1029,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="id" value="<?php echo $id; ?>">
                                                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                                <input type="hidden" name="planta_atual" value="<?php echo h($filtroPlanta); ?>">
+                                                <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
+                                                <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
+                                                <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" style="cursor:pointer;" title="Clique pra alternar — 'Não' significa que esse item não entra no Confirmar Entrega (ex.: tooling, amostra)">
                                                     <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
                                                 </button>
@@ -1045,6 +1065,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                             <input type="hidden" name="id" value="<?php echo $id; ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <input type="hidden" name="planta_atual" value="<?php echo h($filtroPlanta); ?>">
+                                            <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
+                                            <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
                                     </td>
