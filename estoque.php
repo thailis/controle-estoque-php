@@ -279,6 +279,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     exit;
 }
 
+// Exclui um componente inteiro da tela de estoque — apaga TODAS as linhas
+// (todas as plantas, todo o histórico de ajustes) daquele codigo_componente
+// na tabela "estoque". A tela é agrupada por componente (soma de todas as
+// plantas), então excluir aqui remove o componente inteiro dessa janela.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_componente_estoque') {
+    exigirComprador();
+    $codigoExcluir = trim((string) ($_POST['codigo'] ?? ''));
+    if ($codigoExcluir !== '') {
+        $stmtExcluirEstoque = mysqli_prepare($conn, "DELETE FROM estoque WHERE codigo_componente = ?");
+        mysqli_stmt_bind_param($stmtExcluirEstoque, 's', $codigoExcluir);
+        mysqli_stmt_execute($stmtExcluirEstoque);
+        mysqli_stmt_close($stmtExcluirEstoque);
+    }
+
+    $paginaVoltaExcluir = (int) ($_POST['pagina_atual'] ?? 1);
+    $buscaVoltaExcluir = (string) ($_POST['busca_atual'] ?? '');
+    header('Location: estoque.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&excluido=1');
+    exit;
+}
+
 // ---------- Ajuste manual de estoque ----------
 // A tabela "estoque" funciona como livro-razão (várias linhas por componente/
 // planta, somadas na tela). Por isso, "editar" aqui NUNCA sobrescreve nem
@@ -559,6 +579,16 @@ if (!empty($componentes)) {
         .badge-mrp-none { background: #eef2f5; color: #637485; }
         .col-total { font-weight: 750; background: #f8f9fa; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
+
+        .btn-remover-linha {
+            border: none;
+            background: none;
+            color: #c53535;
+            font-size: 1.05rem;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .btn-remover-linha:hover { color: #a12727; }
     </style>
 </head>
 <body>
@@ -586,6 +616,8 @@ if (!empty($componentes)) {
             <div class="alert alert-success">✅ Estoque ajustado com sucesso.</div>
         <?php elseif (isset($_GET['sem_mudanca'])): ?>
             <div class="alert alert-secondary">Nada foi alterado (os valores digitados já eram os mesmos).</div>
+        <?php elseif (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success">✅ Componente excluído do estoque.</div>
         <?php endif; ?>
 
         <div class="card p-3 mb-4">
@@ -659,11 +691,12 @@ if (!empty($componentes)) {
                             <?php endif; ?>
                             <th class="text-end col-total">Total</th>
                             <th>MRP</th>
+                            <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($componentes)): ?>
-                            <tr><td colspan="<?php echo 4 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="<?php echo 5 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($componentes as $codigo => $linha): ?>
                                 <?php
@@ -691,6 +724,15 @@ if (!empty($componentes)) {
                                     <?php endif; ?>
                                     <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
                                     <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
+                                    <td>
+                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir este componente do estoque? Remove TODAS as linhas dele (todas as plantas). Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_componente_estoque">
+                                            <input type="hidden" name="codigo" value="<?php echo h($codigo); ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -745,6 +787,25 @@ if (!empty($componentes)) {
             });
 
             totalCel.textContent = soma.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        });
+    </script>
+    <script>
+        // Exclusão recarrega a página (o componente some da tabela, então não
+        // há linha pra manter na tela), mas guarda a posição do scroll antes
+        // de enviar e restaura depois do reload, pra não voltar pro topo.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (acaoInput && acaoInput.value === 'excluir_componente_estoque') {
+                sessionStorage.setItem('estoque_scroll', String(window.scrollY));
+            }
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            const scrollSalvo = sessionStorage.getItem('estoque_scroll');
+            if (scrollSalvo !== null) {
+                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
+                sessionStorage.removeItem('estoque_scroll');
+            }
         });
     </script>
     <script>

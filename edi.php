@@ -390,6 +390,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
     exit;
 }
 
+// Exclui um evento EDI específico (apaga a linha da tabela "edi"). Não mexe
+// em nenhuma outra tabela — programação e estoque são independentes do EDI.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_evento_edi') {
+    exigirComprador();
+    $idExcluir = (int) ($_POST['id'] ?? 0);
+    if ($idExcluir > 0) {
+        $stmtExcluir = mysqli_prepare($conn, "DELETE FROM edi WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
+        mysqli_stmt_execute($stmtExcluir);
+        mysqli_stmt_close($stmtExcluir);
+    }
+
+    header('Location: edi.php?' . http_build_query([
+        'pagina'   => $_POST['pagina_atual'] ?? 1,
+        'busca'    => $_POST['busca_atual'] ?? '',
+        'ano'      => $_POST['ano_atual'] ?? '',
+        'filtro'   => $_POST['filtro_atual'] ?? '',
+        'excluido' => 1,
+    ]));
+    exit;
+}
+
 // Mantido como fallback caso o JS não carregue (reload completo da página).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
     exigirComprador();
@@ -719,6 +741,16 @@ while ($row = mysqli_fetch_assoc($result)) {
             white-space: nowrap;
             vertical-align: middle;
         }
+
+        .btn-remover-linha {
+            border: none;
+            background: none;
+            color: #c53535;
+            font-size: 1.05rem;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .btn-remover-linha:hover { color: #a12727; }
     </style>
 </head>
 <body>
@@ -872,6 +904,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
             <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
         <?php endif; ?>
+        <?php if (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success py-2">✅ Evento excluído.</div>
+        <?php endif; ?>
 
         <datalist id="lista_materiais">
             <?php foreach ($materiaisDisponiveis as $m): ?>
@@ -974,11 +1009,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-center">Semana</th>
                             <th class="text-center">Quantidade</th>
                             <th>Data</th>
+                            <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1014,6 +1050,17 @@ while ($row = mysqli_fetch_assoc($result)) {
 
                                     <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="quantidade" data-valor-bruto="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="data" data-valor-bruto="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
+                                    <td>
+                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir este evento EDI? Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_evento_edi">
+                                            <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                                            <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -1084,6 +1131,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
                 })
                 .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'));
+        });
+    </script>
+    <script>
+        // Exclusão recarrega a página (o registro some da tabela, então não há
+        // linha pra manter na tela), mas guarda a posição do scroll antes de
+        // enviar e restaura depois do reload, pra não voltar pro topo.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (acaoInput && acaoInput.value === 'excluir_evento_edi') {
+                sessionStorage.setItem('edi_scroll', String(window.scrollY));
+            }
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            const scrollSalvo = sessionStorage.getItem('edi_scroll');
+            if (scrollSalvo !== null) {
+                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
+                sessionStorage.removeItem('edi_scroll');
+            }
         });
     </script>
     <script>

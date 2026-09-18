@@ -194,6 +194,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     exit;
 }
 
+// Exclui SÓ a linha exata do BOM (aquela combinação planta+projeto+material+
+// ...+componente), identificada pela mesma combinação de todos os campos
+// usada em editar/toggle (a tabela não tem coluna id). Não mexe em nenhuma
+// outra tabela: pedido_compra e o histórico de compras guardam o código do
+// componente como texto solto, sem vínculo com a linha do BOM, então
+// continuam intactos. Programação e estoque também não são tocados. Se o
+// componente tiver outras linhas (outros projetos/plantas), elas continuam
+// normalmente — só o consumo dessa linha específica sai da soma usada em
+// Planejamento de Compras e Evolução Geral, porque essa linha deixa de
+// existir na tabela.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_linha_bomnova') {
+    exigirComprador();
+    $camposExcluir = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginaisExcluir = [];
+    foreach ($camposExcluir as $campo) {
+        $valoresOriginaisExcluir[] = (string) ($_POST['orig_' . $campo] ?? '');
+    }
+
+    $condicoesExcluir = array_map(fn($campo) => "COALESCE($campo, '') = ?", $camposExcluir);
+    $sqlExcluirLinha = "DELETE FROM bomnova WHERE " . implode(' AND ', $condicoesExcluir) . " LIMIT 1";
+
+    $stmtExcluirLinha = mysqli_prepare($conn, $sqlExcluirLinha);
+    $tiposExcluirLinha = str_repeat('s', count($camposExcluir));
+    mysqli_stmt_bind_param($stmtExcluirLinha, $tiposExcluirLinha, ...$valoresOriginaisExcluir);
+    mysqli_stmt_execute($stmtExcluirLinha);
+    $linhasAfetadasExcluir = mysqli_stmt_affected_rows($stmtExcluirLinha);
+    mysqli_stmt_close($stmtExcluirLinha);
+
+    $paginaVoltaExcluir = (int) ($_POST['pagina_atual'] ?? 1);
+    $buscaVoltaExcluir = (string) ($_POST['busca_atual'] ?? '');
+    $flagExcluir = $linhasAfetadasExcluir > 0 ? 'excluido=1' : 'excluir_erro=1';
+    header('Location: bomnova.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&' . $flagExcluir);
+    exit;
+}
+
 // (Mantidos como fallback caso o JS não carregue — recarregam a página normalmente.)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
     exigirComprador();
@@ -493,6 +528,16 @@ while ($row = mysqli_fetch_assoc($result)) {
         .mrp-toggle-btn:hover { opacity: 0.75; }
         .mrp-toggle-btn:active { transform: scale(0.95); }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
+
+        .btn-remover-linha {
+            border: none;
+            background: none;
+            color: #c53535;
+            font-size: 1.05rem;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .btn-remover-linha:hover { color: #a12727; }
     </style>
 </head>
 <body>
@@ -536,6 +581,16 @@ while ($row = mysqli_fetch_assoc($result)) {
         <?php elseif (isset($_GET['planejamento_bloqueado'])): ?>
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
                 ⚠️ Esse componente está com MRP=N — Planejamento já está travado em N junto. Reabra o MRP primeiro se quiser mudar isso.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ✅ Linha excluída do BOM.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['excluir_erro'])): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                ⚠️ Não encontrei essa linha exata pra excluir (os dados podem ter mudado desde que a página carregou — recarregue e tente de novo).
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
             </div>
         <?php endif; ?>
@@ -611,11 +666,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>U.M.</th>
                             <th>MRP</th>
                             <th>Planejamento</th>
+                            <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="12" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="13" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -706,6 +762,24 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <button type="submit" class="badge border-0 mrp-toggle-btn <?php echo $planBadgeClasse; ?>" <?php echo $planBloqueado ? 'disabled' : ''; ?> title="<?php echo htmlspecialchars($planTitle); ?>">
                                                 <?php echo htmlspecialchars($planejamento); ?>
                                             </button>
+                                        </form>
+                                    </td>
+                                    <td>
+                                        <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir esta linha do BOM? Apaga só esta combinação (planta/projeto/material). O histórico de compras não é afetado. Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_linha_bomnova">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_tipo" value="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_fornecedor" value="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_codigo_componente" value="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_pn" value="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_descricao" value="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_consumo" value="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_um" value="<?php echo htmlspecialchars($row['um'] ?? ''); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
                                     </td>
                                 </tr>
@@ -801,5 +875,24 @@ while ($row = mysqli_fetch_assoc($result)) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // Exclusão recarrega a página (a linha some da tabela, então não há
+        // linha pra manter na tela), mas guarda a posição do scroll antes de
+        // enviar e restaura depois do reload, pra não voltar pro topo.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (acaoInput && acaoInput.value === 'excluir_linha_bomnova') {
+                sessionStorage.setItem('bomnova_scroll', String(window.scrollY));
+            }
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            const scrollSalvo = sessionStorage.getItem('bomnova_scroll');
+            if (scrollSalvo !== null) {
+                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
+                sessionStorage.removeItem('bomnova_scroll');
+            }
+        });
+    </script>
 </body>
 </html>

@@ -361,6 +361,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
     exit;
 }
 
+// Exclui uma entrada de programação específica. Se ela já estava "Atendido"
+// (já tinha gerado uma linha em estoque), remove primeiro essa linha de
+// estoque vinculada — mesma limpeza que "reabrir" já faz — pra não sobrar
+// estoque órfão sem origem depois que a programação some.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_programacao') {
+    exigirComprador();
+    $idExcluir = (int) ($_POST['id'] ?? 0);
+    if ($idExcluir > 0) {
+        $stmtDelEstoqueExcluir = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_programacao_id = ?");
+        mysqli_stmt_bind_param($stmtDelEstoqueExcluir, 'i', $idExcluir);
+        mysqli_stmt_execute($stmtDelEstoqueExcluir);
+        mysqli_stmt_close($stmtDelEstoqueExcluir);
+
+        $stmtExcluirProg = mysqli_prepare($conn, "DELETE FROM programacao WHERE id = ?");
+        mysqli_stmt_bind_param($stmtExcluirProg, 'i', $idExcluir);
+        mysqli_stmt_execute($stmtExcluirProg);
+        mysqli_stmt_close($stmtExcluirProg);
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'pagina'   => $_POST['pagina_atual'] ?? 1,
+        'busca'    => $_POST['busca_atual'] ?? '',
+        'filtro'   => $_POST['filtro_atual'] ?? '',
+        'excluido' => 1,
+    ]));
+    exit;
+}
+
 // Mantido como fallback caso o JS não carregue (reload completo da página).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alternar_atendido') {
     exigirComprador();
@@ -738,6 +766,16 @@ while ($row = mysqli_fetch_assoc($result)) {
             white-space: nowrap;
             vertical-align: middle;
         }
+
+        .btn-remover-linha {
+            border: none;
+            background: none;
+            color: #c53535;
+            font-size: 1.05rem;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .btn-remover-linha:hover { color: #a12727; }
     </style>
 </head>
 <body>
@@ -828,6 +866,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
             <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
         <?php endif; ?>
+        <?php if (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success py-2">✅ Programação excluída.</div>
+        <?php endif; ?>
 
         <datalist id="lista_componentes">
             <?php foreach ($componentesDisponiveis as $c): ?>
@@ -892,11 +933,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Fornecedor</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
+                            <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="6" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -940,6 +982,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                         <?php endif; ?>
                                     ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
+                                    <td>
+                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir esta programação? Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_programacao">
+                                            <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
+                                        </form>
+                                    </td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -1040,6 +1092,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
                 })
                 .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'));
+        });
+    </script>
+    <script>
+        // Exclusão recarrega a página (o registro some da tabela, então não há
+        // linha pra manter na tela), mas guarda a posição do scroll antes de
+        // enviar e restaura depois do reload, pra não voltar pro topo.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (acaoInput && acaoInput.value === 'excluir_programacao') {
+                sessionStorage.setItem('programacao_scroll', String(window.scrollY));
+            }
+        });
+        window.addEventListener('DOMContentLoaded', function () {
+            const scrollSalvo = sessionStorage.getItem('programacao_scroll');
+            if (scrollSalvo !== null) {
+                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
+                sessionStorage.removeItem('programacao_scroll');
+            }
         });
     </script>
     <script>
