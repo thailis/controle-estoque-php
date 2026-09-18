@@ -674,7 +674,7 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
+    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -687,7 +687,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'Processo', 'Data', 'Quantidade', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'Processo', 'Data', 'Quantidade', 'Importado', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
 
@@ -698,9 +698,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     ''
 );
 
+$importadoExportado = $linha['importado'] !== null
+    ? number_format((float) $linha['importado'], 0, ',', '')
+    : '';
+
 fputcsv(
     $saida,
-    [$linha['codigo_componente'], $linha['processo'] ?? '', $data, $quantidadeExportada, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
+    [$linha['codigo_componente'], $linha['processo'] ?? '', $data, $quantidadeExportada, $importadoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
     ';',
     '"',
     ''
@@ -710,7 +714,7 @@ fputcsv(
     exit;
 }
 
-$sql = "SELECT p.id, p.codigo_componente, p.processo, p.data, p.quantidade, p.atendido,
+$sql = "SELECT p.id, p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido,
                bg.descricao, bg.fornecedores
         FROM programacao p
         LEFT JOIN (
@@ -957,12 +961,13 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Fornecedor</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
+                            <th class="text-end" title="Quantidade confirmada via Confirmar Entrega (site de Importação)">Importado</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="8" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="9" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1013,6 +1018,9 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                         <?php endif; ?>
                                     ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
+                                    <td class="text-end text-muted" title="Preenchido automaticamente ao confirmar entrega no site de Importação">
+                                        <?php echo $row['importado'] !== null ? number_format((float) $row['importado'], 2, ',', '.') : '—'; ?>
+                                    </td>
                                     <td>
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir esta programação? Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_programacao">
