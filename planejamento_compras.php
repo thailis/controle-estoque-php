@@ -77,15 +77,25 @@ function calcularEstoqueSegurancaQtd(
     return MRP_Z_NIVEL_SERVICO * $desvioPadrao * sqrt($leadTimeSemanas);
 }
 
-// Mesma lógica de simulação usada no dashboard (index.php): saldo dia a dia,
-// aplicando programação e demanda na data exata de cada evento.
+// Simula o saldo dia a dia (estoque + programação − demanda) e revisa a situação MÊS A MÊS
+// (hoje, +1 mês, +2 meses...) em vez de tentar cobrir tudo de uma vez com uma única compra
+// gigante — isso evita concentrar o pagamento de meses de estoque numa parcela só quando o
+// problema real só aparece mais à frente.
 //
-// Diferente de antes, NÃO para na primeira necessidade encontrada: sempre que o saldo
-// simulado fura o piso de segurança, gera uma parcela de compra, "injeta" a quantidade
-// sugerida de volta na simulação (assumindo que ela chega exatamente na data da
-// necessidade, já que a data sugerida = necessidade − lead time) e continua procurando a
-// PRÓXIMA necessidade real, até o fim do horizonte. Assim, um componente com demanda
-// contínua gera várias parcelas escalonadas em vez de uma única compra gigante.
+// Em cada revisão mensal:
+//   1) Só gera uma parcela se houver necessidade dentro do prazo de reação (até a PRÓXIMA
+//      revisão + Lead Time do fornecedor) — uma necessidade mais distante é decidida na
+//      revisão do mês em que ela realmente estiver chegando, não antecipada agora.
+//   2) O gatilho (piso) não é só "saldo negativo": é o maior entre o Estoque de Segurança
+//      calculado (ver calcularEstoqueSegurancaQtd) e a quantidade equivalente ao Estoque
+//      Mínimo (dias) cadastrado — assim a compra é disparada ANTES de furar o mínimo, não
+//      só quando o saldo já fica negativo.
+//   3) A quantidade cobre o PIOR saldo (mais negativo) dentro da janela de cobertura =
+//      Estoque Máximo (dias) cadastrado, a partir do mês da revisão — ou seja, o lote é
+//      dimensionado pelo problema real mais próximo, não pela soma de toda a demanda da
+//      janela.
+//   4) Arredonda pro múltiplo do MOQ e injeta de volta na simulação, pra próxima revisão já
+//      considerar essa compra.
 function calcularParcelasCompraPlanejamento(
     float $estoqueAtual,
     array $programacaoPorData,
@@ -134,63 +144,99 @@ function calcularParcelasCompraPlanejamento(
         $saldoAnterior = $saldo;
     }
 
-    $prefixo = array_fill(0, $n + 1, 0.0);
-    for ($i = 0; $i < $n; $i++) {
-        $prefixo[$i + 1] = $prefixo[$i] + $demandaPorDia[$i];
+    $indicePorData = [];
+    foreach ($dias as $i => $dia) {
+        $indicePorData[$dia->format('Y-m-d')] = $i;
     }
 
-    $inicioBusca = $hoje->modify('+' . ($frozenDias + $transitDias) . ' days');
+    $leadDias = $frozenDias + $transitDias;
+
+    // Pontos de revisão mensal, do hoje até o fim do horizonte.
+    $checkpoints = [];
+    $cursorCheckpoint = $hoje;
+    while ($cursorCheckpoint <= $horizonteFim) {
+        $checkpoints[] = $cursorCheckpoint;
+        $cursorCheckpoint = $cursorCheckpoint->modify('+1 month');
+    }
 
     $parcelas = [];
-    for ($i = 0; $i < $n; $i++) {
-        if ($dias[$i] < $inicioBusca) {
+    foreach ($checkpoints as $checkpoint) {
+        $chaveCheckpoint = $checkpoint->format('Y-m-d');
+        $iCheckpoint = $indicePorData[$chaveCheckpoint] ?? null;
+        if ($iCheckpoint === null) {
             continue;
         }
-        // Piso de segurança = quantidade calculada automaticamente (ver
-        // calcularEstoqueSegurancaQtd). Com segurancaQtd = 0, o piso é sempre 0.
-        if ($saldoPorDia[$i] < $segurancaQtd) {
-            // $dias[$i] é o dia em que o saldo simulado fica negativo — ou seja,
-            // o dia do PRÓPRIO evento que consome o estoque. O material precisa
-            // estar disponível com folga ANTES do evento (tempo de receber,
-            // conferir e disponibilizar) — por isso a necessidade real, pra fins
-            // de planejamento, é sempre 30 dias antes do evento.
-            $dataNecessidade = $dias[$i]->modify('-30 days');
-            $dataSugerida = $dataNecessidade->modify('-' . ($frozenDias + $transitDias) . ' days');
 
-            $janelaLocal = min($n, $i + $maxDias);
-            $demandaJanelaMax = $prefixo[$janelaLocal] - $prefixo[$i];
-
-            // Alvo = o maior entre a demanda conhecida na janela Max e o próprio piso de
-            // segurança — garante que a compra sempre recupera o saldo pelo menos até o
-            // estoque de segurança, mesmo quando a demanda da janela Max for pequena.
-            $alvo = max($demandaJanelaMax, $segurancaQtd);
-            $quantidadeAlvo = $alvo - $saldoPorDia[$i];
-            $quantidadeBase = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : max(0, $quantidadeAlvo);
-
-            // Setup (% de perda/scrap) aplicado por último, depois de todo o cálculo de
-            // netting e arredondamento de MOQ. A quantidade FÍSICA que chega de fato é a
-            // final (com setup) — é ela que volta pra simulação pra achar a próxima parcela.
-            $quantidadeFinal = $setupPercentual > 0
-                ? $quantidadeBase * (1 + $setupPercentual / 100)
-                : $quantidadeBase;
-
-            $status = $dataSugerida <= $hoje ? 'urgente' : 'programada';
-
-            $parcelas[] = [
-                'status' => $status,
-                'data' => $dataSugerida <= $hoje ? $hoje : $dataSugerida,
-                'data_necessidade' => $dataNecessidade,
-                'quantidade' => $quantidadeFinal,
-                'quantidade_base' => $quantidadeBase,
-                'setup' => $setupPercentual,
-            ];
-
-            // Injeta a quantidade que chega na data da necessidade e propaga pra frente —
-            // o saldo simulado passa a refletir essa compra nos dias seguintes, permitindo
-            // achar a PRÓXIMA necessidade real em vez de parar na primeira.
-            for ($k = $i; $k < $n; $k++) {
-                $saldoPorDia[$k] += $quantidadeFinal;
+        // Piso de ação = o maior entre o Estoque de Segurança calculado e a quantidade
+        // equivalente ao Estoque Mínimo (dias) cadastrado, contados a partir do mês da
+        // revisão — reage antes de furar o mínimo, não só quando o saldo já é negativo.
+        $fimMinChave = $checkpoint->modify("+{$minDias} days")->format('Y-m-d');
+        $minQtd = 0.0;
+        foreach ($demandaPorData as $d => $q) {
+            if ($d >= $chaveCheckpoint && $d <= $fimMinChave) {
+                $minQtd += $q;
             }
+        }
+        $pisoAcao = max($segurancaQtd, $minQtd);
+
+        // Só age agora se o furo acontecer dentro do prazo de reação (até a próxima
+        // revisão mensal + Lead Time) — um furo mais distante espera a revisão do mês dele.
+        $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days"));
+        $iFimUrgencia = $indicePorData[$fimUrgencia->format('Y-m-d')] ?? ($n - 1);
+
+        $piorSaldo = null;
+        $iPior = null;
+        for ($k = $iCheckpoint; $k <= $iFimUrgencia; $k++) {
+            if ($piorSaldo === null || $saldoPorDia[$k] < $piorSaldo) {
+                $piorSaldo = $saldoPorDia[$k];
+                $iPior = $k;
+            }
+        }
+
+        if ($piorSaldo === null || $piorSaldo >= $pisoAcao) {
+            continue; // nada a fazer nesta revisão
+        }
+
+        // $dias[$iPior] é o dia do evento que causa o furo. A necessidade real, pra fins de
+        // planejamento, é sempre 30 dias antes (tempo de receber, conferir e disponibilizar).
+        $dataNecessidade = $dias[$iPior]->modify('-30 days');
+        $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
+
+        // Quantidade: cobre o pior saldo dentro da PRÓPRIA janela de urgência (mês da
+        // revisão + Lead Time) — o lote fica proporcional ao problema real desse mês, sem
+        // olhar mais além (é isso que faz o lote ficar pequeno/mensal em vez de somar tudo
+        // de uma janela larga). O Estoque Máximo (dias) cadastrado segue usado só como
+        // referência de excesso/alerta (no Dashboard e no status desta tela), não entra
+        // mais no tamanho do lote — senão voltaria a inflar a parcela com necessidades
+        // distantes que ainda nem estão perto de virar problema.
+        $quantidadeAlvo = $pisoAcao - $piorSaldo;
+        if ($quantidadeAlvo <= 0) {
+            continue;
+        }
+        $quantidadeBase = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : $quantidadeAlvo;
+
+        // Setup (% de perda/scrap) aplicado por último, depois de todo o cálculo de netting
+        // e arredondamento de MOQ. A quantidade FÍSICA que chega de fato é a final (com
+        // setup) — é ela que volta pra simulação pra achar a próxima parcela.
+        $quantidadeFinal = $setupPercentual > 0
+            ? $quantidadeBase * (1 + $setupPercentual / 100)
+            : $quantidadeBase;
+
+        $status = $dataSugerida <= $hoje ? 'urgente' : 'programada';
+
+        $parcelas[] = [
+            'status' => $status,
+            'data' => $dataSugerida <= $hoje ? $hoje : $dataSugerida,
+            'data_necessidade' => $dataNecessidade,
+            'quantidade' => $quantidadeFinal,
+            'quantidade_base' => $quantidadeBase,
+            'setup' => $setupPercentual,
+        ];
+
+        // Injeta a quantidade a partir do dia da necessidade em diante, pra que as próximas
+        // revisões mensais já considerem essa compra na simulação.
+        for ($k = $iPior; $k < $n; $k++) {
+            $saldoPorDia[$k] += $quantidadeFinal;
         }
     }
 
