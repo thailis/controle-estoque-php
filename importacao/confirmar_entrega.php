@@ -340,9 +340,12 @@ if ($resultContagem) {
         .table-confirmar th:nth-child(6), .table-confirmar td:nth-child(6) { width: 110px; }
         .table-confirmar th:nth-child(7), .table-confirmar td:nth-child(7) { width: 150px; }
         .table-confirmar th:nth-child(8), .table-confirmar td:nth-child(8) { width: 170px; }
-        .table-confirmar td.description-cell,
-        .table-confirmar .description-cell {
-            display: block;
+        /* A classe .description-cell (dashboard.css) é aplicada direto no <td>,
+           não numa <span> interna — por isso NUNCA se troca o display dele pra
+           "block" aqui: isso tira o <td> do modelo de tabela e desalinha a
+           linha inteira (é exatamente o que causou o desencaixe). Só se ajusta
+           quebra de texto e largura máxima, mantendo display: table-cell. */
+        .table-confirmar td.description-cell {
             max-width: none;
             white-space: normal;
             overflow-wrap: break-word;
