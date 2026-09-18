@@ -332,6 +332,14 @@ if ($resultContagem) {
            por Follow/Processos/Pagamento) cada coluna fica com largura previsível e
            só a Descrição absorve o espaço que sobra. */
         .table-confirmar { table-layout: fixed; }
+        /* Sem isso, o navegador usa "vertical-align: baseline" por padrão em
+           <td>, então células com texto em uma linha só (Fornecedor) e
+           células com texto quebrando em duas linhas (Descrição) alinham
+           pelo TEXTO, não pelo topo/meio da célula — isso faz a linha
+           divisória entre registros parecer "desencaixada" de uma coluna
+           pra outra, mesmo com a altura da linha sendo a mesma. Forçando
+           "middle" em todas as células, elas ficam centralizadas juntas. */
+        .table-confirmar td, .table-confirmar th { vertical-align: middle; }
         .table-confirmar th:nth-child(1), .table-confirmar td:nth-child(1) { width: 110px; }
         .table-confirmar th:nth-child(2), .table-confirmar td:nth-child(2) { width: 150px; }
         .table-confirmar th:nth-child(3), .table-confirmar td:nth-child(3) { width: 130px; }
@@ -340,12 +348,16 @@ if ($resultContagem) {
         .table-confirmar th:nth-child(6), .table-confirmar td:nth-child(6) { width: 110px; }
         .table-confirmar th:nth-child(7), .table-confirmar td:nth-child(7) { width: 150px; }
         .table-confirmar th:nth-child(8), .table-confirmar td:nth-child(8) { width: 170px; }
-        /* A classe .description-cell (dashboard.css) é aplicada direto no <td>,
-           não numa <span> interna — por isso NUNCA se troca o display dele pra
-           "block" aqui: isso tira o <td> do modelo de tabela e desalinha a
-           linha inteira (é exatamente o que causou o desencaixe). Só se ajusta
-           quebra de texto e largura máxima, mantendo display: table-cell. */
+        /* A classe .description-cell do dashboard.css (compartilhada com Follow/
+           Processos/Pagamento) já vem com "display: block" — funciona lá, mas
+           aqui, aplicada direto no <td>, tira a célula do modelo de tabela e
+           desalinha a linha inteira (foi a causa real do desencaixe). Por isso
+           é preciso FORÇAR "display: table-cell" de volta aqui — só remover o
+           "block" da regra não bastava, porque cada propriedade CSS é resolvida
+           separadamente pela cascata: sem essa linha, a regra do dashboard.css
+           continua sendo a única que declara "display", e prevalece. */
         .table-confirmar td.description-cell {
+            display: table-cell;
             max-width: none;
             white-space: normal;
             overflow-wrap: break-word;
