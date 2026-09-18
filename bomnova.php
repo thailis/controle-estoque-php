@@ -95,6 +95,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     exit;
 }
 
+// ---------- Toggle MRP / Planejamento via AJAX (sem recarregar a página) ----------
+// Mesma regra dos handlers com reload logo abaixo, só que devolve JSON pra JS
+// trocar as duas badges no lugar (MRP força Planejamento junto quando muda
+// pra N, então o retorno já traz o estado das duas).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_mrp') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginais = [];
+    foreach ($campos as $campo) {
+        $valoresOriginais[] = (string) ($_POST['orig_' . $campo] ?? '');
+    }
+
+    $mrpAtual = strtoupper(trim((string) ($_POST['mrp_atual'] ?? '')));
+    $novoMrp = ($mrpAtual === 'N') ? 'S' : 'N';
+    $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
+
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
+
+    $stmtToggle = mysqli_prepare($conn, $sqlToggle);
+    $tiposToggle = str_repeat('s', 2 + count($campos));
+    $parametrosToggle = array_merge([$novoMrp, $novoPlanejamento], $valoresOriginais);
+    mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
+    mysqli_stmt_execute($stmtToggle);
+    $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
+    mysqli_stmt_close($stmtToggle);
+
+    if ($linhasAfetadas === 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+        exit;
+    }
+
+    echo json_encode([
+        'ok' => true,
+        'mrpTexto' => $novoMrp,
+        'mrpClasse' => $novoMrp === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planTexto' => $novoPlanejamento,
+        'planClasse' => $novoPlanejamento === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planBloqueado' => $novoMrp === 'N',
+    ]);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_planejamento') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+
+    $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresOriginais = [];
+    foreach ($campos as $campo) {
+        $valoresOriginais[] = (string) ($_POST['orig_' . $campo] ?? '');
+    }
+
+    $mrpAtualPlan = strtoupper(trim((string) ($_POST['mrp_atual'] ?? '')));
+    $planejamentoAtual = strtoupper(trim((string) ($_POST['planejamento_atual'] ?? '')));
+
+    if ($mrpAtualPlan === 'N') {
+        echo json_encode(['ok' => false, 'erro' => 'MRP=N já força Planejamento=N — reabra o MRP primeiro pra poder mudar isso.']);
+        exit;
+    }
+
+    $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
+
+    $stmtToggle = mysqli_prepare($conn, $sqlToggle);
+    $tiposToggle = str_repeat('s', 1 + count($campos));
+    $parametrosToggle = array_merge([$novoPlanejamentoToggle], $valoresOriginais);
+    mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
+    mysqli_stmt_execute($stmtToggle);
+    $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
+    mysqli_stmt_close($stmtToggle);
+
+    if ($linhasAfetadas === 0) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+        exit;
+    }
+
+    echo json_encode([
+        'ok' => true,
+        'mrpTexto' => $mrpAtualPlan,
+        'mrpClasse' => $mrpAtualPlan === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planTexto' => $novoPlanejamentoToggle,
+        'planClasse' => $novoPlanejamentoToggle === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planBloqueado' => false,
+    ]);
+    exit;
+}
+
+// (Mantidos como fallback caso o JS não carregue — recarregam a página normalmente.)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
     exigirComprador();
     $campos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
@@ -578,30 +678,35 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         </form>
                                     </td>
                                     <td>
-                                        <?php if ($mrp === 'N'): ?>
-                                            <span class="badge badge-mrp-n" title="MRP=N já força Planejamento=N — reabra o MRP primeiro pra poder mudar isso">N</span>
-                                        <?php else: ?>
-                                            <form method="POST" class="d-inline m-0">
-                                                <input type="hidden" name="acao" value="toggle_planejamento">
-                                                <input type="hidden" name="mrp_atual" value="<?php echo htmlspecialchars($mrp); ?>">
-                                                <input type="hidden" name="planejamento_atual" value="<?php echo htmlspecialchars($planejamento); ?>">
-                                                <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                                                <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
-                                                <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_tipo" value="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_fornecedor" value="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_codigo_componente" value="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_pn" value="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_descricao" value="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_consumo" value="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>">
-                                                <input type="hidden" name="orig_um" value="<?php echo htmlspecialchars($row['um'] ?? ''); ?>">
-                                                <button type="submit" class="badge border-0 mrp-toggle-btn <?php echo $planBadgeClasse; ?>" title="Clique pra alternar — 'N' tira o componente do Dashboard e do Planejamento de Compras, mas ele continua aparecendo na Evolução Geral">
-                                                    <?php echo htmlspecialchars($planejamento); ?>
-                                                </button>
-                                            </form>
-                                        <?php endif; ?>
+                                        <?php
+                                            // Sempre o mesmo botão (nunca troca pra <span>) — com MRP=N ele só
+                                            // fica desabilitado. Isso permite o JS trocar texto/classe/estado
+                                            // via AJAX sem precisar reconstruir a célula inteira.
+                                            $planBloqueado = $mrp === 'N';
+                                            $planTitle = $planBloqueado
+                                                ? 'MRP=N já força Planejamento=N — reabra o MRP primeiro pra poder mudar isso'
+                                                : "Clique pra alternar — 'N' tira o componente do Dashboard e do Planejamento de Compras, mas ele continua aparecendo na Evolução Geral";
+                                        ?>
+                                        <form method="POST" class="d-inline m-0">
+                                            <input type="hidden" name="acao" value="toggle_planejamento">
+                                            <input type="hidden" name="mrp_atual" value="<?php echo htmlspecialchars($mrp); ?>">
+                                            <input type="hidden" name="planejamento_atual" value="<?php echo htmlspecialchars($planejamento); ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_tipo" value="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_fornecedor" value="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_codigo_componente" value="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_pn" value="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_descricao" value="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_consumo" value="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>">
+                                            <input type="hidden" name="orig_um" value="<?php echo htmlspecialchars($row['um'] ?? ''); ?>">
+                                            <button type="submit" class="badge border-0 mrp-toggle-btn <?php echo $planBadgeClasse; ?>" <?php echo $planBloqueado ? 'disabled' : ''; ?> title="<?php echo htmlspecialchars($planTitle); ?>">
+                                                <?php echo htmlspecialchars($planejamento); ?>
+                                            </button>
+                                        </form>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -630,6 +735,67 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // MRP e Planejamento agora trocam a badge por AJAX (sem recarregar a
+        // página). Alternar o MRP também pode mudar o Planejamento junto (a
+        // regra "MRP=N força Planejamento=N"), então o retorno do servidor
+        // já traz o estado das duas badges pra atualizar as duas de uma vez.
+        document.addEventListener('submit', function (evento) {
+            const form = evento.target;
+            const acaoInput = form.querySelector('input[name="acao"]');
+            if (!acaoInput) return;
+            const acao = acaoInput.value;
+
+            if (acao !== 'toggle_mrp' && acao !== 'toggle_planejamento') {
+                return;
+            }
+
+            evento.preventDefault();
+            const dados = new URLSearchParams(new FormData(form));
+            dados.set('acao', 'ajax_' + acao);
+
+            fetch('bomnova.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados.toString(),
+            })
+                .then((resposta) => resposta.json())
+                .then((json) => {
+                    if (!json.ok) {
+                        alert(json.erro || 'Não foi possível atualizar.');
+                        return;
+                    }
+                    const linha = form.closest('tr');
+                    if (!linha) return;
+
+                    const formMrp = linha.querySelector('input[value="toggle_mrp"]')?.closest('form');
+                    const formPlan = linha.querySelector('input[value="toggle_planejamento"]')?.closest('form');
+
+                    if (formMrp) {
+                        const botaoMrp = formMrp.querySelector('button');
+                        botaoMrp.textContent = json.mrpTexto;
+                        botaoMrp.classList.remove('badge-mrp-s', 'badge-mrp-n');
+                        botaoMrp.classList.add(json.mrpClasse);
+                        formMrp.querySelector('input[name="mrp_atual"]').value = json.mrpTexto;
+                    }
+                    if (formPlan) {
+                        const botaoPlan = formPlan.querySelector('button');
+                        botaoPlan.textContent = json.planTexto;
+                        botaoPlan.classList.remove('badge-mrp-s', 'badge-mrp-n');
+                        botaoPlan.classList.add(json.planClasse);
+                        botaoPlan.disabled = json.planBloqueado;
+                        botaoPlan.title = json.planBloqueado
+                            ? 'MRP=N já força Planejamento=N — reabra o MRP primeiro pra poder mudar isso'
+                            : "Clique pra alternar — 'N' tira o componente do Dashboard e do Planejamento de Compras, mas ele continua aparecendo na Evolução Geral";
+                        formPlan.querySelector('input[name="mrp_atual"]').value = json.mrpTexto;
+                        formPlan.querySelector('input[name="planejamento_atual"]').value = json.planTexto;
+                    }
+                })
+                .catch(() => {
+                    alert('Erro de conexão ao atualizar. Tente de novo.');
+                });
+        });
+    </script>
     <script>
         window.INLINE_EDIT_ENDPOINT = 'bomnova.php';
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
