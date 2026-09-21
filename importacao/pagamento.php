@@ -144,16 +144,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $fornecedor = $dadosProcesso['fornecedor'];
         $moeda = $dadosProcesso['moeda'];
         $total = $dadosProcesso['total'];
-        $advanced1 = parseNumeroBrPagamento(trim($_POST['advanced1_manual'] ?? ''));
-        $advanced2 = parseNumeroBrPagamento(trim($_POST['advanced2_manual'] ?? ''));
-        $balance = parseNumeroBrPagamento(trim($_POST['balance_manual'] ?? ''));
+        // Advanced1/Advanced2/Balance/Despachante/Numerário final/Valor
+        // final/Diferença saíram do cadastro manual — ficam null aqui (a
+        // coluna continua existindo no banco, só não é mais preenchida por
+        // esse formulário; pode continuar vindo de outro fluxo/import).
+        $advanced1 = null;
+        $advanced2 = null;
+        $balance = null;
         $liquidacaoOr = 'aberto';
-        $despachante = trim($_POST['despachante_manual'] ?? '') ?: null;
+        $despachante = null;
         $numerarioInicial = parseDataPagamento(trim($_POST['numerario_inicial_manual'] ?? ''));
         $valorInicial = parseNumeroBrPagamento(trim($_POST['valor_inicial_manual'] ?? ''));
-        $numerarioFinal = parseDataPagamento(trim($_POST['numerario_final_manual'] ?? ''));
-        $valorFinal = parseNumeroBrPagamento(trim($_POST['valor_final_manual'] ?? ''));
-        $diferenca = parseNumeroBrPagamento(trim($_POST['diferenca_manual'] ?? ''));
+        $numerarioFinal = null;
+        $valorFinal = null;
+        $diferenca = null;
         $liquidacaoNa = 'aberto';
         $rb = trim($_POST['rb_manual'] ?? '') ?: null;
         $oa = trim($_POST['oa_manual'] ?? '') ?: null;
@@ -187,8 +191,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
     $camposTexto = ['rb', 'oa'];
-    $camposData = ['numerario_inicial', 'numerario_final'];
-    $camposNumericos = ['valor_inicial', 'valor_final', 'diferenca'];
+    $camposData = ['numerario_inicial'];
+    $camposNumericos = ['valor_inicial'];
     $todosCampos = array_merge($camposTexto, $camposData, $camposNumericos);
 
     if ($id <= 0 || !in_array($campo, $todosCampos, true)) {
@@ -410,7 +414,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     <input type="hidden" name="acao" value="cadastro_manual">
                     <div class="col-md-3">
                         <label class="form-label">Processo *</label>
-                        <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcessoPagamento(); calcularBalancePagamento();">
+                        <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcessoPagamento();">
                             <option value="">Escolha um processo já cadastrado...</option>
                             <?php foreach ($processosDisponiveis as $p): ?>
                                 <option value="<?php echo h($p['processo']); ?>"
@@ -443,48 +447,14 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                         <label class="form-label">Moeda <small class="text-muted">(do processo)</small></label>
                         <input type="text" id="preview_moeda" class="form-control" disabled placeholder="—">
                     </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Total <small class="text-muted">(do processo)</small></label>
-                        <input type="text" id="preview_total" class="form-control" disabled placeholder="—">
-                    </div>
                     <div class="col-12"><hr class="my-1"></div>
                     <div class="col-md-2">
-                        <label class="form-label">Advanced 1</label>
-                        <input type="text" name="advanced1_manual" id="advanced1_manual" class="form-control" oninput="calcularBalancePagamento()">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Advanced 2</label>
-                        <input type="text" name="advanced2_manual" id="advanced2_manual" class="form-control" oninput="calcularBalancePagamento()">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Balance <small class="text-muted">(adv1+adv2−total)</small></label>
-                        <input type="text" id="balance_manual_display" class="form-control" readonly placeholder="—">
-                        <input type="hidden" name="balance_manual" id="balance_manual">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Despachante</label>
-                        <input type="text" name="despachante_manual" class="form-control">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Numerário inicial</label>
+                        <label class="form-label">Numerário</label>
                         <input type="text" name="numerario_inicial_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Valor inicial</label>
-                        <input type="text" name="valor_inicial_manual" id="valor_inicial_manual" class="form-control" oninput="calcularDiferencaPagamento()">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Numerário final</label>
-                        <input type="text" name="numerario_final_manual" class="form-control" placeholder="dd/mm/aaaa">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Valor final</label>
-                        <input type="text" name="valor_final_manual" id="valor_final_manual" class="form-control" oninput="calcularDiferencaPagamento()">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Diferença <small class="text-muted">(final−inicial)</small></label>
-                        <input type="text" id="diferenca_manual_display" class="form-control" readonly placeholder="—">
-                        <input type="hidden" name="diferenca_manual" id="diferenca_manual">
+                        <label class="form-label">Valor</label>
+                        <input type="text" name="valor_inicial_manual" id="valor_inicial_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">RB</label>
@@ -525,18 +495,15 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1300px;">
+                <table class="table mrp-table mb-0" style="min-width: 1100px;">
                     <thead>
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
-                            <th>Numerário inicial</th>
-                            <th>Valor inicial</th>
-                            <th>Numerário final</th>
-                            <th>Valor final</th>
-                            <th>Diferença</th>
+                            <th>Numerário</th>
+                            <th>Valor</th>
                             <th>RB</th>
                             <th>OA</th>
                             <th class="no-print">Excluir</th>
@@ -544,7 +511,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="12" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="9" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -578,9 +545,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_inicial" data-valor-bruto="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>"><?php echo numeroBr($r['valor_inicial']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_final" data-valor-bruto="<?php echo $r['numerario_final'] ? h(dataBr($r['numerario_final'])) : ''; ?>"><?php echo dataBr($r['numerario_final']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_final" data-valor-bruto="<?php echo $r['valor_final'] !== null ? numeroBr($r['valor_final']) : ''; ?>"><?php echo numeroBr($r['valor_final']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="diferenca" data-valor-bruto="<?php echo $r['diferenca'] !== null ? numeroBr($r['diferenca']) : ''; ?>"><?php echo numeroBr($r['diferenca']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="rb" data-valor-bruto="<?php echo h($r['rb'] ?? ''); ?>"><?php echo h($r['rb'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>">
                                         <?php if (!empty($r['oa'])): ?>
@@ -631,42 +595,6 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
             document.getElementById('preview_po').value = opcao.dataset.po || '—';
             document.getElementById('preview_fornecedor').value = opcao.dataset.fornecedor || '—';
             document.getElementById('preview_moeda').value = opcao.dataset.moeda || '—';
-            document.getElementById('preview_total').value = opcao.dataset.total || '—';
-        }
-
-        function parseNumeroBrJs(texto) {
-            if (!texto) return 0;
-            texto = String(texto).trim();
-            if (texto.includes(',')) {
-                texto = texto.replace(/\./g, '').replace(',', '.');
-            }
-            const n = parseFloat(texto);
-            return isNaN(n) ? 0 : n;
-        }
-
-        function formatarNumeroBrJs(n) {
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        }
-
-        function calcularBalancePagamento() {
-            const select = document.getElementById('processo_manual');
-            const opcao = select.options[select.selectedIndex];
-            const total = parseNumeroBrJs(opcao ? opcao.dataset.total : '');
-            const adv1 = parseNumeroBrJs(document.getElementById('advanced1_manual').value);
-            const adv2 = parseNumeroBrJs(document.getElementById('advanced2_manual').value);
-            const balance = adv1 + adv2 - total;
-            const textoBalance = formatarNumeroBrJs(balance);
-            document.getElementById('balance_manual_display').value = textoBalance;
-            document.getElementById('balance_manual').value = textoBalance;
-        }
-
-        function calcularDiferencaPagamento() {
-            const valorInicial = parseNumeroBrJs(document.getElementById('valor_inicial_manual').value);
-            const valorFinal = parseNumeroBrJs(document.getElementById('valor_final_manual').value);
-            const diferenca = valorFinal - valorInicial;
-            const textoDiferenca = formatarNumeroBrJs(diferenca);
-            document.getElementById('diferenca_manual_display').value = textoDiferenca;
-            document.getElementById('diferenca_manual').value = textoDiferenca;
         }
     </script>
     <script>
