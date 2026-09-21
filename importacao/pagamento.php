@@ -136,14 +136,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             $mensagens[] = "❌ O processo \"$processo\" não existe em Processos. Cadastre ele lá primeiro.";
         } else {
         $stmt = mysqli_prepare($conn, "
-            INSERT INTO pagamento (processo, status, po, fornecedor, moeda, total, advanced1, advanced2, balance, liquidacao_or, despachante, numerario_inicial, valor_inicial, numerario_final, valor_final, diferenca, liquidacao_na, rb, oa)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pagamento (processo, status, po, fornecedor, cod_twin, data_twin, moeda, total, advanced1, advanced2, balance, liquidacao_or, despachante, numerario_inicial, valor_inicial, numerario_final, valor_final, diferenca, liquidacao_na, rb, oa)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $status = $dadosProcesso['status'];
         $po = $dadosProcesso['po'];
         $fornecedor = $dadosProcesso['fornecedor'];
         $moeda = $dadosProcesso['moeda'];
         $total = $dadosProcesso['total'];
+        $codTwin = trim($_POST['cod_twin_manual'] ?? '') ?: null;
+        $dataTwin = parseDataPagamento(trim($_POST['data_twin_manual'] ?? ''));
         // Advanced1/Advanced2/Balance/Despachante/Numerário final/Valor
         // final/Diferença saíram do cadastro manual — ficam null aqui (a
         // coluna continua existindo no banco, só não é mais preenchida por
@@ -163,8 +165,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $oa = trim($_POST['oa_manual'] ?? '') ?: null;
 
         mysqli_stmt_bind_param(
-            $stmt, 'sssssddddsssdsddsss',
-            $processo, $status, $po, $fornecedor, $moeda, $total, $advanced1, $advanced2, $balance,
+            $stmt, 'sssssssddddsssdsddsss',
+            $processo, $status, $po, $fornecedor, $codTwin, $dataTwin, $moeda, $total, $advanced1, $advanced2, $balance,
             $liquidacaoOr, $despachante, $numerarioInicial, $valorInicial, $numerarioFinal, $valorFinal,
             $diferenca, $liquidacaoNa, $rb, $oa
         );
@@ -190,8 +192,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    $camposTexto = ['rb', 'oa'];
-    $camposData = ['numerario_inicial'];
+    $camposTexto = ['rb', 'oa', 'cod_twin'];
+    $camposData = ['numerario_inicial', 'data_twin'];
     $camposNumericos = ['valor_inicial'];
     $todosCampos = array_merge($camposTexto, $camposData, $camposNumericos);
 
@@ -277,10 +279,10 @@ if (isset($_GET['exportar'])) {
     header('Content-Disposition: attachment; filename="pagamento.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['processo', 'status', 'po', 'fornecedor', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa'], ';', '"', '');
+    fputcsv($saida, ['processo', 'status', 'po', 'fornecedor', 'cod_twin', 'data_twin', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
-            $linha['processo'], $linha['status'], $linha['po'], $linha['fornecedor'], $linha['moeda'],
+            $linha['processo'], $linha['status'], $linha['po'], $linha['fornecedor'], $linha['cod_twin'], $linha['data_twin'], $linha['moeda'],
             $linha['total'] !== null ? number_format((float) $linha['total'], 2, ',', '') : '',
             $linha['advanced1'] !== null ? number_format((float) $linha['advanced1'], 2, ',', '') : '',
             $linha['advanced2'] !== null ? number_format((float) $linha['advanced2'], 2, ',', '') : '',
@@ -449,7 +451,15 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </div>
                     <div class="col-12"><hr class="my-1"></div>
                     <div class="col-md-2">
-                        <label class="form-label">Numerário</label>
+                        <label class="form-label">Cod. Twin.</label>
+                        <input type="text" name="cod_twin_manual" class="form-control">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Data</label>
+                        <input type="text" name="data_twin_manual" class="form-control" placeholder="dd/mm/aaaa">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Vencimento</label>
                         <input type="text" name="numerario_inicial_manual" class="form-control" placeholder="dd/mm/aaaa">
                     </div>
                     <div class="col-md-2">
@@ -495,14 +505,16 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1100px;">
+                <table class="table mrp-table mb-0" style="min-width: 1350px;">
                     <thead>
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
-                            <th>Numerário</th>
+                            <th>Cod. Twin.</th>
+                            <th>Data</th>
+                            <th>Vencimento</th>
                             <th>Valor</th>
                             <th>RB</th>
                             <th>OA</th>
@@ -511,7 +523,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="9" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="11" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -543,6 +555,8 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="cod_twin" data-valor-bruto="<?php echo h($r['cod_twin'] ?? ''); ?>"><?php echo h($r['cod_twin'] ?: '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="data_twin" data-valor-bruto="<?php echo $r['data_twin'] ? h(dataBr($r['data_twin'])) : ''; ?>"><?php echo dataBr($r['data_twin']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_inicial" data-valor-bruto="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>"><?php echo numeroBr($r['valor_inicial']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="rb" data-valor-bruto="<?php echo h($r['rb'] ?? ''); ?>"><?php echo h($r['rb'] ?: '—'); ?></td>
