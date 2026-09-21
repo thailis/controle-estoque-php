@@ -81,11 +81,16 @@ function normalizarTextoProcessos(string $texto): string
 
 // Gera o código do processo automaticamente (só usado no cadastro manual —
 // a importação de CSV continua trazendo o processo pronto do arquivo).
-// Formato: Y + ano(2) + modal(1) + planta(1) + categoria(1) + sequencial(3)
-// Ex.: Y26A1P001 = Y, 2026, Aéreo, planta terminada em 1, Project, sequencial 001.
+// Formato: Y + ano(2) + modal(1) + planta(1) + categoria(1) + sequencial(4+)
+// Ex.: Y26A1P0001 = Y, 2026, Aéreo, planta terminada em 1, Project, sequencial 0001.
 // O sequencial é um contador ÚNICO GERAL (não reinicia por ano/modal/planta/categoria)
 // — pega o maior sequencial já usado em qualquer processo gerado nesse formato
-// e soma 1, então nunca colide mesmo se a combinação se repetir.
+// (inclusive os que vieram prontos da planilha, contanto que sigam o mesmo
+// formato) e soma 1, então nunca colide mesmo se a combinação se repetir.
+// Sempre com no mínimo 4 dígitos (0001, 0002... 0046... 0099, 0100... 0999,
+// 1000, 1001...) — cresce sozinho sem zero à esquerda quando passar de 4
+// dígitos, e a busca abaixo aceita qualquer quantidade de dígitos no final
+// (não só 4), então continua contando certo mesmo depois de passar de 9999.
 function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string $categoria): array
 {
     $modalMapa = [
@@ -118,17 +123,21 @@ function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string
     $ano = date('y'); // 2 dígitos
 
     // Maior sequencial já usado em qualquer processo no formato
-    // Y+AA+letra+dígito+letra+NNN, sem filtrar por ano/modal/planta/categoria —
-    // é um contador único pra todos.
+    // Y+AA+letra+dígito+letra+dígitos, sem filtrar por ano/modal/planta/
+    // categoria — é um contador único pra todos. O prefixo (Y+ano+modal+
+    // planta+categoria) sempre tem 6 caracteres fixos, então SUBSTRING a
+    // partir da posição 7 pega o sequencial inteiro — 3, 4, 5 dígitos, tanto
+    // faz — em vez de travar num tamanho fixo (era isso que fazia o contador
+    // "esquecer" os códigos assim que passassem de 999/9999).
     $resultado = mysqli_query($conn, "
-        SELECT MAX(CAST(RIGHT(processo, 3) AS UNSIGNED)) AS max_seq
+        SELECT MAX(CAST(SUBSTRING(processo, 7) AS UNSIGNED)) AS max_seq
         FROM processos
-        WHERE processo REGEXP '^Y[0-9]{2}[A-Z][0-9][A-Z][0-9]{3}$'
+        WHERE processo REGEXP '^Y[0-9]{2}[A-Z][0-9][A-Z][0-9]+$'
     ");
     $maxSeq = (int) (mysqli_fetch_assoc($resultado)['max_seq'] ?? 0);
     $proximoSeq = $maxSeq + 1;
 
-    $codigo = 'Y' . $ano . $modalLetra . $plantaDigito . $categoriaLetra . str_pad((string) $proximoSeq, 3, '0', STR_PAD_LEFT);
+    $codigo = 'Y' . $ano . $modalLetra . $plantaDigito . $categoriaLetra . str_pad((string) $proximoSeq, 4, '0', STR_PAD_LEFT);
     return ['codigo' => $codigo, 'erro' => null];
 }
 
