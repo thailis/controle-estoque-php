@@ -141,6 +141,36 @@ function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string
     return ['codigo' => $codigo, 'erro' => null];
 }
 
+// ---------- Preview do código do processo (AJAX, antes de salvar) ----------
+// Chama a mesma gerarCodigoProcesso() usada no cadastro de verdade, só que
+// sem gravar nada — é só pra mostrar na tela o que o código VAI ficar, à
+// medida que Modal/Planta/Categoria vão sendo preenchidos. O sequencial é
+// sempre "o maior já usado + 1" na hora da consulta, então esse preview pode
+// mudar se outra pessoa cadastrar um processo entre o preview e o Salvar de
+// verdade — por isso o código final de fato só é gerado (e gravado) no
+// cadastro_manual abaixo, nunca reaproveitando o que veio desse preview.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_preview_codigo_processo') {
+    header('Content-Type: application/json; charset=UTF-8');
+
+    $modalPreview = trim($_POST['modal'] ?? '');
+    $plantaPreview = trim($_POST['planta'] ?? '');
+    $categoriaPreview = trim($_POST['categoria'] ?? '');
+
+    if ($modalPreview === '' || $plantaPreview === '' || $categoriaPreview === '') {
+        echo json_encode(['ok' => false, 'erro' => 'Preencha Categoria, Planta e Modal pra ver o código.']);
+        exit;
+    }
+
+    $geracaoPreview = gerarCodigoProcesso($conn, $modalPreview, $plantaPreview, $categoriaPreview);
+    if ($geracaoPreview['codigo'] === null) {
+        echo json_encode(['ok' => false, 'erro' => $geracaoPreview['erro']]);
+        exit;
+    }
+
+    echo json_encode(['ok' => true, 'codigo' => $geracaoPreview['codigo']]);
+    exit;
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
@@ -909,8 +939,8 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <form method="POST" class="row g-3 mt-3">
                     <input type="hidden" name="acao" value="cadastro_manual">
                     <div class="col-md-2">
-                        <label class="form-label">Processo <small class="text-muted">(gerado ao salvar)</small></label>
-                        <input type="text" class="form-control" value="Será gerado automaticamente" disabled>
+                        <label class="form-label">Processo <small class="text-muted">(prévia — só confirma ao salvar)</small></label>
+                        <input type="text" id="preview_codigo_processo" class="form-control" value="Preencha Categoria, Planta e Modal" disabled>
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Solicitação *</label>
@@ -918,11 +948,11 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Categoria *</label>
-                        <input type="text" name="categoria_manual" id="categoria_manual" class="form-control" placeholder="tooling / project / other" required oninput="aplicarPadraoControlaEstoqueTooling()">
+                        <input type="text" name="categoria_manual" id="categoria_manual" class="form-control" placeholder="tooling / project / other" required oninput="aplicarPadraoControlaEstoqueTooling(); atualizarPreviewCodigoProcesso();">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Planta *</label>
-                        <input type="text" name="planta_manual" class="form-control" required>
+                        <input type="text" name="planta_manual" id="planta_manual" class="form-control" required oninput="atualizarPreviewCodigoProcesso()">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">PO</label>
@@ -930,7 +960,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Modal *</label>
-                        <input type="text" name="modal_manual" class="form-control" placeholder="aereo / sea / road / courrier" required>
+                        <input type="text" name="modal_manual" id="modal_manual" class="form-control" placeholder="aereo / sea / road / courrier" required oninput="atualizarPreviewCodigoProcesso()">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Projeto</label>
@@ -1223,6 +1253,53 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             if (!campoCategoria || !checkboxControlaEstoque) return;
             const categoria = campoCategoria.value.trim().toLowerCase();
             checkboxControlaEstoque.checked = categoria !== 'tooling';
+        }
+
+        // Prévia do código do processo — consulta o servidor (o sequencial
+        // depende do maior já usado no banco, não dá pra calcular só no
+        // navegador) sempre que Categoria/Planta/Modal mudam. É só uma
+        // prévia: o código de verdade é gerado (e gravado) só ao clicar em
+        // Salvar, então pode mudar se outra pessoa cadastrar um processo
+        // entre a prévia e o salvamento. Debounce de 400ms pra não disparar
+        // uma requisição a cada letra digitada.
+        let debouncePreviewCodigoProcesso = null;
+        function atualizarPreviewCodigoProcesso() {
+            clearTimeout(debouncePreviewCodigoProcesso);
+            debouncePreviewCodigoProcesso = setTimeout(buscarPreviewCodigoProcesso, 400);
+        }
+
+        function buscarPreviewCodigoProcesso() {
+            const campoPreview = document.getElementById('preview_codigo_processo');
+            const categoria = (document.getElementById('categoria_manual').value || '').trim();
+            const planta = (document.getElementById('planta_manual').value || '').trim();
+            const modal = (document.getElementById('modal_manual').value || '').trim();
+
+            if (!campoPreview) return;
+            if (!categoria || !planta || !modal) {
+                campoPreview.value = 'Preencha Categoria, Planta e Modal';
+                return;
+            }
+
+            campoPreview.value = 'Calculando...';
+            const dados = new URLSearchParams({
+                acao: 'ajax_preview_codigo_processo',
+                categoria: categoria,
+                planta: planta,
+                modal: modal,
+            });
+
+            fetch('processos.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados.toString(),
+            })
+                .then((resposta) => resposta.json())
+                .then((json) => {
+                    campoPreview.value = json.ok ? json.codigo : (json.erro || 'Não foi possível calcular.');
+                })
+                .catch(() => {
+                    campoPreview.value = 'Erro ao calcular a prévia.';
+                });
         }
 
         // Total = Quantidade × Preço. Nunca digitado — sempre recalculado.
