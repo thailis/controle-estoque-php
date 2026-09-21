@@ -513,10 +513,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $solicitacao = parseDataProcessos($get('solicitacao'));
 
                         // Aceita variações comuns no CSV (sim/não, s/n, yes/no, 1/0).
-                        // Sem a coluna no arquivo, ou com valor não reconhecido, assume
-                        // "sim" — a maioria dos itens de importação são de estoque normal.
+                        // Sem a coluna no arquivo, ou com valor não reconhecido, o padrão
+                        // passa a depender da categoria: "tooling" nasce "não controla
+                        // estoque" (é o padrão esperado pra tooling/amostra); as demais
+                        // categorias continuam nascendo "sim" (item normal de importação).
+                        // Isso é só o valor INICIAL — continua 100% editável depois, tanto
+                        // na tela (toggle Sim/Não) quanto reimportando o CSV.
                         $controlaEstoqueTexto = mb_strtolower($get('controla_estoque'), 'UTF-8');
-                        $controlaEstoque = in_array($controlaEstoqueTexto, ['nao', 'não', 'n', 'no', '0'], true) ? 'nao' : 'sim';
+                        $categoriaTextoCsv = mb_strtolower(trim($get('categoria')), 'UTF-8');
+                        if (in_array($controlaEstoqueTexto, ['sim', 's', 'yes', '1'], true)) {
+                            $controlaEstoque = 'sim';
+                        } elseif (in_array($controlaEstoqueTexto, ['nao', 'não', 'n', 'no', '0'], true)) {
+                            $controlaEstoque = 'nao';
+                        } else {
+                            $controlaEstoque = $categoriaTextoCsv === 'tooling' ? 'nao' : 'sim';
+                        }
 
                         $lote[] = [
                             $processo,
@@ -898,7 +909,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Categoria *</label>
-                        <input type="text" name="categoria_manual" class="form-control" placeholder="tooling / project / other" required>
+                        <input type="text" name="categoria_manual" id="categoria_manual" class="form-control" placeholder="tooling / project / other" required oninput="aplicarPadraoControlaEstoqueTooling()">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Planta *</label>
@@ -971,7 +982,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-3">
                         <div class="form-check mt-4">
-                            <input type="checkbox" name="controla_estoque_manual" id="controla_estoque_manual" class="form-check-input" checked>
+                            <input type="checkbox" name="controla_estoque_manual" id="controla_estoque_manual" class="form-check-input" checked onchange="controlaEstoqueManualTocadoPeloUsuario = true;">
                             <label class="form-check-label" for="controla_estoque_manual">Controla estoque (entra no Confirmar Entrega)</label>
                         </div>
                         <small class="text-muted">Desmarque pra tooling, amostra e itens que não devem alimentar o estoque do MRP.</small>
@@ -1190,6 +1201,19 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             }
             const n = parseFloat(texto);
             return isNaN(n) ? 0 : n;
+        }
+
+        // Categoria "tooling" pré-marca Controla estoque como "Não" ao digitar
+        // no cadastro manual — só um valor inicial sugerido: o checkbox continua
+        // 100% editável, e paramos de mexer nele assim que o usuário mesmo o tocar.
+        let controlaEstoqueManualTocadoPeloUsuario = false;
+        function aplicarPadraoControlaEstoqueTooling() {
+            if (controlaEstoqueManualTocadoPeloUsuario) return;
+            const campoCategoria = document.getElementById('categoria_manual');
+            const checkboxControlaEstoque = document.getElementById('controla_estoque_manual');
+            if (!campoCategoria || !checkboxControlaEstoque) return;
+            const categoria = campoCategoria.value.trim().toLowerCase();
+            checkboxControlaEstoque.checked = categoria !== 'tooling';
         }
 
         // Total = Quantidade × Preço. Nunca digitado — sempre recalculado.
