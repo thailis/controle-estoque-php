@@ -351,12 +351,17 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 100px; }
         .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 100px; }
         .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 100px; }
-        .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: auto; }
+        .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: 160px; }
         .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 130px; }
         .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 80px; }
         .table-follow td.celula-editavel {
             overflow-wrap: break-word;
         }
+        /* Mesmo ajuste feito em confirmar_entrega.php: sem isso, o navegador
+           usa vertical-align: baseline por padrão, então células com texto
+           quebrando em duas linhas alinham diferente das que têm texto numa
+           linha só, dando a impressão de linha "desencaixada". */
+        .table-follow td, .table-follow th { vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -526,7 +531,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table table-follow mb-0" style="min-width: 1650px;">
+                <table class="table mrp-table table-follow mb-0" style="min-width: 1580px;">
                     <thead>
                         <tr>
                             <th>Status</th>
