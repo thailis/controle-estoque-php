@@ -88,7 +88,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
     $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente'];
-    $camposData = ['etd', 'eta', 'prevista', 'efetiva'];
+    // ETA e Prevista NÃO entram mais aqui — viraram sempre calculadas (mesma
+    // fórmula do cadastro manual: ETA = ETD + Transit dias, Prevista = ETA +
+    // 7 dias) e travadas contra edição direta por duplo clique.
+    $camposData = ['etd', 'efetiva'];
     $camposNumero = ['ft_dias', 'transit_dias'];
 
     if ($id <= 0 || (!in_array($campo, $camposTexto, true) && !in_array($campo, $camposData, true) && !in_array($campo, $camposNumero, true))) {
@@ -123,7 +126,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
 
-    echo json_encode(['ok' => true, 'exibido' => $exibido]);
+    $resposta = ['ok' => true, 'exibido' => $exibido];
+
+    // ETD ou Transit mudaram -> ETA e Prevista têm que ser recalculadas e
+    // regravadas no banco (não só mostradas na tela), pra ficarem certas
+    // mesmo depois de um F5. Mesma fórmula do cadastro manual.
+    if ($campo === 'etd' || $campo === 'transit_dias') {
+        $stmtLinha = mysqli_prepare($conn, "SELECT etd, transit_dias FROM follow WHERE id = ?");
+        mysqli_stmt_bind_param($stmtLinha, 'i', $id);
+        mysqli_stmt_execute($stmtLinha);
+        $linhaAtualDatas = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtLinha));
+        mysqli_stmt_close($stmtLinha);
+
+        $novaEta = null;
+        $novaPrevista = null;
+        if (!empty($linhaAtualDatas['etd'])) {
+            $dataEtd = DateTimeImmutable::createFromFormat('!Y-m-d', $linhaAtualDatas['etd']);
+            if ($dataEtd) {
+                $transitAtual = (int) ($linhaAtualDatas['transit_dias'] ?? 0);
+                $dataEta = $dataEtd->modify("+{$transitAtual} days");
+                $novaEta = $dataEta->format('Y-m-d');
+                $novaPrevista = $dataEta->modify('+7 days')->format('Y-m-d');
+            }
+        }
+
+        $stmtRecalcula = mysqli_prepare($conn, "UPDATE follow SET eta = ?, prevista = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmtRecalcula, 'ssi', $novaEta, $novaPrevista, $id);
+        mysqli_stmt_execute($stmtRecalcula);
+        mysqli_stmt_close($stmtRecalcula);
+
+        $resposta['etaRecalculada'] = dataBr($novaEta);
+        $resposta['previstaRecalculada'] = dataBr($novaPrevista);
+    }
+
+    echo json_encode($resposta);
     exit;
 }
 
@@ -636,8 +672,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="etd" data-valor-bruto="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>"><?php echo dataBr($r['etd']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="eta" data-valor-bruto="<?php echo $r['eta'] ? h(dataBr($r['eta'])) : ''; ?>"><?php echo dataBr($r['eta']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="prevista" data-valor-bruto="<?php echo $r['prevista'] ? h(dataBr($r['prevista'])) : ''; ?>"><?php echo dataBr($r['prevista']); ?></td>
+                                    <td class="col-eta text-muted" title="Calculado automaticamente: ETD + Transit (dias) — edite o ETD ou o Transit pra mudar isso"><?php echo dataBr($r['eta']); ?></td>
+                                    <td class="col-prevista text-muted" title="Calculado automaticamente: ETA + 7 dias — edite o ETD ou o Transit pra mudar isso"><?php echo dataBr($r['prevista']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="efetiva" data-valor-bruto="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>"><?php echo dataBr($r['efetiva']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="requerente" data-valor-bruto="<?php echo h($r['requerente'] ?? ''); ?>"><?php echo h($r['requerente'] ?: '—'); ?></td>
                                     <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
@@ -743,6 +779,41 @@ while ($row = mysqli_fetch_assoc($result)) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // ETA e Prevista não são mais editáveis por duplo clique — são sempre
+        // recalculadas (o servidor já regrava as duas no banco, ver
+        // ajax_editar_campo). Aqui só atualiza as duas células na tela na
+        // hora, sem precisar recarregar a página, refazendo a mesma conta em
+        // JS (ETA = ETD + Transit dias, Prevista = ETA + 7 dias) a partir do
+        // valor que acabou de ser salvo na própria linha.
+        document.addEventListener('inline-edit:salvo', function (evento) {
+            const campo = evento.detail && evento.detail.campo;
+            if (campo !== 'etd' && campo !== 'transit_dias') return;
+            const linha = evento.target.closest('tr');
+            if (!linha) return;
+            const celEtd = linha.querySelector('[data-campo="etd"]');
+            const celTransit = linha.querySelector('[data-campo="transit_dias"]');
+            const celEta = linha.querySelector('.col-eta');
+            const celPrevista = linha.querySelector('.col-prevista');
+            if (!celEtd || !celTransit || !celEta || !celPrevista) return;
+
+            const etdData = parseDataBrJs(celEtd.dataset.valorBruto);
+            if (!etdData) {
+                celEta.textContent = '—';
+                celPrevista.textContent = '—';
+                return;
+            }
+            const transitValor = parseInt(celTransit.dataset.valorBruto, 10) || 0;
+
+            const etaData = new Date(etdData);
+            etaData.setDate(etaData.getDate() + transitValor);
+            celEta.textContent = formatarDataBrJs(etaData.toISOString().slice(0, 10));
+
+            const previstaData = new Date(etaData);
+            previstaData.setDate(previstaData.getDate() + 7);
+            celPrevista.textContent = formatarDataBrJs(previstaData.toISOString().slice(0, 10));
+        });
+    </script>
     <script>
         // Exclusão via AJAX: em vez de recarregar a página (o que perdia a
         // posição de rolagem), remove só a linha na hora, mantendo tudo o
