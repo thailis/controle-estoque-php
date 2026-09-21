@@ -89,8 +89,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
 
     $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente'];
     $camposData = ['etd', 'eta', 'prevista', 'efetiva'];
+    $camposNumero = ['ft_dias', 'transit_dias'];
 
-    if ($id <= 0 || (!in_array($campo, $camposTexto, true) && !in_array($campo, $camposData, true))) {
+    if ($id <= 0 || (!in_array($campo, $camposTexto, true) && !in_array($campo, $camposData, true) && !in_array($campo, $camposNumero, true))) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
@@ -102,6 +103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
             exit;
         }
         $exibido = dataBr($valorSalvo);
+    } elseif (in_array($campo, $camposNumero, true)) {
+        if ($valor === '') {
+            $valorSalvo = null;
+        } elseif (ctype_digit($valor)) {
+            $valorSalvo = (int) $valor;
+        } else {
+            echo json_encode(['ok' => false, 'erro' => 'Use um número inteiro de dias.']);
+            exit;
+        }
+        $exibido = $valorSalvo === null ? '—' : (string) $valorSalvo;
     } else {
         $valorSalvo = $valor === '' ? null : $valor;
         $exibido = $valorSalvo ?? '—';
@@ -175,8 +186,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $existeProcesso = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck))['total'] > 0;
         mysqli_stmt_close($stmtCheck);
 
+        // Trava contra duplicar: "processos" tem uma linha por componente
+        // dentro do mesmo processo, mas o Follow deve ter só 1 linha por
+        // processo (independente de quantos componentes ele tenha). Aqui
+        // barra um segundo cadastro manual pro mesmo processo enquanto o
+        // primeiro ainda estiver em aberto (só depois de "fechado" — ou seja,
+        // já confirmado em confirmar_entrega.php — é que faria sentido um
+        // novo embarque para o mesmo processo, ex.: reposição).
+        $stmtDuplicado = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM follow WHERE processo = ? AND status <> 'fechado'");
+        mysqli_stmt_bind_param($stmtDuplicado, 's', $processoEscolhido);
+        mysqli_stmt_execute($stmtDuplicado);
+        $jaTemEmAberto = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDuplicado))['total'] > 0;
+        mysqli_stmt_close($stmtDuplicado);
+
         if (!$existeProcesso) {
             $mensagens[] = "❌ O processo \"$processoEscolhido\" não existe em Processos. Cadastre ele lá primeiro.";
+        } elseif ($jaTemEmAberto) {
+            $mensagens[] = "❌ O processo \"$processoEscolhido\" já tem um embarque em aberto no Follow — 1 processo por linha. Edite o embarque existente em vez de cadastrar outro.";
         } else {
             $stmt = mysqli_prepare($conn, "
                 INSERT INTO follow (processo, origem, destino, transit_dias, ft_dias, armador, trk, pickup, etd, eta, prevista, efetiva, requerente, status)
@@ -347,13 +373,15 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(4), .table-follow td:nth-child(4) { width: 120px; }
         .table-follow th:nth-child(5), .table-follow td:nth-child(5) { width: 130px; }
         .table-follow th:nth-child(6), .table-follow td:nth-child(6) { width: 140px; }
-        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 100px; }
-        .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 100px; }
+        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 90px; }
+        .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 90px; }
         .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 100px; }
         .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 100px; }
-        .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: 160px; }
-        .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 130px; }
-        .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 80px; }
+        .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: 100px; }
+        .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 100px; }
+        .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 160px; }
+        .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 130px; }
+        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 80px; }
         .table-follow td.celula-editavel {
             overflow-wrap: break-word;
         }
@@ -437,12 +465,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <input type="text" name="destino_manual" class="form-control">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label">Transit (dias)</label>
-                        <input type="text" name="transit_dias_manual" id="transit_dias_manual" class="form-control" oninput="calcularDatasFollow()">
-                    </div>
-                    <div class="col-md-3">
                         <label class="form-label">FT (dias)</label>
                         <input type="text" name="ft_dias_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Transit (dias)</label>
+                        <input type="text" name="transit_dias_manual" id="transit_dias_manual" class="form-control" oninput="calcularDatasFollow()">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Armador</label>
@@ -531,7 +559,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table table-follow mb-0" style="min-width: 1580px;">
+                <table class="table mrp-table table-follow mb-0" style="min-width: 1760px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -540,6 +568,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Destino</th>
                             <th>Armador</th>
                             <th>Rastreio (TRK)</th>
+                            <th>FT (dias)</th>
+                            <th>Transit (dias)</th>
                             <th>ETD</th>
                             <th>ETA</th>
                             <th>Prevista</th>
@@ -551,7 +581,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="13" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="15" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -603,6 +633,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="destino" data-valor-bruto="<?php echo h($r['destino'] ?? ''); ?>"><?php echo h($r['destino'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="armador" data-valor-bruto="<?php echo h($r['armador'] ?? ''); ?>"><?php echo h($r['armador'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="trk" data-valor-bruto="<?php echo h($r['trk'] ?? ''); ?>"><?php echo h($r['trk'] ?: '—'); ?></td>
+                                    <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
+                                    <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="etd" data-valor-bruto="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>"><?php echo dataBr($r['etd']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="eta" data-valor-bruto="<?php echo $r['eta'] ? h(dataBr($r['eta'])) : ''; ?>"><?php echo dataBr($r['eta']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="prevista" data-valor-bruto="<?php echo $r['prevista'] ? h(dataBr($r['prevista'])) : ''; ?>"><?php echo dataBr($r['prevista']); ?></td>
