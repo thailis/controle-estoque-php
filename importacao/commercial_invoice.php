@@ -341,6 +341,9 @@ try {
                 <a class="btn btn-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
                 <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
+                <input type="text" id="ptax_valor" class="form-control form-control-sm" style="width:90px;" placeholder="PTAX" title="Cotação (PTAX) usada pra converter USD → R$ na planilha">
+                <input type="text" id="ptax_data" class="form-control form-control-sm" style="width:115px;" placeholder="Data PTAX" title="Data da PTAX (dd/mm/aaaa) — só pra aparecer no cabeçalho da planilha, digite do jeito que quiser">
+                <button type="button" class="btn btn-success btn-sm" onclick="exportarPlanilhaNF()">📊 Exportar Planilha</button>
             </nav>
         </div>
     </header>
@@ -498,6 +501,7 @@ try {
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <script>
         let contadorLinhas = 0;
 
@@ -679,6 +683,120 @@ try {
                 img.style.display = 'block';
             };
             leitor.readAsDataURL(arquivo);
+        }
+
+        // Exporta uma planilha (.xlsx) no mesmo espírito da planilha de NF que
+        // já é usada manualmente: PN, Description, Qty e NCM puxados da
+        // tabela do Commercial Invoice (mesmos dados, sem precisar digitar de
+        // novo), Preço (USD) = Net Price já digitado por linha, e a PTAX (que
+        // não existe em lugar nenhum do sistema — sempre digitada na mão aqui)
+        // convertendo pra Preço un NF (R$) e Total Item NF (R$). Não salva
+        // nada no banco, é só um arquivo gerado na hora, igual o PDF.
+        function exportarPlanilhaNF() {
+            if (typeof ExcelJS === 'undefined') {
+                alert('Não consegui carregar a biblioteca de planilha (sem internet?). Recarregue a página e tente de novo.');
+                return;
+            }
+
+            const ptax = parseNumeroBrDoc(document.getElementById('ptax_valor').value);
+            if (!ptax) {
+                alert('Preencha a PTAX (cotação do dólar) antes de exportar a planilha.');
+                document.getElementById('ptax_valor').focus();
+                return;
+            }
+            const ptaxData = document.getElementById('ptax_data').value.trim() || '—';
+
+            const linhas = Array.from(document.querySelectorAll('#corpo-itens tr'));
+            if (linhas.length === 0) {
+                alert('Não há itens na tabela pra exportar.');
+                return;
+            }
+
+            const dadosLinhas = linhas.map((linha) => {
+                const part = linha.querySelector('.f-part').dataset.valor || '';
+                const desc = linha.querySelector('.f-desc').dataset.valor || '';
+                const hscode = linha.querySelector('.f-hscode').dataset.valor || '';
+                const qtd = parseNumeroBrDoc(linha.querySelector('.f-qtd').dataset.valor);
+                const precoUsd = parseNumeroBrDoc(linha.querySelector('.f-preco').value);
+                const precoUnNf = precoUsd * ptax;
+                const totalItemNf = precoUnNf * qtd;
+                return { part, desc, hscode, qtd, precoUsd, precoUnNf, totalItemNf };
+            });
+
+            const workbook = new ExcelJS.Workbook();
+            const planilha = workbook.addWorksheet('NF');
+
+            planilha.columns = [
+                { width: 5 }, { width: 16 }, { width: 34 }, { width: 9 },
+                { width: 13 }, { width: 15 }, { width: 16 }, { width: 17 },
+            ];
+
+            // Linha 1: banner "Ptax (data)" mesclado, com o valor da PTAX na
+            // última célula — mesmo layout da planilha de referência.
+            planilha.mergeCells('A1:G1');
+            const celulaBannerTexto = planilha.getCell('A1');
+            celulaBannerTexto.value = `Ptax (${ptaxData})`;
+            celulaBannerTexto.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            celulaBannerTexto.alignment = { horizontal: 'center', vertical: 'middle' };
+            celulaBannerTexto.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF000000' } };
+
+            const celulaBannerValor = planilha.getCell('H1');
+            celulaBannerValor.value = ptax;
+            celulaBannerValor.numFmt = '0.0000';
+            celulaBannerValor.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            celulaBannerValor.alignment = { horizontal: 'center', vertical: 'middle' };
+            celulaBannerValor.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF000000' } };
+            planilha.getRow(1).height = 20;
+
+            // Linha 2: cabeçalho da tabela.
+            const cabecalho = ['#', 'PN', 'Description', 'Qty', 'NCM', 'PREÇO (USD)', 'Preço un NF (R$)', 'Total Item NF (R$)'];
+            const linhaCabecalho = planilha.addRow(cabecalho);
+            linhaCabecalho.eachCell((celula) => {
+                celula.font = { bold: true };
+                celula.alignment = { horizontal: 'center', vertical: 'middle' };
+                celula.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+                celula.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+                celula.border = { bottom: { style: 'thin' } };
+            });
+
+            // Linhas de item.
+            dadosLinhas.forEach((item, i) => {
+                const linhaTabela = planilha.addRow([
+                    i + 1, item.part, item.desc, item.qtd, item.hscode,
+                    item.precoUsd, item.precoUnNf, item.totalItemNf,
+                ]);
+                linhaTabela.getCell(6).numFmt = '#,##0.00';
+                linhaTabela.getCell(7).numFmt = '#,##0.00';
+                linhaTabela.getCell(8).numFmt = '#,##0.00';
+                linhaTabela.eachCell((celula) => {
+                    celula.border = { bottom: { style: 'thin', color: { argb: 'FFE9EDF2' } } };
+                });
+            });
+
+            // Linha final: total geral da NF (soma de Total Item NF).
+            const totalNf = dadosLinhas.reduce((soma, item) => soma + item.totalItemNf, 0);
+            const linhaTotal = planilha.addRow(['', '', '', '', '', '', 'Valor total NF', totalNf]);
+            linhaTotal.getCell(7).font = { bold: true };
+            linhaTotal.getCell(7).alignment = { horizontal: 'right' };
+            linhaTotal.getCell(8).font = { bold: true };
+            linhaTotal.getCell(8).numFmt = '#,##0.00';
+
+            const processoAtual = document.getElementById('select_processo').value || 'commercial_invoice';
+            const nomeArquivo = `NF_${processoAtual}.xlsx`.replace(/\s+/g, '_');
+
+            workbook.xlsx.writeBuffer().then((buffer) => {
+                const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = nomeArquivo;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            }).catch(() => {
+                alert('Erro ao gerar a planilha. Tente de novo.');
+            });
         }
 
         // Começa com 1 linha em branco — o normal é escolher um Processo pra
