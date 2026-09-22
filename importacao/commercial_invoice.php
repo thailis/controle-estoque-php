@@ -315,6 +315,13 @@ try {
 
         .btn-add-linha { font-size: .78rem; }
 
+        /* Botões de navegação do cabeçalho (fora Baixar PDF/PTAX/Data/Exportar
+           Planilha) — deixados mais estreitos, no mesmo padrão do Packing List. */
+        .btn-nav-compacta {
+            padding: .25rem .55rem;
+            font-size: .8rem;
+        }
+
         @media print {
             body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
@@ -334,12 +341,12 @@ try {
                 <p class="mb-0">Preencha os dados e gere o PDF direto pelo navegador</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
-                <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
-                <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
-                <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
-                <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
-                <a class="btn btn-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
+                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="follow.php">Follow</a>
+                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="processos.php">Processos</a>
+                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="pagamento.php">Pagamento</a>
+                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="confirmar_entrega.php">Confirmar entrega</a>
+                <a class="btn btn-light btn-sm btn-nav-compacta" href="commercial_invoice.php">📄 Commercial Invoice</a>
+                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="packing_list.php">📦 Packing List</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
                 <input type="text" id="ptax_valor" class="form-control form-control-sm" style="width:90px;" placeholder="PTAX" title="Cotação (PTAX) usada pra converter USD → R$ na planilha">
                 <input type="text" id="ptax_data" class="form-control form-control-sm" style="width:115px;" placeholder="Data PTAX" title="Data da PTAX (dd/mm/aaaa) — só pra aparecer no cabeçalho da planilha, digite do jeito que quiser">
@@ -768,8 +775,10 @@ try {
                 linhaTabela.getCell(6).numFmt = '#,##0.00';
                 linhaTabela.getCell(7).numFmt = '#,##0.00';
                 linhaTabela.getCell(8).numFmt = '#,##0.00';
+                const corLinha = (i % 2 === 0) ? 'FFFFFFFF' : 'FFF2F6FC';
                 linhaTabela.eachCell((celula) => {
                     celula.border = { bottom: { style: 'thin', color: { argb: 'FFE9EDF2' } } };
+                    celula.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: corLinha } };
                 });
             });
 
