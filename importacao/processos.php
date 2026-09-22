@@ -548,7 +548,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         $quantidade = parseNumeroBrProcessos($get('quantidade'));
                         $preco = parseNumeroBrProcessos($get('preco'));
+                        // Se o CSV não trouxer "total" (coluna ausente ou vazia), calcula
+                        // sozinho Quantidade × Preço — mesma regra do cadastro manual.
+                        // Se o CSV trouxer um valor de "total", usa esse valor tal como
+                        // está (não sobrescreve o que veio pronto da planilha).
                         $total = parseNumeroBrProcessos($get('total'));
+                        if ($total === null && $quantidade !== null && $preco !== null) {
+                            $total = $quantidade * $preco;
+                        }
                         $solicitacao = parseDataProcessos($get('solicitacao'));
 
                         // Aceita variações comuns no CSV (sim/não, s/n, yes/no, 1/0).
