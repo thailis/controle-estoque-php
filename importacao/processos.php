@@ -927,8 +927,9 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </form>
                 <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
                     Colunas esperadas (primeira linha = cabeçalho, qualquer ordem):<br>
-                    <code>processo, solicitacao, categoria, planta, po, modal, projeto, material, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs</code><br>
-                    Só <code>processo</code> é obrigatório — as demais colunas podem faltar. <strong>Não existe coluna <code>status</code></strong>: todo processo nasce "aberto" automaticamente, e só vira "finalizado" quando o embarque correspondente é confirmado na tela Confirmar Entrega. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
+                    <code>processo, solicitacao, categoria, planta, po, modal, projeto, material, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs, estoque</code><br>
+                    Só <code>processo</code> é obrigatório — as demais colunas podem faltar. <strong>Não existe coluna <code>status</code></strong>: todo processo nasce "aberto" automaticamente, e só vira "finalizado" quando o embarque correspondente é confirmado na tela Confirmar Entrega. Separador: vírgula ou ponto e vírgula (detectado automaticamente).<br>
+                    <strong>Coluna <code>estoque</code></strong> (aceita também <code>controla_estoque</code>): use <code>sim</code>/<code>não</code> (ou <code>s</code>/<code>n</code>, <code>yes</code>/<code>no</code>, <code>1</code>/<code>0</code>) pra já subir cada linha com o Estoque certo, sem precisar alternar depois — se a coluna faltar ou vier com um valor não reconhecido, categoria "tooling" nasce "Não" e as demais nascem "Sim". É só o valor inicial: o botão Sim/Não na tabela continua liberado pra alternar a qualquer momento (menos em processo já finalizado).
                 </p>
             </details>
         </section>
