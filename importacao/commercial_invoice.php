@@ -340,7 +340,7 @@ try {
                 <h1>Commercial Invoice</h1>
                 <p class="mb-0">Preencha os dados e gere o PDF direto pelo navegador</p>
             </div>
-            <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+            <nav class="d-flex flex-wrap align-items-center gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="follow.php">Follow</a>
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="processos.php">Processos</a>
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="pagamento.php">Pagamento</a>
@@ -348,8 +348,8 @@ try {
                 <a class="btn btn-light btn-sm btn-nav-compacta" href="commercial_invoice.php">📄 Commercial Invoice</a>
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="packing_list.php">📦 Packing List</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
-                <input type="text" id="ptax_valor" class="form-control form-control-sm" style="width:90px;" placeholder="PTAX" title="Cotação (PTAX) usada pra converter USD → R$ na planilha">
-                <input type="text" id="ptax_data" class="form-control form-control-sm" style="width:115px;" placeholder="Data PTAX" title="Data da PTAX (dd/mm/aaaa) — só pra aparecer no cabeçalho da planilha, digite do jeito que quiser">
+                <input type="text" id="ptax_valor" class="form-control form-control-sm" style="width:90px; min-height:auto;" placeholder="PTAX" title="Cotação (PTAX) usada pra converter USD → R$ na planilha">
+                <input type="text" id="ptax_data" class="form-control form-control-sm" style="width:115px; min-height:auto;" placeholder="Data PTAX" title="Data da PTAX (dd/mm/aaaa) — só pra aparecer no cabeçalho da planilha, digite do jeito que quiser">
                 <button type="button" class="btn btn-success btn-sm" onclick="exportarPlanilhaNF()">📊 Exportar Planilha</button>
             </nav>
         </div>
