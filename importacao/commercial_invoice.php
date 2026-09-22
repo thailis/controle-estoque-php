@@ -781,6 +781,13 @@ try {
             linhaTotal.getCell(8).font = { bold: true };
             linhaTotal.getCell(8).numFmt = '#,##0.00';
 
+            // Linha de transportadora, puxada do campo "Freight Forwarder:" do rodapé da Commercial Invoice.
+            planilha.addRow([]);
+            const campoFfw = document.getElementById('rodape_ffw');
+            const transportadora = campoFfw ? campoFfw.value.trim() : '';
+            const linhaTransportadora = planilha.addRow(['', 'Transportadora:', transportadora]);
+            linhaTransportadora.getCell(2).font = { bold: true };
+
             const processoAtual = document.getElementById('select_processo').value || 'commercial_invoice';
             const nomeArquivo = `NF_${processoAtual}.xlsx`.replace(/\s+/g, '_');
 
