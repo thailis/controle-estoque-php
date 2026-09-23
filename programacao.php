@@ -927,7 +927,7 @@ while ($row = mysqli_fetch_assoc($result)) {
     </style>
 </head>
 <body>
-    <div class="container" style="max-width: 1180px;">
+    <div class="container-fluid" style="max-width: 1600px;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
