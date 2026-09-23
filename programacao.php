@@ -881,7 +881,8 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table th {
             background: #f8f9fa;
             white-space: normal;
-            word-break: break-word;
+            overflow-wrap: normal;
+            word-break: normal;
             vertical-align: middle;
             text-align: center;
             line-height: 1.25;
