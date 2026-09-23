@@ -473,11 +473,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $processoManual = $processoManual !== '' ? $processoManual : null;
     $dataManual = parseDataProgramacao(trim($_POST['data_manual'] ?? ''));
     $quantidadeManual = parseQuantidade(trim($_POST['quantidade_manual'] ?? ''));
+    // Preço é opcional na entrada manual — Data Recebida/Quantidade Recebida não entram
+    // aqui porque, nesse momento, ainda não chegou nada; ficam pra editar depois com
+    // duplo clique, quando o material realmente for recebido.
+    $precoManualBruto = trim($_POST['preco_manual'] ?? '');
+    $precoManual = $precoManualBruto !== '' ? parseQuantidade($precoManualBruto) : null;
 
     $flash = 'erro_dados';
     if ($componenteManual !== '' && $dataManual !== null && $quantidadeManual !== null) {
-        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade) VALUES (?, ?, ?, ?)");
-        mysqli_stmt_bind_param($stmtInsManual, "sssd", $componenteManual, $processoManual, $dataManual, $quantidadeManual);
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?)");
+        mysqli_stmt_bind_param($stmtInsManual, "sssdd", $componenteManual, $processoManual, $dataManual, $quantidadeManual, $precoManual);
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
         $flash = 'inserido';
@@ -508,12 +513,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'processo'], true)) {
+    $camposAceitos = ['data', 'quantidade', 'processo', 'preco', 'data_recebida', 'quantidade_recebida'];
+    if ($id <= 0 || !in_array($campo, $camposAceitos, true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
 
-    $stmtCheck = mysqli_prepare($conn, "SELECT atendido FROM programacao WHERE id = ?");
+    $stmtCheck = mysqli_prepare($conn, "SELECT atendido, quantidade, quantidade_recebida, preco FROM programacao WHERE id = ?");
     mysqli_stmt_bind_param($stmtCheck, 'i', $id);
     mysqli_stmt_execute($stmtCheck);
     $item = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
@@ -523,7 +529,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
         exit;
     }
-    if ((int) $item['atendido'] === 1) {
+    // Preço, Data Recebida e Quantidade Recebida não afetam o estoque (não têm a
+    // mesma trava de "atendido" que Processo/Data/Quantidade têm), então podem ser
+    // editados a qualquer momento, mesmo com o item já atendido.
+    $camposComTravaAtendido = ['processo', 'data', 'quantidade'];
+    if (in_array($campo, $camposComTravaAtendido, true) && (int) $item['atendido'] === 1) {
         echo json_encode(['ok' => false, 'erro' => 'Reabra o item antes de editar.']);
         exit;
     }
@@ -552,6 +562,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
+    if ($campo === 'data_recebida') {
+        // Campo opcional: apagar o valor (deixar em branco) grava NULL.
+        if ($valor === '') {
+            $stmt = mysqli_prepare($conn, "UPDATE programacao SET data_recebida = NULL WHERE id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+            echo json_encode(['ok' => true, 'exibido' => '']);
+            exit;
+        }
+        $dataRecebidaEditada = parseDataProgramacao($valor);
+        if ($dataRecebidaEditada === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Data inválida. Use dd/mm/aaaa.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET data_recebida = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $dataRecebidaEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => (new DateTimeImmutable($dataRecebidaEditada))->format('d/m/Y')]);
+        exit;
+    }
+
+    if ($campo === 'preco') {
+        // Campo opcional: apagar o valor grava NULL (Total Pedido some/zera na hora).
+        if ($valor === '') {
+            $stmt = mysqli_prepare($conn, "UPDATE programacao SET preco = NULL WHERE id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+            echo json_encode(['ok' => true, 'exibido' => '', 'totalPedido' => '']);
+            exit;
+        }
+        $precoEditado = parseQuantidade($valor);
+        if ($precoEditado === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Preço inválido.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET preco = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'di', $precoEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        $totalPedidoEditado = $precoEditado * (float) $item['quantidade'];
+        echo json_encode([
+            'ok' => true,
+            'exibido' => number_format($precoEditado, 2, ',', '.'),
+            'totalPedido' => number_format($totalPedidoEditado, 2, ',', '.'),
+        ]);
+        exit;
+    }
+
+    if ($campo === 'quantidade_recebida') {
+        // Campo opcional: apagar o valor grava NULL (Saldo volta a considerar 0 recebido).
+        if ($valor === '') {
+            $stmt = mysqli_prepare($conn, "UPDATE programacao SET quantidade_recebida = NULL WHERE id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+            $saldoEditado = 0.0 - (float) $item['quantidade'];
+            echo json_encode(['ok' => true, 'exibido' => '', 'saldo' => number_format($saldoEditado, 2, ',', '.')]);
+            exit;
+        }
+        $quantidadeRecebidaEditada = parseQuantidade($valor);
+        if ($quantidadeRecebidaEditada === null) {
+            echo json_encode(['ok' => false, 'erro' => 'Quantidade recebida inválida.']);
+            exit;
+        }
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET quantidade_recebida = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'di', $quantidadeRecebidaEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        $saldoEditado = $quantidadeRecebidaEditada - (float) $item['quantidade'];
+        echo json_encode([
+            'ok' => true,
+            'exibido' => number_format($quantidadeRecebidaEditada, 2, ',', '.'),
+            'saldo' => number_format($saldoEditado, 2, ',', '.'),
+        ]);
+        exit;
+    }
+
     // campo === 'quantidade'
     $quantidadeEditada = parseQuantidade($valor);
     if ($quantidadeEditada === null) {
@@ -562,7 +652,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     mysqli_stmt_bind_param($stmt, 'di', $quantidadeEditada, $id);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-    echo json_encode(['ok' => true, 'exibido' => number_format($quantidadeEditada, 2, ',', '.')]);
+    // Quantidade mudou: Total Pedido (preço × quantidade) e Saldo (recebida − quantidade)
+    // dependem dela — manda os dois recalculados junto, pro JS atualizar as células na
+    // hora sem precisar recarregar a página (mas os dois continuam corretos mesmo sem
+    // JS nenhum tratar isso, porque são sempre recalculados do zero a cada carregamento).
+    $precoAtualLinha = $item['preco'] !== null ? (float) $item['preco'] : null;
+    $quantidadeRecebidaAtualLinha = $item['quantidade_recebida'] !== null ? (float) $item['quantidade_recebida'] : 0.0;
+    $totalPedidoRecalc = $precoAtualLinha !== null ? $precoAtualLinha * $quantidadeEditada : null;
+    $saldoRecalc = $quantidadeRecebidaAtualLinha - $quantidadeEditada;
+    echo json_encode([
+        'ok' => true,
+        'exibido' => number_format($quantidadeEditada, 2, ',', '.'),
+        'totalPedido' => $totalPedidoRecalc !== null ? number_format($totalPedidoRecalc, 2, ',', '.') : '',
+        'saldo' => number_format($saldoRecalc, 2, ',', '.'),
+    ]);
     exit;
 }
 
@@ -674,7 +777,16 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido FROM programacao p $where ORDER BY p.data, p.codigo_componente";
+    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido,
+                         p.preco, p.data_recebida, p.quantidade_recebida, bg.pn
+                  FROM programacao p
+                  LEFT JOIN (
+                      SELECT TRIM(codigo_componente) AS codigo_componente,
+                             MAX(COALESCE(NULLIF(TRIM(pn), ''), '')) AS pn
+                      FROM bomnova
+                      GROUP BY TRIM(codigo_componente)
+                  ) bg ON bg.codigo_componente = TRIM(p.codigo_componente)
+                  $where ORDER BY p.data, p.codigo_componente";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -687,39 +799,53 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'Processo', 'Data', 'Quantidade', 'Importado', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'PN', 'Processo', 'Preço', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
+        $dataRecebidaExportada = $linha['data_recebida'] ? (new DateTimeImmutable($linha['data_recebida']))->format('d/m/Y') : '';
 
-        $quantidadeExportada = number_format(
-    (float) $linha['quantidade'],
-    0,
-    ',',
-    ''
-);
+        $quantidadeExportada = number_format((float) $linha['quantidade'], 0, ',', '');
 
-$importadoExportado = $linha['importado'] !== null
-    ? number_format((float) $linha['importado'], 0, ',', '')
-    : '';
+        $importadoExportado = $linha['importado'] !== null
+            ? number_format((float) $linha['importado'], 0, ',', '')
+            : '';
 
-fputcsv(
-    $saida,
-    [$linha['codigo_componente'], $linha['processo'] ?? '', $data, $quantidadeExportada, $importadoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não'],
-    ';',
-    '"',
-    ''
-);
+        $precoExportado = $linha['preco'] !== null ? number_format((float) $linha['preco'], 2, ',', '') : '';
+        $quantidadeRecebidaExportada = $linha['quantidade_recebida'] !== null
+            ? number_format((float) $linha['quantidade_recebida'], 0, ',', '')
+            : '';
+        $totalPedidoExportado = $linha['preco'] !== null
+            ? number_format((float) $linha['preco'] * (float) $linha['quantidade'], 2, ',', '')
+            : '';
+        $saldoExportado = number_format(
+            ($linha['quantidade_recebida'] !== null ? (float) $linha['quantidade_recebida'] : 0.0) - (float) $linha['quantidade'],
+            0, ',', ''
+        );
+
+        fputcsv(
+            $saida,
+            [
+                $linha['codigo_componente'], $linha['pn'] ?? '', $linha['processo'] ?? '', $precoExportado, $data,
+                $quantidadeExportada, $importadoExportado, $totalPedidoExportado, $dataRecebidaExportada,
+                $quantidadeRecebidaExportada, $saldoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
+            ],
+            ';',
+            '"',
+            ''
+        );
     }
     fclose($saida);
     exit;
 }
 
 $sql = "SELECT p.id, p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido,
-               bg.descricao, bg.fornecedores
+               p.preco, p.data_recebida, p.quantidade_recebida,
+               bg.descricao, bg.fornecedores, bg.pn
         FROM programacao p
         LEFT JOIN (
             SELECT TRIM(codigo_componente) AS codigo_componente,
                    MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao,
+                   MAX(COALESCE(NULLIF(TRIM(pn), ''), '')) AS pn,
                    GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores
             FROM bomnova
             GROUP BY TRIM(codigo_componente)
@@ -923,9 +1049,14 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="quantidade_manual" class="form-control form-control-sm text-end" placeholder="Ex.: 1500" required>
                 </div>
                 <div class="col-auto">
+                    <label class="form-label small mb-1">Preço</label>
+                    <input type="text" name="preco_manual" class="form-control form-control-sm text-end" placeholder="Opcional">
+                </div>
+                <div class="col-auto">
                     <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
                 </div>
             </form>
+            <small class="text-muted d-block mt-2">PN e Descrição vêm automaticamente da BOM pelo código do componente. Data Recebida, Quantidade Recebida e Saldo ficam disponíveis pra editar (duplo clique) depois que o material chegar.</small>
         </div>
 
         <div class="card p-3 mb-4">
@@ -957,17 +1088,23 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Situação</th>
                             <th>Processo</th>
                             <th>Componente</th>
+                            <th>PN</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
+                            <th class="text-end">Preço</th>
                             <th>Data</th>
                             <th class="text-end">Quantidade</th>
                             <th class="text-end" title="Quantidade confirmada via Confirmar Entrega (site de Importação)">Importado</th>
+                            <th class="text-end" title="Preço × Quantidade">Total Pedido</th>
+                            <th>Data Recebida</th>
+                            <th class="text-end">Quantidade Recebida</th>
+                            <th class="text-end" title="Quantidade Recebida − Quantidade">Saldo</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="9" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="15" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1001,8 +1138,25 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         <?php endif; ?>
                                     ><?php echo h($row['processo'] ?? ''); ?></td>
                                     <td><strong><?php echo h($row['codigo_componente'] ?? ''); ?></strong></td>
+                                    <td class="text-muted" title="PN cadastrado na BOM para este componente"><?php echo h($row['pn'] ?? ''); ?></td>
                                     <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? ''); ?></span></td>
+
+                                    <?php
+                                        // Preço, Data Recebida e Quantidade Recebida não têm relação com o
+                                        // estoque físico (isso é só Situação/Data/Quantidade), então continuam
+                                        // editáveis por duplo clique mesmo com a linha já Atendida.
+                                        $precoLinha = $row['preco'] !== null ? (float) $row['preco'] : null;
+                                        $quantidadeLinha = (float) $row['quantidade'];
+                                        $quantidadeRecebidaLinha = $row['quantidade_recebida'] !== null ? (float) $row['quantidade_recebida'] : null;
+                                        $totalPedidoLinha = $precoLinha !== null ? $precoLinha * $quantidadeLinha : null;
+                                        $saldoLinha = ($quantidadeRecebidaLinha ?? 0.0) - $quantidadeLinha;
+                                    ?>
+                                    <td class="text-end celula-editavel"
+                                        data-id="<?php echo $idLinha; ?>" data-campo="preco"
+                                        data-valor-bruto="<?php echo $precoLinha !== null ? h(number_format($precoLinha, 2, ',', '')) : ''; ?>"
+                                        title="Duplo clique para editar"
+                                    ><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
 
                                     <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
                                         <?php if ($podeEditarLinha): ?>
@@ -1020,6 +1174,22 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
                                     <td class="text-end text-muted" title="Preenchido automaticamente ao confirmar entrega no site de Importação">
                                         <?php echo $row['importado'] !== null ? number_format((float) $row['importado'], 2, ',', '.') : '—'; ?>
+                                    </td>
+                                    <td class="text-end text-muted" title="Calculado automaticamente: Preço × Quantidade">
+                                        <?php echo $totalPedidoLinha !== null ? number_format($totalPedidoLinha, 2, ',', '.') : '—'; ?>
+                                    </td>
+                                    <td class="celula-editavel"
+                                        data-id="<?php echo $idLinha; ?>" data-campo="data_recebida"
+                                        data-valor-bruto="<?php echo h(formatarDataBrProgramacao($row['data_recebida'] ?? null)); ?>"
+                                        title="Duplo clique para editar"
+                                    ><?php echo $row['data_recebida'] ? h((new DateTimeImmutable($row['data_recebida']))->format('d/m/Y')) : ''; ?></td>
+                                    <td class="text-end celula-editavel"
+                                        data-id="<?php echo $idLinha; ?>" data-campo="quantidade_recebida"
+                                        data-valor-bruto="<?php echo $quantidadeRecebidaLinha !== null ? h(number_format($quantidadeRecebidaLinha, 2, ',', '')) : ''; ?>"
+                                        title="Duplo clique para editar"
+                                    ><?php echo $quantidadeRecebidaLinha !== null ? number_format($quantidadeRecebidaLinha, 2, ',', '.') : '—'; ?></td>
+                                    <td class="text-end text-muted" title="Calculado automaticamente: Quantidade Recebida − Quantidade">
+                                        <?php echo number_format($saldoLinha, 2, ',', '.'); ?>
                                     </td>
                                     <td>
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir esta programação? Essa ação não pode ser desfeita.');">
@@ -1103,8 +1273,11 @@ while ($row = mysqli_fetch_assoc($result)) {
 
                     const idLinha = form.querySelector('input[name="id"]').value;
                     const celulaProcesso = linha.children[1];
-                    const celulaData = linha.children[5];
-                    const celulaQtd = linha.children[6];
+                    // Ordem atual das colunas: 0 Situação, 1 Processo, 2 Componente, 3 PN,
+                    // 4 Descrição, 5 Fornecedor, 6 Preço, 7 Data, 8 Quantidade, 9 Importado,
+                    // 10 Total Pedido, 11 Data Recebida, 12 Quantidade Recebida, 13 Saldo, 14 Excluir.
+                    const celulaData = linha.children[7];
+                    const celulaQtd = linha.children[8];
                     if (celulaProcesso && celulaData && celulaQtd) {
                         if (json.atendido) {
                             celulaProcesso.className = '';
