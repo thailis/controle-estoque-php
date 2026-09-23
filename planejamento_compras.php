@@ -94,8 +94,11 @@ function calcularEstoqueSegurancaQtd(
 //      Estoque Máximo (dias) cadastrado, a partir do mês da revisão — ou seja, o lote é
 //      dimensionado pelo problema real mais próximo, não pela soma de toda a demanda da
 //      janela.
-//   4) Arredonda pro múltiplo do MOQ e injeta de volta na simulação, pra próxima revisão já
-//      considerar essa compra.
+//   4) O MOQ é tratado só como PISO mínimo (compra pelo menos o MOQ) — não arredonda pra
+//      múltiplo dele. Ex.: déficit de 8.464 com MOQ 100 vira 8.464 (não 8.500). Se o
+//      déficit for menor que o MOQ, aí sim compra o MOQ inteiro (é o mínimo que dá pra
+//      pedir). Depois injeta de volta na simulação, pra próxima revisão já considerar
+//      essa compra.
 function calcularParcelasCompraPlanejamento(
     float $estoqueAtual,
     array $programacaoPorData,
@@ -257,10 +260,13 @@ function calcularParcelasCompraPlanejamento(
         if ($quantidadeAlvo <= 0) {
             continue;
         }
-        $quantidadeBase = $moq > 0 ? max($moq, ceil($quantidadeAlvo / $moq) * $moq) : $quantidadeAlvo;
+        // MOQ como PISO mínimo, não como múltiplo/lote fechado: compra exatamente o
+        // déficit, exceto quando ele é menor que o MOQ (aí compra o MOQ, que é o mínimo
+        // que o fornecedor aceita).
+        $quantidadeBase = $moq > 0 ? max($moq, $quantidadeAlvo) : $quantidadeAlvo;
 
         // Setup (% de perda/scrap) aplicado por último, depois de todo o cálculo de netting
-        // e arredondamento de MOQ. A quantidade FÍSICA que chega de fato é a final (com
+        // e do piso de MOQ. A quantidade FÍSICA que chega de fato é a final (com
         // setup) — é ela que volta pra simulação pra achar a próxima parcela.
         $quantidadeFinal = $setupPercentual > 0
             ? $quantidadeBase * (1 + $setupPercentual / 100)
