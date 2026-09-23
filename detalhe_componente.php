@@ -1,5 +1,6 @@
 <?php
 require_once 'conexao.php';
+require_once 'mrp_calculo.php';
 
 require_once 'auth.php';
 exigirLogin();
@@ -27,6 +28,9 @@ $infoComponente = ['descricao' => '', 'fornecedores' => '', 'projetos' => ''];
 $estoqueAtual = 0.0;
 $programacaoPorData = [];
 $demandaPorData = [];
+$parametrosCompra = null;
+$parcelasSugeridas = [];
+$saldoComSugestaoPorData = [];
 
 try {
     $stmtInfo = mysqli_prepare($conn, "
@@ -92,6 +96,27 @@ try {
         $demandaPorData[$linha['data']] = (float) $linha['quantidade'];
     }
     mysqli_stmt_close($stmtDemanda);
+
+    // Parâmetros de compra do componente (MOQ, Lead Time, Estoque Mínimo/Máximo, setup) —
+    // usados pra simular "o que aconteceria se você comprasse agora", igual ao Planejamento
+    // de Compras, mas sem precisar registrar nada na tabela "programacao". Só entra em ação
+    // se os 5 parâmetros obrigatórios estiverem preenchidos (mesma regra do Planejamento).
+    $stmtParam = mysqli_prepare($conn, "
+        SELECT moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup
+        FROM parametros_compra
+        WHERE TRIM(codigo_componente) = ?
+          AND moq IS NOT NULL AND frozen_zone_dias IS NOT NULL AND transit_time_dias IS NOT NULL
+          AND estoque_min_dias IS NOT NULL AND estoque_max_dias IS NOT NULL
+        LIMIT 1
+    ");
+    mysqli_stmt_bind_param($stmtParam, 's', $codigo);
+    mysqli_stmt_execute($stmtParam);
+    $resParam = mysqli_stmt_get_result($stmtParam);
+    $linhaParam = mysqli_fetch_assoc($resParam);
+    if ($linhaParam) {
+        $parametrosCompra = $linhaParam;
+    }
+    mysqli_stmt_close($stmtParam);
 } catch (Throwable $erro) {
     error_log('Erro no detalhe do componente: ' . $erro->getMessage());
     $erroDetalhe = 'Não foi possível carregar os dados deste componente. Verifique se a tabela "programacao" já foi criada (veja sql_programacao.sql).';
@@ -133,6 +158,40 @@ if ($erroDetalhe === null) {
 
         $saldoAnterior = $saldo;
         $cursor = $cursor->modify('+1 day');
+    }
+
+    // Prévia "e se eu comprasse agora": roda o MESMO cálculo do Planejamento de Compras
+    // (calcularParcelasCompraPlanejamento, em mrp_calculo.php), mas só pra este componente
+    // e sem gravar nada — é uma simulação, não uma programação real. O horizonte usa 12
+    // meses rolantes (igual ao Planejamento) pra achar a real data de necessidade, mesmo
+    // que a tabela exibida vá só até 31/03/2027.
+    if ($parametrosCompra !== null) {
+        $setupComp = $parametrosCompra['setup'] !== null ? (float) $parametrosCompra['setup'] : 0.0;
+        $segurancaQtd = calcularEstoqueSegurancaQtd(
+            $demandaPorData,
+            $hoje,
+            (int) $parametrosCompra['frozen_zone_dias'],
+            (int) $parametrosCompra['transit_time_dias'],
+            $setupComp
+        );
+
+        $horizontePreview = $hoje->modify('+12 months');
+        $resultadoPreview = calcularParcelasCompraPlanejamento(
+            $estoqueAtual,
+            $programacaoPorData,
+            $demandaPorData,
+            $hoje,
+            $horizontePreview,
+            (float) $parametrosCompra['moq'],
+            (int) $parametrosCompra['frozen_zone_dias'],
+            (int) $parametrosCompra['transit_time_dias'],
+            (int) $parametrosCompra['estoque_min_dias'],
+            (int) $parametrosCompra['estoque_max_dias'],
+            $setupComp,
+            $segurancaQtd
+        );
+        $parcelasSugeridas = $resultadoPreview['parcelas'];
+        $saldoComSugestaoPorData = $resultadoPreview['saldo_por_dia'];
     }
 }
 ?>
@@ -187,6 +246,9 @@ if ($erroDetalhe === null) {
             vertical-align: middle;
         }
         .scroll-wrapper { max-height: 70vh; overflow: auto; border: 1px solid #dce4ec; border-radius: 12px; }
+        .linha-sugestao td { font-weight: 750; color: #1c6e2d; border-top: 2px dashed #2f9e44; }
+        .linha-sugestao td.saldo-negativo { color: #c53535; }
+        .col-compra-sugerida { background: #e4f7e9 !important; }
     </style>
 </head>
 <body>
@@ -224,6 +286,61 @@ if ($erroDetalhe === null) {
             <p class="mb-1"><strong>Projeto(s):</strong> <?php echo h($infoComponente['projetos'] ?: '—'); ?></p>
             <p class="mb-0"><strong>Estoque físico atual (hoje):</strong> <?php echo numeroBr($estoqueAtual); ?></p>
         </section>
+
+        <?php if ($parametrosCompra === null): ?>
+            <div class="alert alert-secondary" role="alert">
+                Este componente não tem os 5 parâmetros de compra preenchidos (MOQ, Frozen Zone, Transit Time,
+                Estoque Mínimo e Estoque Máximo) em <a href="parametros_compra.php">Parâmetros de Compra</a>,
+                então não é possível simular o efeito de uma compra sugerida aqui.
+            </div>
+        <?php elseif (empty($parcelasSugeridas)): ?>
+            <div class="alert alert-success" role="alert">
+                Com a programação já colocada, nenhuma compra nova é necessária nos próximos 12 meses — o saldo
+                não fica abaixo do Estoque Mínimo + Segurança em nenhum momento.
+            </div>
+        <?php else: ?>
+            <section class="table-card mb-4">
+                <div class="table-toolbar">
+                    <div>
+                        <span class="eyebrow text-primary">Simulação</span>
+                        <h2>Compra sugerida (prévia, ainda não registrada)</h2>
+                        <p>Mesma lógica do <a href="planejamento_compras.php">Planejamento de Compras</a> — a linha
+                            tracejada verde na tabela abaixo mostra o efeito dessa compra no saldo, sem precisar
+                            registrar nada em Programação.</p>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Data sugerida do pedido</th>
+                                <th>Data de necessidade (recebimento)</th>
+                                <th>Disponível a partir de</th>
+                                <th>Quantidade</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($parcelasSugeridas as $p): ?>
+                                <tr>
+                                    <td>
+                                        <?php if ($p['status'] === 'urgente'): ?>
+                                            <span class="badge bg-danger">Urgente</span>
+                                        <?php else: ?>
+                                            <span class="badge bg-secondary">Programada</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo h($p['data']->format('d/m/Y')); ?></td>
+                                    <td><?php echo h($p['data_necessidade']->format('d/m/Y')); ?></td>
+                                    <td><?php echo h($p['data_disponibilidade']->format('d/m/Y')); ?></td>
+                                    <td><?php echo numeroBr($p['quantidade'], 0); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        <?php endif; ?>
 
         <section class="table-card">
             <div class="table-toolbar">
@@ -316,6 +433,39 @@ if ($erroDetalhe === null) {
                                 <td class="<?php echo h(implode(' ', $classes)); ?>"><?php echo numeroBr($dia['saldo'], 0); ?></td>
                             <?php endforeach; ?>
                         </tr>
+                        <?php if (!empty($parcelasSugeridas)): ?>
+                        <?php
+                            // Datas em que uma parcela sugerida ficaria disponível (usadas só
+                            // pra destacar a coluna correspondente nesta linha extra).
+                            $datasDisponibilidade = [];
+                            foreach ($parcelasSugeridas as $p) {
+                                $datasDisponibilidade[$p['data_disponibilidade']->format('Y-m-d')] = true;
+                            }
+                        ?>
+                        <tr class="linha-sugestao" title="Saldo simulado se a(s) compra(s) sugerida(s) acima fossem colocadas agora">
+                            <td>Saldo com compra sugerida</td>
+                            <?php foreach ($dias as $dia): ?>
+                                <?php
+                                    $chaveDia = $dia['data']->format('Y-m-d');
+                                    $classes = [];
+                                    if ($dia['saida'] > 0) {
+                                        $classes[] = 'col-evento';
+                                    }
+                                    if ($chaveDia === $hoje->format('Y-m-d')) {
+                                        $classes[] = 'col-hoje';
+                                    }
+                                    if (isset($datasDisponibilidade[$chaveDia])) {
+                                        $classes[] = 'col-compra-sugerida';
+                                    }
+                                    $saldoSugerido = $saldoComSugestaoPorData[$chaveDia] ?? $dia['saldo'];
+                                    if ($saldoSugerido < 0) {
+                                        $classes[] = 'saldo-negativo';
+                                    }
+                                ?>
+                                <td class="<?php echo h(implode(' ', $classes)); ?>"><?php echo numeroBr($saldoSugerido, 0); ?></td>
+                            <?php endforeach; ?>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
