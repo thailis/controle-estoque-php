@@ -406,6 +406,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
         'pagina'   => $_POST['pagina_atual'] ?? 1,
         'busca'    => $_POST['busca_atual'] ?? '',
         'ano'      => $_POST['ano_atual'] ?? '',
+        'projeto'  => $_POST['projeto_atual'] ?? '',
+        'modelo'   => $_POST['modelo_atual'] ?? '',
         'filtro'   => $_POST['filtro_atual'] ?? '',
         'excluido' => 1,
     ]));
@@ -424,10 +426,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     }
 
     header('Location: edi.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'ano'    => $_POST['ano_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
+        'pagina'  => $_POST['pagina_atual'] ?? 1,
+        'busca'   => $_POST['busca_atual'] ?? '',
+        'ano'     => $_POST['ano_atual'] ?? '',
+        'projeto' => $_POST['projeto_atual'] ?? '',
+        'modelo'  => $_POST['modelo_atual'] ?? '',
+        'filtro'  => $_POST['filtro_atual'] ?? '',
     ]) . '#linha-' . $idAlternar);
     exit;
 }
@@ -463,11 +467,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     }
 
     header('Location: edi.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'ano'    => $_POST['ano_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
-        'flash'  => $flash,
+        'pagina'  => $_POST['pagina_atual'] ?? 1,
+        'busca'   => $_POST['busca_atual'] ?? '',
+        'ano'     => $_POST['ano_atual'] ?? '',
+        'projeto' => $_POST['projeto_atual'] ?? '',
+        'modelo'  => $_POST['modelo_atual'] ?? '',
+        'filtro'  => $_POST['filtro_atual'] ?? '',
+        'flash'   => $flash,
     ]));
     exit;
 }
@@ -549,11 +555,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
     }
 
     header('Location: edi.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'ano'    => $_POST['ano_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
-        'flash'  => $flash,
+        'pagina'  => $_POST['pagina_atual'] ?? 1,
+        'busca'   => $_POST['busca_atual'] ?? '',
+        'ano'     => $_POST['ano_atual'] ?? '',
+        'projeto' => $_POST['projeto_atual'] ?? '',
+        'modelo'  => $_POST['modelo_atual'] ?? '',
+        'filtro'  => $_POST['filtro_atual'] ?? '',
+        'flash'   => $flash,
     ]) . '#linha-' . $idEditar);
     exit;
 }
@@ -565,6 +573,8 @@ $offset = ($pagina - 1) * $porPagina;
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
 $anoFiltro = isset($_GET['ano']) ? trim($_GET['ano']) : ''; // '', ou um ano específico
+$projetoFiltro = isset($_GET['projeto']) ? trim($_GET['projeto']) : ''; // '', ou um projeto específico
+$modeloFiltro = isset($_GET['modelo']) ? trim($_GET['modelo']) : ''; // '', ou um modelo específico
 $editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
 $flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
 
@@ -606,6 +616,18 @@ if ($anoFiltro !== '' && ctype_digit($anoFiltro)) {
     $tipos .= 'i';
 }
 
+if ($projetoFiltro !== '') {
+    $condicoes[] = "TRIM(projeto) = ?";
+    $params[] = $projetoFiltro;
+    $tipos .= 's';
+}
+
+if ($modeloFiltro !== '') {
+    $condicoes[] = "TRIM(modelo) = ?";
+    $params[] = $modeloFiltro;
+    $tipos .= 's';
+}
+
 $where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 
 // Anos disponíveis na base, pra montar o combo de filtro dinamicamente
@@ -614,6 +636,23 @@ $resAnos = mysqli_query($conn, "SELECT DISTINCT ano FROM edi WHERE ano IS NOT NU
 if ($resAnos) {
     while ($linhaAno = mysqli_fetch_assoc($resAnos)) {
         $anosDisponiveis[] = $linhaAno['ano'];
+    }
+}
+
+// Projetos e modelos disponíveis na base, pra montar os combos de filtro dinamicamente
+$projetosDisponiveis = [];
+$resProjetos = mysqli_query($conn, "SELECT DISTINCT TRIM(projeto) AS projeto FROM edi WHERE projeto IS NOT NULL AND TRIM(projeto) <> '' ORDER BY projeto");
+if ($resProjetos) {
+    while ($linhaProjeto = mysqli_fetch_assoc($resProjetos)) {
+        $projetosDisponiveis[] = $linhaProjeto['projeto'];
+    }
+}
+
+$modelosDisponiveis = [];
+$resModelos = mysqli_query($conn, "SELECT DISTINCT TRIM(modelo) AS modelo FROM edi WHERE modelo IS NOT NULL AND TRIM(modelo) <> '' ORDER BY modelo");
+if ($resModelos) {
+    while ($linhaModelo = mysqli_fetch_assoc($resModelos)) {
+        $modelosDisponiveis[] = $linhaModelo['modelo'];
     }
 }
 
@@ -922,6 +961,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                     <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                     <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                    <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                    <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                     <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                     <div class="col-auto">
                         <label class="form-label small mb-1">PN2</label>
@@ -980,16 +1021,32 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </select>
                 </div>
                 <div class="col-auto">
+                    <select name="projeto" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os projetos</option>
+                        <?php foreach ($projetosDisponiveis as $projetoOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($projetoOpcao); ?>" <?php echo ($projetoFiltro === $projetoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($projetoOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select name="modelo" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os modelos</option>
+                        <?php foreach ($modelosDisponiveis as $modeloOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($modeloOpcao); ?>" <?php echo ($modeloFiltro === $modeloOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($modeloOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <div class="btn-group" role="group">
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
                     </div>
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="edi.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -1021,7 +1078,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
                                 $idLinha = (int) $row['id'];
                                 $emEdicao = ($editando === $idLinha);
-                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&filtro=' . urlencode($filtro);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&projeto=' . urlencode($projetoFiltro) . '&modelo=' . urlencode($modeloFiltro) . '&filtro=' . urlencode($filtro);
                                 ?>
                                 <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
@@ -1031,6 +1088,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                                            <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                                            <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
@@ -1057,6 +1116,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                                            <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                                            <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
@@ -1072,13 +1133,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
