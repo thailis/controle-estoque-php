@@ -316,7 +316,6 @@ if ($erroDetalhe === null) {
                                 <th>Status</th>
                                 <th>Data sugerida do pedido</th>
                                 <th>Data de necessidade (recebimento)</th>
-                                <th>Disponível a partir de</th>
                                 <th>Quantidade</th>
                             </tr>
                         </thead>
@@ -332,7 +331,6 @@ if ($erroDetalhe === null) {
                                     </td>
                                     <td><?php echo h($p['data']->format('d/m/Y')); ?></td>
                                     <td><?php echo h($p['data_necessidade']->format('d/m/Y')); ?></td>
-                                    <td><?php echo h($p['data_disponibilidade']->format('d/m/Y')); ?></td>
                                     <td><?php echo numeroBr($p['quantidade'], 0); ?></td>
                                 </tr>
                             <?php endforeach; ?>
