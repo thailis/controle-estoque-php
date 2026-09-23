@@ -63,8 +63,9 @@ function calcularEstoqueSegurancaQtd(
 //      múltiplo dele. Ex.: déficit de 8.464 com MOQ 100 vira 8.464 (não 8.500). Se o
 //      déficit for menor que o MOQ, aí sim compra o MOQ inteiro (é o mínimo que dá pra
 //      pedir). Depois injeta de volta na simulação, pra próxima revisão já considerar
-//      essa compra — na data em que o material realmente fica disponível (ver "$iEvento"
-//      mais abaixo), não no dia em que o piso apenas detectou o problema.
+//      essa compra — na data em que o material realmente fica disponível (ver
+//      "$iDisponibilidade" mais abaixo), não no dia em que o piso apenas detectou o
+//      problema, nem no dia da demanda que gerou a necessidade.
 //
 // Retorna ['parcelas' => [...], 'saldo_por_dia' => ['Y-m-d' => saldo]] — o segundo campo
 // é a simulação final (já com todas as parcelas injetadas), útil pra telas que queiram
@@ -158,8 +159,14 @@ function calcularParcelasCompraPlanejamento(
         }
 
         // Só age agora se o furo acontecer dentro do prazo de reação (até a próxima
-        // revisão mensal + Lead Time) — um furo mais distante espera a revisão do mês dele.
-        $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days"));
+        // revisão mensal + Lead Time + os 30 dias de receber/conferir/disponibilizar) — um
+        // furo mais distante espera a revisão do mês dele. Os 30 dias entram aqui porque a
+        // cadeia completa é: evento de demanda → -30 dias = data de necessidade
+        // (recebimento) → -Lead Time = data sugerida do pedido. Sem somar os 30 dias, a
+        // janela cortava o evento antes do ponto em que a DECISÃO de compra (data sugerida)
+        // ainda cairia dentro do prazo desta revisão, deixando a necessidade escapar pra
+        // revisão seguinte mesmo quando já era hora de agir.
+        $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days")->modify('+30 days'));
         $iFimUrgencia = $indicePorData[$fimUrgencia->format('Y-m-d')] ?? ($n - 1);
 
         // Piso do Estoque Mínimo calculado DIA A DIA, olhando pra frente a partir de CADA
@@ -211,19 +218,42 @@ function calcularParcelasCompraPlanejamento(
 
         // O evento de demanda real que gera a necessidade: caminha a partir do PRIMEIRO
         // furo ($iPrimeiroDeficit) — não do pior — até achar o primeiro dia com demanda
-        // real, sem passar do fim da janela de urgência do checkpoint ($iFimUrgencia). Antes,
-        // a busca partia do pior dia e podia correr sem limite até o fim do horizonte de 12
-        // meses atrás de um evento real, gerando datas de necessidade fora do escopo da
-        // própria revisão mensal.
+        // real. Antes, a busca partia do pior dia e podia correr sem limite até o fim do
+        // horizonte de 12 meses atrás de um evento real, gerando datas de necessidade fora
+        // do escopo da própria revisão mensal.
+        //
+        // O limite da busca NÃO é só $iFimUrgencia: pisoNoDia($iPrimeiroDeficit) soma a
+        // demanda de [$iPrimeiroDeficit, $iPrimeiroDeficit + $minDias) — ou seja, o piso já
+        // "enxergou" um evento de demanda até $minDias dias à frente pra disparar o furo
+        // logo em $iPrimeiroDeficit. Se essa janela de $minDias for maior que o que sobra
+        // até $iFimUrgencia, o evento real existe mas fica fora do alcance da busca, cai no
+        // fallback e gera uma data de necessidade artificial (baseada no dia em que o piso
+        // apenas acusou o problema, não num dia de demanda de verdade). Por isso a busca vai
+        // até o maior entre os dois limites — garante achar o evento que efetivamente
+        // motivou o furo detectado por pisoNoDia, e só cai no fallback quando o furo é
+        // mesmo por erosão pura de segurança, sem nenhuma demanda futura associada.
+        $limiteBuscaEvento = min($n - 1, max($iFimUrgencia, $iPrimeiroDeficit + $minDias));
         $iEvento = $iPrimeiroDeficit;
-        while ($iEvento < $n && $iEvento <= $iFimUrgencia && $demandaPorDia[$iEvento] <= 0) {
+        while ($iEvento < $n && $iEvento <= $limiteBuscaEvento && $demandaPorDia[$iEvento] <= 0) {
             $iEvento++;
         }
-        if ($iEvento > $iFimUrgencia || $iEvento >= $n) {
-            $iEvento = $iPrimeiroDeficit;
+        if ($iEvento > $limiteBuscaEvento || $iEvento >= $n) {
+            $iEvento = $iPrimeiroDeficit; // furo por erosão de segurança, sem demanda real associada
         }
         $dataNecessidade = $dias[$iEvento]->modify('-30 days');
         $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
+
+        // $iEvento é o dia da DEMANDA, não o dia em que o material fica disponível — a
+        // disponibilidade (receber + conferir) acontece 30 dias ANTES da demanda, que é
+        // exatamente o que $dataNecessidade já calcula acima. $iDisponibilidade é o índice
+        // correspondente a essa mesma data dentro de $dias (os dias são consecutivos a
+        // partir de $hoje, então "30 dias antes" em data equivale a "-30" em índice).
+        // Usar $iEvento aqui — como o código fazia antes — descreve a disponibilidade como
+        // se fosse o próprio dia da demanda, sem nenhuma folga: o teto do Máximo e a
+        // injeção no saldo ficavam 30 dias atrasados em relação à data de necessidade já
+        // calculada, deixando o saldo simulado artificialmente baixo durante esse período
+        // (o material já estaria fisicamente disponível, mas a simulação não "sabia" disso).
+        $iDisponibilidade = max(0, $iEvento - 30);
 
         // Quantidade: cobre o pior déficit dentro da PRÓPRIA janela de urgência (mês da
         // revisão + Lead Time) — o lote fica proporcional ao problema real desse mês, sem
@@ -235,14 +265,14 @@ function calcularParcelasCompraPlanejamento(
         }
 
         // Teto do Estoque Máximo (dias): não compra mais do que o necessário pra chegar
-        // nesse teto, calculado a partir de $iEvento — o mesmo dia em que a compra
+        // nesse teto, calculado a partir de $iDisponibilidade — o dia em que a compra
         // efetivamente chega na simulação (ver injeção mais abaixo). Se o MOQ sozinho já
         // exigir mais que esse teto, o MOQ vence — é o mínimo que o fornecedor aceita,
         // mesmo passando do Máximo.
         $maxQtdNoDia = $maxDias > 0
-            ? ($prefixoDemanda[min($n, $iEvento + $maxDias)] - $prefixoDemanda[$iEvento])
+            ? ($prefixoDemanda[min($n, $iDisponibilidade + $maxDias)] - $prefixoDemanda[$iDisponibilidade])
             : 0.0;
-        $tetoCompra = max(0.0, $maxQtdNoDia - $saldoPorDia[$iEvento]);
+        $tetoCompra = max(0.0, $maxQtdNoDia - $saldoPorDia[$iDisponibilidade]);
 
         // MOQ como PISO mínimo, não como múltiplo/lote fechado: compra o déficit sem passar
         // do teto do Máximo, exceto quando o MOQ sozinho já exige mais que isso (aí compra
@@ -268,21 +298,21 @@ function calcularParcelasCompraPlanejamento(
             'status' => $status,
             'data' => $status === 'urgente' ? $hoje : $dataSugerida,
             'data_necessidade' => $dataNecessidade,
-            'data_disponibilidade' => $dias[$iEvento],
+            'data_disponibilidade' => $dias[$iDisponibilidade],
             'quantidade' => $quantidadeFinal,
             'quantidade_base' => $quantidadeBase,
             'setup' => $setupPercentual,
         ];
 
-        // Injeta a quantidade a partir de $iEvento — o dia em que o material realmente
-        // fica disponível (dataSugerida + Lead Time + os 30 dias de receber/conferir/
-        // disponibilizar = a data do próprio evento de demanda) — e não a partir do dia
-        // em que o piso apenas DETECTOU o problema ($iPrimeiroDeficit). Injetar antes
-        // disso faria a simulação enxergar estoque que fisicamente ainda não chegou. Nos
-        // dias entre $iPrimeiroDeficit e $iEvento não há demanda real acontecendo (foi
-        // assim que $iEvento foi encontrado), então não existe consumo físico pra cobrir
-        // ali — não injetar antes não deixa nenhum buraco real descoberto.
-        for ($k = $iEvento; $k < $n; $k++) {
+        // Injeta a quantidade a partir de $iDisponibilidade — o dia em que o material
+        // realmente fica disponível (dataSugerida + Lead Time = $dataNecessidade, que é o
+        // recebimento físico; +30 dias de receber/conferir/disponibilizar seria a demanda,
+        // então a disponibilidade em si é 30 dias ANTES do dia da demanda, $iEvento) — e
+        // não a partir do dia da demanda em si, nem do dia em que o piso apenas DETECTOU
+        // o problema ($iPrimeiroDeficit). Injetar em $iEvento (como o código fazia antes)
+        // atrasava a disponibilidade em 30 dias, deixando o saldo simulado artificialmente
+        // baixo nesse intervalo mesmo com o material já fisicamente disponível.
+        for ($k = $iDisponibilidade; $k < $n; $k++) {
             $saldoPorDia[$k] += $quantidadeFinal;
         }
     }
