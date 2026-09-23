@@ -878,7 +878,16 @@ while ($row = mysqli_fetch_assoc($result)) {
         body { background: #f4f6f9; padding: 20px; }
         .card { border-radius: 15px; box-shadow: 0 2px 20px rgba(0,0,0,0.08); }
         .bg-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; }
-        .table th { background: #f8f9fa; white-space: nowrap; }
+        .table th {
+            background: #f8f9fa;
+            white-space: normal;
+            word-break: break-word;
+            vertical-align: middle;
+            text-align: center;
+            line-height: 1.25;
+            padding-top: 10px;
+            padding-bottom: 10px;
+        }
         .table td { white-space: nowrap; vertical-align: middle; }
         .form-check { padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px; }
         .form-check:hover { background: #f8f9fa; }
