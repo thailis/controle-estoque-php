@@ -31,6 +31,9 @@ $demandaPorData = [];
 $parametrosCompra = null;
 $parcelasSugeridas = [];
 $saldoComSugestaoPorData = [];
+$segurancaQtd = 0.0;
+$estoqueMinQtd = 0.0;
+$estoqueMaxQtd = 0.0;
 
 try {
     $stmtInfo = mysqli_prepare($conn, "
@@ -175,6 +178,25 @@ if ($erroDetalhe === null) {
             $setupComp
         );
 
+        // Estoque Mínimo/Máximo convertidos de "dias" pra quantidade, pra mostrar na tela —
+        // mesma conta que o Planejamento de Compras faz internamente (soma a demanda dos
+        // próximos N dias a partir de hoje), só que fixada em "hoje" em vez de recalculada
+        // dia a dia dentro da simulação. É um retrato do "quanto isso representa agora",
+        // não o valor exato usado em cada dia da simulação (que muda com a demanda).
+        $hojeChaveInfo = $hoje->format('Y-m-d');
+        $fimJanelaMinInfo = $hoje->modify('+' . (int) $parametrosCompra['estoque_min_dias'] . ' days')->format('Y-m-d');
+        foreach ($demandaPorData as $dataMov => $qtd) {
+            if ($dataMov >= $hojeChaveInfo && $dataMov < $fimJanelaMinInfo) {
+                $estoqueMinQtd += $qtd;
+            }
+        }
+        $fimJanelaMaxInfo = $hoje->modify('+' . (int) $parametrosCompra['estoque_max_dias'] . ' days')->format('Y-m-d');
+        foreach ($demandaPorData as $dataMov => $qtd) {
+            if ($dataMov >= $hojeChaveInfo && $dataMov < $fimJanelaMaxInfo) {
+                $estoqueMaxQtd += $qtd;
+            }
+        }
+
         $horizontePreview = $hoje->modify('+12 months');
         $resultadoPreview = calcularParcelasCompraPlanejamento(
             $estoqueAtual,
@@ -293,7 +315,41 @@ if ($erroDetalhe === null) {
                 Estoque Mínimo e Estoque Máximo) em <a href="parametros_compra.php">Parâmetros de Compra</a>,
                 então não é possível simular o efeito de uma compra sugerida aqui.
             </div>
-        <?php elseif (empty($parcelasSugeridas)): ?>
+        <?php else: ?>
+            <section class="metrics-grid mb-4" aria-label="Parâmetros de compra e estoque">
+                <article class="metric-card metric-neutral">
+                    <span class="metric-label">Estoque atual</span>
+                    <strong><?php echo numeroBr($estoqueAtual, 0); ?></strong>
+                    <small>Físico, hoje</small>
+                </article>
+                <article class="metric-card metric-info">
+                    <span class="metric-label">Estoque mínimo</span>
+                    <strong><?php echo numeroBr($estoqueMinQtd, 0); ?></strong>
+                    <small><?php echo (int) $parametrosCompra['estoque_min_dias']; ?> dias de demanda</small>
+                </article>
+                <article class="metric-card metric-warning">
+                    <span class="metric-label">Estoque de segurança</span>
+                    <strong><?php echo numeroBr($segurancaQtd, 0); ?></strong>
+                    <small>Calculado automaticamente</small>
+                </article>
+                <article class="metric-card metric-excesso">
+                    <span class="metric-label">Estoque máximo</span>
+                    <strong><?php echo numeroBr($estoqueMaxQtd, 0); ?></strong>
+                    <small><?php echo (int) $parametrosCompra['estoque_max_dias']; ?> dias de demanda</small>
+                </article>
+                <article class="metric-card metric-neutral">
+                    <span class="metric-label">Frozen Zone</span>
+                    <strong><?php echo (int) $parametrosCompra['frozen_zone_dias']; ?></strong>
+                    <small>dias</small>
+                </article>
+                <article class="metric-card metric-neutral">
+                    <span class="metric-label">Lead Time total</span>
+                    <strong><?php echo (int) $parametrosCompra['frozen_zone_dias'] + (int) $parametrosCompra['transit_time_dias']; ?></strong>
+                    <small>Frozen Zone (<?php echo (int) $parametrosCompra['frozen_zone_dias']; ?>) + Transit Time (<?php echo (int) $parametrosCompra['transit_time_dias']; ?>)</small>
+                </article>
+            </section>
+
+        <?php if (empty($parcelasSugeridas)): ?>
             <div class="alert alert-success" role="alert">
                 Com a programação já colocada, nenhuma compra nova é necessária nos próximos 12 meses — o saldo
                 não fica abaixo do Estoque Mínimo + Segurança em nenhum momento.
@@ -338,6 +394,7 @@ if ($erroDetalhe === null) {
                     </table>
                 </div>
             </section>
+        <?php endif; ?>
         <?php endif; ?>
 
         <section class="table-card">
