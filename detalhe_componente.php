@@ -20,8 +20,11 @@ if ($codigo === '') {
     die('Código do componente não informado. Volte ao <a href="index.php">Dashboard</a> e clique em "Ver evolução" em um componente.');
 }
 
-$dataLimite = new DateTimeImmutable('2027-03-31');
 $hoje = new DateTimeImmutable('today');
+// Horizonte rolante (hoje + 180 dias) — antes era uma data fixa (31/03/2027), que ia
+// encolhendo conforme o tempo passava até sumir. Rolante mantém sempre a mesma "distância"
+// pra frente, e fica entre o Dashboard (90 dias) e o Planejamento/MRP (12 meses).
+$dataLimite = $hoje->modify('+180 days');
 
 $erroDetalhe = null;
 $infoComponente = ['descricao' => '', 'fornecedores' => '', 'projetos' => ''];
@@ -167,7 +170,8 @@ if ($erroDetalhe === null) {
     // (calcularParcelasCompraPlanejamento, em mrp_calculo.php), mas só pra este componente
     // e sem gravar nada — é uma simulação, não uma programação real. O horizonte usa 12
     // meses rolantes (igual ao Planejamento) pra achar a real data de necessidade, mesmo
-    // que a tabela exibida vá só até 31/03/2027.
+    // que a tabela exibida (Evolução do Estoque) use um horizonte mais curto ($dataLimite,
+    // hoje + 180 dias rolantes).
     if ($parametrosCompra !== null) {
         $setupComp = $parametrosCompra['setup'] !== null ? (float) $parametrosCompra['setup'] : 0.0;
         $segurancaQtd = calcularEstoqueSegurancaQtd(
@@ -279,7 +283,7 @@ if ($erroDetalhe === null) {
             <div>
                 <span class="eyebrow">Supply Chain • Planejamento de materiais</span>
                 <h1>Evolução do estoque</h1>
-                <p class="mb-0">Saldo projetado dia a dia até 31/03/2027</p>
+                <p class="mb-0">Saldo projetado dia a dia até <?php echo h($dataLimite->format('d/m/Y')); ?></p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-light btn-sm" href="index.php">🏠 Dashboard</a>
