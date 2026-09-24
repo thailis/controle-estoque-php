@@ -58,12 +58,12 @@ function parseNumeroBomnovaTax(string $valor): ?float
 }
 
 // Calcula o Preço a partir do Net Price e dos impostos (IPI, PIS, COFINS, ICMS,
-// digitados em %), seguindo a regra:
-//   Preço = NetPrice × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)
+// digitados em %), seguindo o gross-up:
+//   Preço = [ NetPrice ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%))) ] × (1 + IPI%)
 // Sem Net Price não dá pra calcular nada (retorna null, exibido como "—").
-// Impostos em branco contam como 0%. ICMS = 100% tornaria a divisão por zero
-// (matematicamente sem sentido pra uma alíquota), então também retorna null
-// nesse caso extremo.
+// Impostos em branco contam como 0%. Se o denominador do gross-up zerar (ou ficar
+// negativo/zero), a divisão não faz sentido, então também retorna null nesse caso
+// extremo.
 function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string $pisTexto, ?string $cofinsTexto, ?string $icmsTexto): ?float
 {
     $netPrice = $netPriceTexto !== null ? parseNumeroBomnovaTax($netPriceTexto) : null;
@@ -75,12 +75,17 @@ function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string
     $cofins = ($cofinsTexto !== null ? parseNumeroBomnovaTax($cofinsTexto) : null) ?? 0.0;
     $icms = ($icmsTexto !== null ? parseNumeroBomnovaTax($icmsTexto) : null) ?? 0.0;
 
-    $divisor = 1 - ($icms / 100);
+    $icmsFr = $icms / 100;
+    $pisFr = $pis / 100;
+    $cofinsFr = $cofins / 100;
+    $ipiFr = $ipi / 100;
+
+    $divisor = 1 - ($icmsFr + ($pisFr - $icmsFr * $pisFr) + ($cofinsFr - $icmsFr * $cofinsFr));
     if (abs($divisor) < 0.0000001) {
         return null;
     }
 
-    return $netPrice * (1 + $ipi / 100) * (1 + $pis / 100 + $cofins / 100) / $divisor;
+    return ($netPrice / $divisor) * (1 + $ipiFr);
 }
 
 $mensagens = [];
@@ -987,7 +992,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                 if (texto === null || texto === undefined) return null;
                 texto = texto.trim();
                 if (texto === '' || texto === '—') return null;
-                const limpo = texto.replace(/\./g, '').replace(',', '.');
+                // Net Price/IPI/PIS/COFINS/ICMS nunca têm milhar aqui — um ponto sozinho
+                // (sem vírgula) É o separador decimal, nunca deve ser removido. Só quando
+                // há vírgula é que um ponto antes dela vira separador de milhar.
+                const limpo = texto.includes(',')
+                    ? texto.replace(/\./g, '').replace(',', '.')
+                    : texto;
                 const numero = parseFloat(limpo);
                 return isNaN(numero) ? null : numero;
             }
