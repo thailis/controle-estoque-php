@@ -699,6 +699,12 @@ if ($resProcessosProgramacao) {
         function carregarProcessoProgramacao() {
             const processo = document.getElementById('select_processo').value;
             if (!processo) return;
+
+            // O nome sugerido pelo navegador ao "Baixar PDF" (window.print → Salvar
+            // como PDF) vem do <title> da página — atualiza aqui pro PDF já sair com
+            // o nome certo pra subir no site, sem precisar renomear na mão depois.
+            document.title = 'PO_' + processo.replace(/\s+/g, '_');
+
             fetch('pedido_compra.php?ajax=buscar_processo_programacao&processo=' + encodeURIComponent(processo))
                 .then(r => r.json())
                 .then(dados => {

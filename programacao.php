@@ -116,6 +116,22 @@ function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
     return $pares;
 }
 
+// Coluna de Preço associada a um par [data, quantidade]: opcional — se a
+// coluna logo depois da Quantidade tiver "preco" no nome (ex.: "Preço",
+// "Preço 2"...), ela é pareada com aquele lançamento. Cobre tanto o formato
+// simples (codigo_componente, processo, data, quantidade, preco) quanto o
+// largo (Programação 1, Quantidade, Preço, Programação 2, Quantidade 2,
+// Preço 2...). Sem essa coluna, o Preço fica em branco — dá pra editar
+// depois direto na tela (duplo clique) ou puxar no Pedido de Compra.
+function detectarColunaPreco(array $cabecalhoNormalizado, int $indiceQtd): ?int
+{
+    $proximo = $indiceQtd + 1;
+    if (isset($cabecalhoNormalizado[$proximo]) && str_contains($cabecalhoNormalizado[$proximo], 'preco')) {
+        return $proximo;
+    }
+    return null;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -161,9 +177,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "🗑️ Tabela 'programacao' esvaziada antes da importação.";
                 }
 
-                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade) VALUES (?, ?, ?, ?)");
+                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT id FROM programacao WHERE TRIM(codigo_componente) = ? AND data = ? LIMIT 1");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ? WHERE id = ?");
+                // Só usada quando o CSV traz uma coluna de Preço pareada com aquele
+                // lançamento — atualiza a quantidade e o preço juntos, sem apagar o
+                // preço já gravado quando o CSV não traz essa coluna pra aquele par.
+                $stmtUpdateComPreco = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ?, preco = ? WHERE id = ?");
 
                 mysqli_autocommit($conn, false);
 
@@ -215,6 +235,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             continue;
                         }
 
+                        // Preço é opcional — se a coluna não existir pra esse par, ou vier
+                        // vazia, fica NULL (editável depois direto na tela). Se vier
+                        // preenchida mas inválida, avisa e segue sem travar a linha.
+                        $indicePreco = detectarColunaPreco($cabecalho, $indiceQtd);
+                        $preco = null;
+                        if ($indicePreco !== null) {
+                            $precoBruto = trim($linha[$indicePreco] ?? '');
+                            if ($precoBruto !== '') {
+                                $preco = parseQuantidade($precoBruto);
+                                if ($preco === null) {
+                                    $erros++;
+                                    $mensagens[] = "⚠️ Linha $linhaNum, coluna " . ($indicePreco + 1) . ": preço '$precoBruto' inválido — lançamento seguiu sem preço.";
+                                }
+                            }
+                        }
+
                         $idExistente = null;
                         if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
                             mysqli_stmt_bind_param($stmtVerifica, "ss", $codigoComponente, $data);
@@ -230,17 +266,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }
 
                         if ($modo === 'atualizar' && $idExistente !== null) {
-                            mysqli_stmt_bind_param($stmtUpdate, "di", $quantidade, $idExistente);
-                            if (mysqli_stmt_execute($stmtUpdate)) {
+                            if ($preco !== null) {
+                                mysqli_stmt_bind_param($stmtUpdateComPreco, "ddi", $quantidade, $preco, $idExistente);
+                                $sucessoUpdate = mysqli_stmt_execute($stmtUpdateComPreco);
+                                $erroUpdate = mysqli_stmt_error($stmtUpdateComPreco);
+                            } else {
+                                mysqli_stmt_bind_param($stmtUpdate, "di", $quantidade, $idExistente);
+                                $sucessoUpdate = mysqli_stmt_execute($stmtUpdate);
+                                $erroUpdate = mysqli_stmt_error($stmtUpdate);
+                            }
+                            if ($sucessoUpdate) {
                                 $atualizados++;
                             } else {
                                 $erros++;
-                                $mensagens[] = "⚠️ Erro ao atualizar linha $linhaNum: " . mysqli_stmt_error($stmtUpdate);
+                                $mensagens[] = "⚠️ Erro ao atualizar linha $linhaNum: " . $erroUpdate;
                             }
                             continue;
                         }
 
-                        mysqli_stmt_bind_param($stmtInsert, "sssd", $codigoComponente, $processoLinha, $data, $quantidade);
+                        mysqli_stmt_bind_param($stmtInsert, "sssdd", $codigoComponente, $processoLinha, $data, $quantidade, $preco);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
                         } else {
@@ -256,6 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 mysqli_stmt_close($stmtInsert);
                 mysqli_stmt_close($stmtVerifica);
                 mysqli_stmt_close($stmtUpdate);
+                mysqli_stmt_close($stmtUpdateComPreco);
 
                 $resumo = "✅ Importação concluída: $importados inserida(s)";
                 if ($atualizados > 0) $resumo .= ", $atualizados atualizada(s)";
@@ -1055,11 +1100,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Formato simples</strong> (uma programação por linha):<br>
-                        <code>codigo_componente, processo, data, quantidade</code><br>
-                        A coluna <code>processo</code> é opcional.<br><br>
+                        <code>codigo_componente, processo, data, quantidade, preco</code><br>
+                        As colunas <code>processo</code> e <code>preco</code> são opcionais.<br><br>
                         <strong>Formato da planilha</strong> (várias programações na mesma linha, como no Excel):<br>
-                        <code>Componente, ..., Programação 1, Quantidade, Programação 2, Quantidade 2, Programação 3, Quantidade...</code><br>
-                        Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Deixe em branco as programações que não existirem.<br><br>
+                        <code>Componente, ..., Programação 1, Quantidade, Preço, Programação 2, Quantidade 2, Preço 2, Programação 3, Quantidade...</code><br>
+                        Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Se a coluna logo depois da Quantidade tiver "preco" no nome, ela é pareada com aquele lançamento (opcional — sem ela, o Preço fica em branco pra editar depois). Deixe em branco as programações que não existirem.<br><br>
                         Data em DD/MM/AAAA ou AAAA-MM-DD. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
