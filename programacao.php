@@ -1158,9 +1158,9 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Componente</th>
                             <th>PN</th>
                             <th>Descrição</th>
-                            <th>Fornecedor</th>
+                            <th class="text-start">Fornecedor</th>
                             <th class="text-end">Preço</th>
-                            <th>Data</th>
+                            <th class="text-center">Data</th>
                             <th class="text-end">Quantidade</th>
                             <th class="text-end" title="Quantidade confirmada via Confirmar Entrega (site de Importação)">Importado</th>
                             <th class="text-end" title="Preço × Quantidade">Total Pedido</th>
@@ -1228,7 +1228,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                     ><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
 
-                                    <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
+                                    <td class="text-center <?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
                                         <?php if ($podeEditarLinha): ?>
                                         data-id="<?php echo $idLinha; ?>" data-campo="data"
                                         data-valor-bruto="<?php echo h(formatarDataBrProgramacao($row['data'] ?? null)); ?>"
