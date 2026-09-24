@@ -1245,7 +1245,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end text-muted" title="Preenchido automaticamente ao confirmar entrega no site de Importação">
                                         <?php echo $row['importado'] !== null ? number_format((float) $row['importado'], 2, ',', '.') : '—'; ?>
                                     </td>
-                                    <td class="text-end text-muted" title="Calculado automaticamente: Preço × Quantidade">
+                                    <td class="text-end text-muted js-total-pedido" data-total-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Preço × Quantidade">
                                         <?php echo $totalPedidoLinha !== null ? number_format($totalPedidoLinha, 2, ',', '.') : '—'; ?>
                                     </td>
                                     <td class="celula-editavel"
@@ -1258,7 +1258,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         data-valor-bruto="<?php echo $quantidadeRecebidaLinha !== null ? h(number_format($quantidadeRecebidaLinha, 2, ',', '')) : ''; ?>"
                                         title="Duplo clique para editar"
                                     ><?php echo $quantidadeRecebidaLinha !== null ? number_format($quantidadeRecebidaLinha, 2, ',', '.') : '—'; ?></td>
-                                    <td class="text-end text-muted" title="Calculado automaticamente: Quantidade Recebida − Quantidade">
+                                    <td class="text-end text-muted js-saldo" data-saldo-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Quantidade Recebida − Quantidade">
                                         <?php echo number_format($saldoLinha, 2, ',', '.'); ?>
                                     </td>
                                     <td>
@@ -1419,6 +1419,60 @@ while ($row = mysqli_fetch_assoc($result)) {
                 alvo.scrollIntoView({ block: 'center' });
             }
         }
+    </script>
+    <script>
+        // Total Pedido (Preço × Quantidade) e Saldo (Quantidade Recebida − Quantidade)
+        // são calculados aqui no navegador a partir do texto das células, e recalculados
+        // toda vez que Preço, Quantidade ou Quantidade Recebida mudam de valor — inclusive
+        // quando a edição vem do inline-edit.js genérico, que só sabe atualizar a própria
+        // célula editada e não teria como saber que precisa também atualizar essas duas
+        // colunas calculadas. Assim funciona sem precisar recarregar a página.
+        window.addEventListener('DOMContentLoaded', function () {
+            function parseNumeroBr(texto) {
+                if (texto === null || texto === undefined) return null;
+                texto = texto.trim();
+                if (texto === '' || texto === '—') return null;
+                const limpo = texto.replace(/\./g, '').replace(',', '.');
+                const numero = parseFloat(limpo);
+                return isNaN(numero) ? null : numero;
+            }
+
+            function formatarNumeroBr(numero) {
+                return numero.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+
+            document.querySelectorAll('tbody tr[id^="linha-"]').forEach(function (linha) {
+                const celulaPreco = linha.querySelector('td[data-campo="preco"]');
+                const celulaQtd = linha.querySelector('td[data-campo="quantidade"]') || linha.children[8];
+                const celulaQtdRecebida = linha.querySelector('td[data-campo="quantidade_recebida"]');
+                const celulaTotal = linha.querySelector('td.js-total-pedido');
+                const celulaSaldo = linha.querySelector('td.js-saldo');
+
+                function recalcular() {
+                    const preco = celulaPreco ? parseNumeroBr(celulaPreco.textContent) : null;
+                    const qtd = celulaQtd ? parseNumeroBr(celulaQtd.textContent) : null;
+                    const qtdRecebida = celulaQtdRecebida ? parseNumeroBr(celulaQtdRecebida.textContent) : null;
+
+                    if (celulaTotal) {
+                        celulaTotal.textContent = (preco !== null && qtd !== null)
+                            ? formatarNumeroBr(preco * qtd)
+                            : '—';
+                    }
+                    if (celulaSaldo) {
+                        celulaSaldo.textContent = formatarNumeroBr((qtdRecebida || 0) - (qtd || 0));
+                    }
+                }
+
+                [celulaPreco, celulaQtd, celulaQtdRecebida].forEach(function (celula) {
+                    if (!celula) return;
+                    new MutationObserver(recalcular).observe(celula, {
+                        childList: true,
+                        characterData: true,
+                        subtree: true,
+                    });
+                });
+            });
+        });
     </script>
 </body>
 </html>
