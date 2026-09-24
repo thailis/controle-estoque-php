@@ -37,6 +37,32 @@ function parseNumeroBr(string $valor): ?float
     return is_numeric($valor) ? (float) $valor : null;
 }
 
+// Calcula o Preço a partir do Net Price e dos impostos (IPI, PIS, COFINS, ICMS,
+// digitados em %), seguindo a regra:
+//   Preço = NetPrice × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)
+// Sem Net Price não dá pra calcular nada (retorna null, exibido como "—").
+// Impostos em branco contam como 0%. ICMS = 100% tornaria a divisão por zero
+// (matematicamente sem sentido pra uma alíquota), então também retorna null
+// nesse caso extremo.
+function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string $pisTexto, ?string $cofinsTexto, ?string $icmsTexto): ?float
+{
+    $netPrice = $netPriceTexto !== null ? parseNumeroBr($netPriceTexto) : null;
+    if ($netPrice === null) {
+        return null;
+    }
+    $ipi = ($ipiTexto !== null ? parseNumeroBr($ipiTexto) : null) ?? 0.0;
+    $pis = ($pisTexto !== null ? parseNumeroBr($pisTexto) : null) ?? 0.0;
+    $cofins = ($cofinsTexto !== null ? parseNumeroBr($cofinsTexto) : null) ?? 0.0;
+    $icms = ($icmsTexto !== null ? parseNumeroBr($icmsTexto) : null) ?? 0.0;
+
+    $divisor = 1 - ($icms / 100);
+    if (abs($divisor) < 0.0000001) {
+        return null;
+    }
+
+    return $netPrice * (1 + $ipi / 100) * (1 + $pis / 100 + $cofins / 100) / $divisor;
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
@@ -60,13 +86,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
     if (!in_array($campo, $camposEditaveis, true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
+    }
+
+    // Net Price e os impostos (%) são numéricos — normaliza pra sempre gravar/
+    // exibir com 4 casas decimais, aceitando tanto "10,5" quanto "10.5" na
+    // digitação. Vazio grava NULL (campo em branco, some do cálculo do Preço).
+    $camposNumericosPercentuais = ['net_price', 'ipi', 'pis', 'cofins', 'icms'];
+    $valorParaGravar = $novoValor;
+    $valorParaExibir = $novoValor;
+    if (in_array($campo, $camposNumericosPercentuais, true)) {
+        if ($novoValor === '') {
+            $valorParaGravar = null;
+            $valorParaExibir = '';
+        } else {
+            $numeroEditado = parseNumeroBr($novoValor);
+            if ($numeroEditado === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Valor inválido.']);
+                exit;
+            }
+            $valorParaGravar = number_format($numeroEditado, 4, '.', '');
+            $valorParaExibir = number_format($numeroEditado, 4, ',', '.');
+        }
     }
 
     $camposCompostos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
@@ -80,7 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
 
     $stmtEditar = mysqli_prepare($conn, $sqlEditar);
     $tiposEditar = str_repeat('s', 1 + count($camposCompostos));
-    $parametrosEditar = array_merge([$novoValor], $valoresOriginais);
+    $parametrosEditar = array_merge([$valorParaGravar], $valoresOriginais);
     mysqli_stmt_bind_param($stmtEditar, $tiposEditar, ...$parametrosEditar);
     mysqli_stmt_execute($stmtEditar);
     $linhasAfetadas = mysqli_stmt_affected_rows($stmtEditar);
@@ -91,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    echo json_encode(['ok' => true, 'exibido' => $novoValor]);
+    echo json_encode(['ok' => true, 'exibido' => $valorParaExibir]);
     exit;
 }
 
@@ -352,7 +399,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -393,6 +440,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $consumoBruto = $dados['consumo'] ?? '';
                     $consumo = $consumoBruto !== '' ? parseNumeroBr((string) $consumoBruto) : null;
                     $um = $dados['um'] ?? null;
+                    // Net Price e os impostos (%) são opcionais no CSV — se não vierem,
+                    // ficam em branco e podem ser digitados depois direto na tela.
+                    $netPriceBruto = $dados['net_price'] ?? $dados['netprice'] ?? '';
+                    $netPrice = $netPriceBruto !== '' ? parseNumeroBr((string) $netPriceBruto) : null;
+                    $ipiBruto = $dados['ipi'] ?? '';
+                    $ipi = $ipiBruto !== '' ? parseNumeroBr((string) $ipiBruto) : null;
+                    $pisBruto = $dados['pis'] ?? '';
+                    $pis = $pisBruto !== '' ? parseNumeroBr((string) $pisBruto) : null;
+                    $cofinsBruto = $dados['cofins'] ?? '';
+                    $cofins = $cofinsBruto !== '' ? parseNumeroBr((string) $cofinsBruto) : null;
+                    $icmsBruto = $dados['icms'] ?? '';
+                    $icms = $icmsBruto !== '' ? parseNumeroBr((string) $icmsBruto) : null;
                     $mrp = $dados['mrp'] ?? null;
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
@@ -410,7 +469,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $planejamento = 'S';
                     }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $mrp, $planejamento];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $mrp, $planejamento];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -459,7 +518,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($busca !== '') {
@@ -475,19 +534,25 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'MRP', 'Planejamento'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'MRP', 'Planejamento'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
+        $precoExport = calcularPrecoBomnova(
+            $linhaExport['net_price'], $linhaExport['ipi'], $linhaExport['pis'], $linhaExport['cofins'], $linhaExport['icms']
+        );
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
             $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['descricao'],
-            $linhaExport['consumo'], $linhaExport['um'], $linhaExport['mrp'], $linhaExport['planejamento'],
+            $linhaExport['consumo'], $linhaExport['um'],
+            $linhaExport['net_price'], $linhaExport['ipi'], $linhaExport['pis'], $linhaExport['cofins'], $linhaExport['icms'],
+            $precoExport !== null ? number_format($precoExport, 4, ',', '') : '',
+            $linhaExport['mrp'], $linhaExport['planejamento'],
         ], ';', '"', '');
     }
     fclose($saida);
     exit;
 }
 
-$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp, planejamento
+$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -630,6 +695,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp</code><br>
                         A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
+                        As colunas <code>net_price, ipi, pis, cofins, icms</code> também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
@@ -664,6 +730,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Descrição</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
+                            <th class="text-end">Net Price</th>
+                            <th class="text-end">IPI %</th>
+                            <th class="text-end">PIS %</th>
+                            <th class="text-end">COFINS %</th>
+                            <th class="text-end">ICMS %</th>
+                            <th class="text-end" title="Calculado automaticamente: Net Price × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)">Preço</th>
                             <th>MRP</th>
                             <th>Planejamento</th>
                             <th title="Excluir">Excluir</th>
@@ -671,7 +743,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="13" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -712,6 +784,15 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="net_price" data-valor-bruto="<?php echo htmlspecialchars($row['net_price'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['net_price'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="ipi" data-valor-bruto="<?php echo htmlspecialchars($row['ipi'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['ipi'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="pis" data-valor-bruto="<?php echo htmlspecialchars($row['pis'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['pis'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="cofins" data-valor-bruto="<?php echo htmlspecialchars($row['cofins'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['cofins'] ?? ''); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="icms" data-valor-bruto="<?php echo htmlspecialchars($row['icms'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['icms'] ?? ''); ?></td>
+                                    <?php
+                                        $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $row['pis'] ?? null, $row['cofins'] ?? null, $row['icms'] ?? null);
+                                    ?>
+                                    <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: Net Price × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 4, ',', '.') : '—'; ?></td>
                                     <td>
                                         <form method="POST" class="d-inline m-0">
                                             <input type="hidden" name="acao" value="toggle_mrp">
@@ -875,6 +956,60 @@ while ($row = mysqli_fetch_assoc($result)) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // A edição por duplo clique (assets/inline-edit.js) só atualiza a célula
+        // que foi editada — não sabe que o Preço de uma linha depende de outras
+        // 5 células dela (Net Price, IPI, PIS, COFINS, ICMS). Por isso, esse
+        // observer recalcula o Preço na hora, no navegador, sempre que qualquer
+        // uma dessas 5 células muda de valor — usando a mesma fórmula do PHP.
+        window.addEventListener('DOMContentLoaded', function () {
+            function parseNumeroBr(texto) {
+                if (texto === null || texto === undefined) return null;
+                texto = texto.trim();
+                if (texto === '' || texto === '—') return null;
+                const limpo = texto.replace(/\./g, '').replace(',', '.');
+                const numero = parseFloat(limpo);
+                return isNaN(numero) ? null : numero;
+            }
+            function formatarNumeroBr(numero) {
+                return numero.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+            }
+            document.querySelectorAll('tbody tr').forEach(function (linha) {
+                const celulaNetPrice = linha.querySelector('td[data-campo="net_price"]');
+                const celulaPreco = linha.querySelector('td.js-preco-bomnova');
+                if (!celulaNetPrice || !celulaPreco) return;
+
+                const celulaIpi = linha.querySelector('td[data-campo="ipi"]');
+                const celulaPis = linha.querySelector('td[data-campo="pis"]');
+                const celulaCofins = linha.querySelector('td[data-campo="cofins"]');
+                const celulaIcms = linha.querySelector('td[data-campo="icms"]');
+
+                function recalcular() {
+                    const netPrice = parseNumeroBr(celulaNetPrice.textContent);
+                    if (netPrice === null) {
+                        celulaPreco.textContent = '—';
+                        return;
+                    }
+                    const ipi = parseNumeroBr(celulaIpi ? celulaIpi.textContent : null) || 0;
+                    const pis = parseNumeroBr(celulaPis ? celulaPis.textContent : null) || 0;
+                    const cofins = parseNumeroBr(celulaCofins ? celulaCofins.textContent : null) || 0;
+                    const icms = parseNumeroBr(celulaIcms ? celulaIcms.textContent : null) || 0;
+                    const divisor = 1 - (icms / 100);
+                    if (Math.abs(divisor) < 0.0000001) {
+                        celulaPreco.textContent = '—';
+                        return;
+                    }
+                    const preco = netPrice * (1 + ipi / 100) * (1 + pis / 100 + cofins / 100) / divisor;
+                    celulaPreco.textContent = formatarNumeroBr(preco);
+                }
+
+                [celulaNetPrice, celulaIpi, celulaPis, celulaCofins, celulaIcms].forEach(function (celula) {
+                    if (!celula) return;
+                    new MutationObserver(recalcular).observe(celula, { childList: true, characterData: true, subtree: true });
+                });
+            });
+        });
+    </script>
     <script>
         // Exclusão recarrega a página (a linha some da tabela, então não há
         // linha pra manter na tela), mas guarda a posição do scroll antes de
