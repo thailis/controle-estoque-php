@@ -296,8 +296,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
 
     $paginaVoltaExcluir = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVoltaExcluir = (string) ($_POST['busca_atual'] ?? '');
+    $projetoVoltaExcluir = (string) ($_POST['projeto_atual'] ?? '');
+    $fornecedorVoltaExcluir = (string) ($_POST['fornecedor_atual'] ?? '');
     $flagExcluir = $linhasAfetadasExcluir > 0 ? 'excluido=1' : 'excluir_erro=1';
-    header('Location: bomnova.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&' . $flagExcluir);
+    header('Location: bomnova.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&projeto=' . urlencode($projetoVoltaExcluir) . '&fornecedor=' . urlencode($fornecedorVoltaExcluir) . '&' . $flagExcluir);
     exit;
 }
 
@@ -331,8 +333,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 
     $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
+    $projetoVolta = (string) ($_POST['projeto_atual'] ?? '');
+    $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
     $flag = $linhasAfetadas > 0 ? 'mrp_ok' : 'mrp_erro';
-    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '=1');
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&' . $flag . '=1');
     exit;
 }
 
@@ -369,7 +373,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 
     $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&' . $flag . '=1');
+    $projetoVolta = (string) ($_POST['projeto_atual'] ?? '');
+    $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&' . $flag . '=1');
     exit;
 }
 
@@ -517,20 +523,53 @@ $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
+$projetoFiltro = isset($_GET['projeto']) ? trim($_GET['projeto']) : '';
+$fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
 
-$where = '';
+$condicoesWhere = [];
 $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $where = "WHERE material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ?";
+    $condicoesWhere[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ?)";
     $buscaLike = "%$busca%";
-    $params = [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike];
-    $tipos = 'sssss';
+    $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
+    $tipos .= 'sssss';
+}
+if ($projetoFiltro !== '') {
+    $condicoesWhere[] = "projeto = ?";
+    $params[] = $projetoFiltro;
+    $tipos .= 's';
+}
+if ($fornecedorFiltro !== '') {
+    $condicoesWhere[] = "fornecedor = ?";
+    $params[] = $fornecedorFiltro;
+    $tipos .= 's';
+}
+
+$where = !empty($condicoesWhere) ? ('WHERE ' . implode(' AND ', $condicoesWhere)) : '';
+$temFiltro = $where !== '';
+
+// Listas pra popular os selects de Projeto e Fornecedor — sempre traz TODOS os
+// valores distintos existentes na base (não filtra pelos filtros já aplicados),
+// pra não esconder opção nenhuma do dropdown enquanto o usuário troca de filtro.
+$projetosDisponiveis = [];
+$resProjetosDisp = mysqli_query($conn, "SELECT DISTINCT projeto FROM bomnova WHERE projeto IS NOT NULL AND projeto <> '' ORDER BY projeto");
+if ($resProjetosDisp) {
+    while ($linhaProjeto = mysqli_fetch_assoc($resProjetosDisp)) {
+        $projetosDisponiveis[] = $linhaProjeto['projeto'];
+    }
+}
+$fornecedoresDisponiveis = [];
+$resFornecedoresDisp = mysqli_query($conn, "SELECT DISTINCT fornecedor FROM bomnova WHERE fornecedor IS NOT NULL AND fornecedor <> '' ORDER BY fornecedor");
+if ($resFornecedoresDisp) {
+    while ($linhaFornecedor = mysqli_fetch_assoc($resFornecedoresDisp)) {
+        $fornecedoresDisponiveis[] = $linhaFornecedor['fornecedor'];
+    }
 }
 
 $sqlTotal = "SELECT COUNT(*) AS total FROM bomnova $where";
-if ($busca !== '') {
+if ($temFiltro) {
     $stmtTotal = mysqli_prepare($conn, $sqlTotal);
     mysqli_stmt_bind_param($stmtTotal, $tipos, ...$params);
     mysqli_stmt_execute($stmtTotal);
@@ -546,7 +585,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
-    if ($busca !== '') {
+    if ($temFiltro) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
         mysqli_stmt_execute($stmtExport);
@@ -583,7 +622,7 @@ $sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, p
         LIMIT ? OFFSET ?";
 
 $stmt = mysqli_prepare($conn, $sql);
-if ($busca !== '') {
+if ($temFiltro) {
     mysqli_stmt_bind_param($stmt, $tipos . 'ii', ...array_merge($params, [$porPagina, $offset]));
 } else {
     mysqli_stmt_bind_param($stmt, 'ii', $porPagina, $offset);
@@ -728,14 +767,33 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <form method="GET" class="row g-2">
-                <div class="col-auto flex-grow-1">
+            <form method="GET" class="row g-2 align-items-end">
+                <div class="col-12 col-md flex-grow-1">
+                    <label class="form-label small text-muted mb-1">Busca livre</label>
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por material, componente, descrição, fornecedor ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
-                <div class="col-auto">
+                <div class="col-12 col-md-auto" style="min-width: 200px;">
+                    <label class="form-label small text-muted mb-1">Projeto</label>
+                    <select name="projeto" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach ($projetosDisponiveis as $opcaoProjeto): ?>
+                            <option value="<?php echo htmlspecialchars($opcaoProjeto); ?>" <?php echo $projetoFiltro === $opcaoProjeto ? 'selected' : ''; ?>><?php echo htmlspecialchars($opcaoProjeto); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-12 col-md-auto" style="min-width: 200px;">
+                    <label class="form-label small text-muted mb-1">Fornecedor</label>
+                    <select name="fornecedor" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach ($fornecedoresDisponiveis as $opcaoFornecedor): ?>
+                            <option value="<?php echo htmlspecialchars($opcaoFornecedor); ?>" <?php echo $fornecedorFiltro === $opcaoFornecedor ? 'selected' : ''; ?>><?php echo htmlspecialchars($opcaoFornecedor); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-12 col-md-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="bomnova.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -760,7 +818,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-end">PIS %</th>
                             <th class="text-end">COFINS %</th>
                             <th class="text-end">ICMS %</th>
-                            <th class="text-end" title="Calculado automaticamente: Net Price × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)">Preço</th>
+                            <th class="text-end" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)">Preço</th>
                             <th>MRP</th>
                             <th>Planejamento</th>
                             <th title="Excluir">Excluir</th>
@@ -817,13 +875,15 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <?php
                                         $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $row['pis'] ?? null, $row['cofins'] ?? null, $row['icms'] ?? null);
                                     ?>
-                                    <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: Net Price × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 4, ',', '.') : '—'; ?></td>
+                                    <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 4, ',', '.') : '—'; ?></td>
                                     <td>
                                         <form method="POST" class="d-inline m-0">
                                             <input type="hidden" name="acao" value="toggle_mrp">
                                             <input type="hidden" name="mrp_atual" value="<?php echo htmlspecialchars($mrp); ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
@@ -855,6 +915,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="planejamento_atual" value="<?php echo htmlspecialchars($planejamento); ?>">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
@@ -875,6 +937,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="acao" value="excluir_linha_bomnova">
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                                            <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
@@ -899,13 +963,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
@@ -1024,12 +1088,17 @@ while ($row = mysqli_fetch_assoc($result)) {
                     const pis = parseNumeroBr(celulaPis ? celulaPis.textContent : null) || 0;
                     const cofins = parseNumeroBr(celulaCofins ? celulaCofins.textContent : null) || 0;
                     const icms = parseNumeroBr(celulaIcms ? celulaIcms.textContent : null) || 0;
-                    const divisor = 1 - (icms / 100);
+                    const icmsFr = icms / 100;
+                    const pisFr = pis / 100;
+                    const cofinsFr = cofins / 100;
+                    const ipiFr = ipi / 100;
+                    // Gross-up: Preço = [NetPrice ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)
+                    const divisor = 1 - (icmsFr + (pisFr - icmsFr * pisFr) + (cofinsFr - icmsFr * cofinsFr));
                     if (Math.abs(divisor) < 0.0000001) {
                         celulaPreco.textContent = '—';
                         return;
                     }
-                    const preco = netPrice * (1 + ipi / 100) * (1 + pis / 100 + cofins / 100) / divisor;
+                    const preco = (netPrice / divisor) * (1 + ipiFr);
                     celulaPreco.textContent = formatarNumeroBr(preco);
                 }
 
