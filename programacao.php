@@ -1248,12 +1248,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end text-muted js-total-pedido" data-total-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Preço × Quantidade">
                                         <?php echo $totalPedidoLinha !== null ? number_format($totalPedidoLinha, 2, ',', '.') : '—'; ?>
                                     </td>
-                                    <td class="celula-editavel"
+                                    <td class="text-center celula-editavel"
                                         data-id="<?php echo $idLinha; ?>" data-campo="data_recebida"
                                         data-valor-bruto="<?php echo h(formatarDataBrProgramacao($row['data_recebida'] ?? null)); ?>"
                                         title="Duplo clique para editar"
                                     ><?php echo $row['data_recebida'] ? h((new DateTimeImmutable($row['data_recebida']))->format('d/m/Y')) : ''; ?></td>
-                                    <td class="text-end celula-editavel"
+                                    <td class="text-center celula-editavel"
                                         data-id="<?php echo $idLinha; ?>" data-campo="quantidade_recebida"
                                         data-valor-bruto="<?php echo $quantidadeRecebidaLinha !== null ? h(number_format($quantidadeRecebidaLinha, 2, ',', '')) : ''; ?>"
                                         title="Duplo clique para editar"
