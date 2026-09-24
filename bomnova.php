@@ -112,6 +112,30 @@ const BOMNOVA_CASAS_DECIMAIS = [
     'icms' => 0,
 ];
 
+// Valor padrão usado quando o campo está em branco no banco — PIS e COFINS
+// quase sempre são 1,65% e 7,60% (regime não-cumulativo), então em vez de
+// ficar em branco (e contar como 0% no cálculo do Preço), já mostra o valor
+// padrão pronto na tela. Continua editável por duplo clique normalmente —
+// isso só preenche o vazio, nunca sobrescreve um valor já gravado.
+const BOMNOVA_VALOR_PADRAO = [
+    'pis' => 1.65,
+    'cofins' => 7.6,
+];
+
+// Aplica o valor padrão (BOMNOVA_VALOR_PADRAO) quando o campo vem vazio/nulo
+// do banco. Usado tanto na exibição quanto no cálculo do Preço, pra manter
+// os dois consistentes: o que aparece na tela é o mesmo valor usado na conta.
+function aplicarValorPadraoBomnova(?string $valor, string $campo): ?string
+{
+    if ($valor !== null && trim($valor) !== '') {
+        return $valor;
+    }
+    if (isset(BOMNOVA_VALOR_PADRAO[$campo])) {
+        return (string) BOMNOVA_VALOR_PADRAO[$campo];
+    }
+    return $valor;
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
@@ -625,8 +649,10 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     $saida = fopen('php://output', 'w');
     fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'MRP', 'Planejamento'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
+        $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
+        $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
         $precoExport = calcularPrecoBomnova(
-            $linhaExport['net_price'], $linhaExport['ipi'], $linhaExport['pis'], $linhaExport['cofins'], $linhaExport['icms']
+            $linhaExport['net_price'], $linhaExport['ipi'], $pisExport, $cofinsExport, $linhaExport['icms']
         );
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
@@ -634,8 +660,8 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $linhaExport['consumo'], $linhaExport['um'],
             formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
-            formatarNumeroBomnovaTaxExibicao($linhaExport['pis'] ?? null, BOMNOVA_CASAS_DECIMAIS['pis']),
-            formatarNumeroBomnovaTaxExibicao($linhaExport['cofins'] ?? null, BOMNOVA_CASAS_DECIMAIS['cofins']),
+            formatarNumeroBomnovaTaxExibicao($pisExport, BOMNOVA_CASAS_DECIMAIS['pis']),
+            formatarNumeroBomnovaTaxExibicao($cofinsExport, BOMNOVA_CASAS_DECIMAIS['cofins']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['icms'] ?? null, BOMNOVA_CASAS_DECIMAIS['icms']),
             $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
             $linhaExport['mrp'], $linhaExport['planejamento'],
@@ -897,10 +923,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
                                     <?php
+                                        // PIS e COFINS: se vierem em branco do banco, usa o valor padrão
+                                        // (1,65% e 7,60%) tanto na exibição quanto no cálculo do Preço.
+                                        // Continua editável por duplo clique — o padrão só preenche o
+                                        // vazio, nunca sobrescreve um valor já gravado na linha.
+                                        $pisComPadrao = aplicarValorPadraoBomnova($row['pis'] ?? null, 'pis');
+                                        $cofinsComPadrao = aplicarValorPadraoBomnova($row['cofins'] ?? null, 'cofins');
                                         $netPriceExibir = formatarNumeroBomnovaTaxExibicao($row['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']);
                                         $ipiExibir = formatarNumeroBomnovaTaxExibicao($row['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']);
-                                        $pisExibir = formatarNumeroBomnovaTaxExibicao($row['pis'] ?? null, BOMNOVA_CASAS_DECIMAIS['pis']);
-                                        $cofinsExibir = formatarNumeroBomnovaTaxExibicao($row['cofins'] ?? null, BOMNOVA_CASAS_DECIMAIS['cofins']);
+                                        $pisExibir = formatarNumeroBomnovaTaxExibicao($pisComPadrao, BOMNOVA_CASAS_DECIMAIS['pis']);
+                                        $cofinsExibir = formatarNumeroBomnovaTaxExibicao($cofinsComPadrao, BOMNOVA_CASAS_DECIMAIS['cofins']);
                                         $icmsExibir = formatarNumeroBomnovaTaxExibicao($row['icms'] ?? null, BOMNOVA_CASAS_DECIMAIS['icms']);
                                     ?>
                                     <td class="text-end celula-editavel" data-campo="net_price" data-valor-bruto="<?php echo htmlspecialchars($netPriceExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($netPriceExibir); ?></td>
@@ -909,7 +941,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end celula-editavel" data-campo="cofins" data-valor-bruto="<?php echo htmlspecialchars($cofinsExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($cofinsExibir); ?></td>
                                     <td class="text-end celula-editavel" data-campo="icms" data-valor-bruto="<?php echo htmlspecialchars($icmsExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($icmsExibir); ?></td>
                                     <?php
-                                        $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $row['pis'] ?? null, $row['cofins'] ?? null, $row['icms'] ?? null);
+                                        $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $pisComPadrao, $cofinsComPadrao, $row['icms'] ?? null);
                                     ?>
                                     <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
                                     <td>
