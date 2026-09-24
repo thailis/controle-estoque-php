@@ -62,7 +62,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
     $itens = [];
     if ($processo !== '') {
         $stmt = mysqli_prepare($conn, "
-            SELECT p.codigo_componente, p.quantidade, p.preco,
+            SELECT p.codigo_componente, p.quantidade, p.preco, p.data,
                 (
                     SELECT MAX(COALESCE(NULLIF(TRIM(b.descricao), ''), NULL))
                     FROM bomnova b
@@ -82,6 +82,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
                 'desc' => (string) ($linha['descricao'] ?? ''),
                 'qtd' => $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 0, ',', '') : '',
                 'preco' => $linha['preco'] !== null ? number_format((float) $linha['preco'], 4, ',', '') : '',
+                'eta' => $linha['data'] !== null && $linha['data'] !== '' ? date('d/m/Y', strtotime((string) $linha['data'])) : '',
             ];
         }
         mysqli_stmt_close($stmt);
@@ -93,8 +94,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
 // Lista de processos lançados na Programação, pro dropdown do cabeçalho que
 // puxa os componentes/preços — mesmo padrão do filtro de Processo já usado
 // em programacao.php.
+// Só entram processos que ainda têm pelo menos 1 item pendente (atendido=0
+// ou NULL) — um processo com todos os itens já atendidos (já virou estoque
+// físico) não faz mais sentido aparecer aqui pra montar um novo Pedido de Compra.
 $processosProgramacao = [];
-$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' ORDER BY processo");
+$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' AND (atendido = 0 OR atendido IS NULL) ORDER BY processo");
 if ($resProcessosProgramacao) {
     while ($linhaProc = mysqli_fetch_assoc($resProcessosProgramacao)) {
         $processosProgramacao[] = $linhaProc['processo'];
@@ -370,10 +374,10 @@ if ($resProcessosProgramacao) {
                                     </select>
                                 </td>
                             </tr>
-                            <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="cli_company" value="YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA."></td></tr>
-                            <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="cli_taxid" value="27.690.132/0003-00"></td></tr>
-                            <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="cli_adress" value="RUA DOOSAN, 777"></td></tr>
-                            <tr><td class="lbl">Zip Code</td><td colspan="3"><input type="text" id="cli_zip" value="13.469-765"></td></tr>
+                            <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="cli_company" placeholder="Selecione a filial acima"></td></tr>
+                            <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="cli_taxid" placeholder="00.000.000/0000-00"></td></tr>
+                            <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="cli_adress" placeholder="Endereço"></td></tr>
+                            <tr><td class="lbl">Zip Code</td><td colspan="3"><input type="text" id="cli_zip" placeholder="00.000-000"></td></tr>
                         </table>
                     </td>
                     <td class="po-logo-cell">
@@ -383,11 +387,11 @@ if ($resProcessosProgramacao) {
             </table>
             <table class="po-info">
                 <tr>
-                    <td class="lbl">Buyer</td><td><input type="text" id="cli_buyer" value="Thailis Rodrigues Domingues" oninput="document.getElementById('assinatura_nome').value = this.value"></td>
-                    <td class="lbl-2">Phone</td><td><input type="text" id="cli_phone" value="+55 19 99946-2526"></td>
+                    <td class="lbl">Buyer</td><td><input type="text" id="cli_buyer" placeholder="Nome do comprador" oninput="document.getElementById('assinatura_nome').value = this.value"></td>
+                    <td class="lbl-2">Phone</td><td><input type="text" id="cli_phone" placeholder="+55 00 00000-0000"></td>
                 </tr>
                 <tr>
-                    <td class="lbl">Email</td><td colspan="3"><input type="text" id="cli_email" value="thailisdomingues.br@yapp.com"></td>
+                    <td class="lbl">Email</td><td colspan="3"><input type="text" id="cli_email" placeholder="email@yapp.com"></td>
                 </tr>
             </table>
         </div>
@@ -446,7 +450,7 @@ if ($resProcessosProgramacao) {
                     <div class="po-totais-linha"><span class="lado-a">ICMS</span><span class="lado-b"><input type="text" id="tax_icms" value="18%" oninput="recalcularTotal()"></span></div>
                     <div class="po-totais-linha"><span class="lado-a">PIS</span><span class="lado-b"><input type="text" id="tax_pis" value="1,65%" oninput="recalcularTotal()"></span></div>
                     <div class="po-totais-linha"><span class="lado-a">COFINS</span><span class="lado-b"><input type="text" id="tax_cofins" value="7,60%" oninput="recalcularTotal()"></span></div>
-                    <div class="po-totais-linha"><span class="lado-a">IPI</span><span class="lado-b"><input type="text" id="tax_ipi" value="15%" oninput="recalcularTotal()"></span></div>
+                    <div class="po-totais-linha"><span class="lado-a">IPI</span><span class="lado-b"><input type="text" id="tax_ipi" value="0%" oninput="recalcularTotal()"></span></div>
                 </td>
                 <td style="width:50%">
                     <div class="po-totais-linha"><span class="lado-a">Currency:</span><span class="lado-b"><input type="text" id="moeda" value="R$"></span></div>
@@ -464,8 +468,8 @@ if ($resProcessosProgramacao) {
                 <td>
                     <div class="po-rodape-linha"><span class="lado-a">Payment:</span><span class="lado-b"><input type="text" id="rodape_payment" value="28 DDL"></span></div>
                     <div class="po-rodape-linha"><span class="lado-a">Incoterms:</span><span class="lado-b"><input type="text" id="rodape_incoterms" value="CIF"></span></div>
-                    <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><textarea id="rodape_delivery1" rows="2" class="rodape-textarea">YAPP Americana - RUA DOOSAN, 777, Americana/SP</textarea></span></div>
-                    <div class="po-rodape-linha"><span class="lado-a"></span><span class="lado-b"><input type="text" id="rodape_delivery2" value="13.469-765"></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a">Delivery at:</span><span class="lado-b"><textarea id="rodape_delivery1" rows="2" class="rodape-textarea" placeholder="Selecione a filial acima"></textarea></span></div>
+                    <div class="po-rodape-linha"><span class="lado-a"></span><span class="lado-b"><input type="text" id="rodape_delivery2" placeholder="00.000-000"></span></div>
                 </td>
                 <td>
                     <div class="po-invoice-titulo">Commercial Invoice must contain:</div>
@@ -482,7 +486,7 @@ if ($resProcessosProgramacao) {
                 <input type="file" id="assinatura_upload" accept="image/jpeg,image/png" onchange="importarAssinatura(event)" style="display:block; margin:2px auto 0;">
             </div>
             <img id="assinatura_img" class="po-assinatura-img" alt="Assinatura" style="display:none;">
-            <input type="text" id="assinatura_nome" value="Thailis Domingues">
+            <input type="text" id="assinatura_nome" placeholder="Nome do responsável">
         </div>
     </div>
 
@@ -635,6 +639,9 @@ if ($resProcessosProgramacao) {
 
             if (dados && dados.preco) {
                 tr.querySelector('.f-preco').value = dados.preco;
+            }
+            if (dados && dados.eta) {
+                tr.querySelector('.f-eta').value = dados.eta;
             }
 
             if (dados) { recalcularLinha(idx); }
