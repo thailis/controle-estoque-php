@@ -37,6 +37,26 @@ function parseNumeroBr(string $valor): ?float
     return is_numeric($valor) ? (float) $valor : null;
 }
 
+// Interpreta Net Price / IPI / PIS / COFINS / ICMS — diferente de parseNumeroBr(),
+// aqui um ponto SEMPRE é separador decimal, nunca de milhar (esses campos não têm
+// milhar: são % de 0 a 100, ou um preço unitário). Vírgula continua sendo decimal
+// quando presente (e aí sim um ponto antes dela é milhar). Isso evita o valor
+// digitado como "13.2000" virar 132000 por engano.
+function parseNumeroBomnovaTax(string $valor): ?float
+{
+    $valor = trim($valor);
+    if ($valor === '') {
+        return null;
+    }
+
+    if (str_contains($valor, ',')) {
+        $valor = str_replace('.', '', $valor);
+        $valor = str_replace(',', '.', $valor);
+    }
+
+    return is_numeric($valor) ? (float) $valor : null;
+}
+
 // Calcula o Preço a partir do Net Price e dos impostos (IPI, PIS, COFINS, ICMS,
 // digitados em %), seguindo a regra:
 //   Preço = NetPrice × (1 + IPI%) × (1 + PIS% + COFINS%) ÷ (1 − ICMS%)
@@ -46,14 +66,14 @@ function parseNumeroBr(string $valor): ?float
 // nesse caso extremo.
 function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string $pisTexto, ?string $cofinsTexto, ?string $icmsTexto): ?float
 {
-    $netPrice = $netPriceTexto !== null ? parseNumeroBr($netPriceTexto) : null;
+    $netPrice = $netPriceTexto !== null ? parseNumeroBomnovaTax($netPriceTexto) : null;
     if ($netPrice === null) {
         return null;
     }
-    $ipi = ($ipiTexto !== null ? parseNumeroBr($ipiTexto) : null) ?? 0.0;
-    $pis = ($pisTexto !== null ? parseNumeroBr($pisTexto) : null) ?? 0.0;
-    $cofins = ($cofinsTexto !== null ? parseNumeroBr($cofinsTexto) : null) ?? 0.0;
-    $icms = ($icmsTexto !== null ? parseNumeroBr($icmsTexto) : null) ?? 0.0;
+    $ipi = ($ipiTexto !== null ? parseNumeroBomnovaTax($ipiTexto) : null) ?? 0.0;
+    $pis = ($pisTexto !== null ? parseNumeroBomnovaTax($pisTexto) : null) ?? 0.0;
+    $cofins = ($cofinsTexto !== null ? parseNumeroBomnovaTax($cofinsTexto) : null) ?? 0.0;
+    $icms = ($icmsTexto !== null ? parseNumeroBomnovaTax($icmsTexto) : null) ?? 0.0;
 
     $divisor = 1 - ($icms / 100);
     if (abs($divisor) < 0.0000001) {
@@ -106,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
             $valorParaGravar = null;
             $valorParaExibir = '';
         } else {
-            $numeroEditado = parseNumeroBr($novoValor);
+            $numeroEditado = parseNumeroBomnovaTax($novoValor);
             if ($numeroEditado === null) {
                 echo json_encode(['ok' => false, 'erro' => 'Valor inválido.']);
                 exit;
@@ -443,15 +463,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // Net Price e os impostos (%) são opcionais no CSV — se não vierem,
                     // ficam em branco e podem ser digitados depois direto na tela.
                     $netPriceBruto = $dados['net_price'] ?? $dados['netprice'] ?? '';
-                    $netPrice = $netPriceBruto !== '' ? parseNumeroBr((string) $netPriceBruto) : null;
+                    $netPrice = $netPriceBruto !== '' ? parseNumeroBomnovaTax((string) $netPriceBruto) : null;
                     $ipiBruto = $dados['ipi'] ?? '';
-                    $ipi = $ipiBruto !== '' ? parseNumeroBr((string) $ipiBruto) : null;
+                    $ipi = $ipiBruto !== '' ? parseNumeroBomnovaTax((string) $ipiBruto) : null;
                     $pisBruto = $dados['pis'] ?? '';
-                    $pis = $pisBruto !== '' ? parseNumeroBr((string) $pisBruto) : null;
+                    $pis = $pisBruto !== '' ? parseNumeroBomnovaTax((string) $pisBruto) : null;
                     $cofinsBruto = $dados['cofins'] ?? '';
-                    $cofins = $cofinsBruto !== '' ? parseNumeroBr((string) $cofinsBruto) : null;
+                    $cofins = $cofinsBruto !== '' ? parseNumeroBomnovaTax((string) $cofinsBruto) : null;
                     $icmsBruto = $dados['icms'] ?? '';
-                    $icms = $icmsBruto !== '' ? parseNumeroBr((string) $icmsBruto) : null;
+                    $icms = $icmsBruto !== '' ? parseNumeroBomnovaTax((string) $icmsBruto) : null;
                     $mrp = $dados['mrp'] ?? null;
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
