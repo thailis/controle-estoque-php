@@ -915,7 +915,7 @@ while ($row = mysqli_fetch_assoc($result)) {
     <title>📅 Programação</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background: #f4f6f9; padding: 20px; }
+        body { background: #f4f6f9; padding: 20px 12px; }
         .card { border-radius: 15px; box-shadow: 0 2px 20px rgba(0,0,0,0.08); }
         .bg-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; }
         .table th {
@@ -977,7 +977,7 @@ while ($row = mysqli_fetch_assoc($result)) {
     </style>
 </head>
 <body>
-    <div class="container-fluid" style="max-width: 1600px;">
+    <div class="container-fluid" style="max-width: 98vw;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
