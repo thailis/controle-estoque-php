@@ -48,6 +48,58 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
     echo json_encode(['descricao' => $descricao]);
     exit;
 }
+
+// Endpoint chamado via JS (fetch) ao escolher um Processo no dropdown do
+// cabeçalho — busca os componentes lançados na Programação (tabela
+// "programacao") pra esse processo, um item por linha (codigo_componente,
+// quantidade, preco), já com a descrição puxada da BOM (mesma regra do
+// buscar_descricao acima: ignora linhas com mrp='N'). Se o processo não
+// tiver nenhum item, devolve lista vazia — o JS trata isso como "processo
+// sem componentes" e mostra um aviso, sem travar a tela.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
+    header('Content-Type: application/json; charset=utf-8');
+    $processo = trim($_GET['processo'] ?? '');
+    $itens = [];
+    if ($processo !== '') {
+        $stmt = mysqli_prepare($conn, "
+            SELECT p.codigo_componente, p.quantidade, p.preco,
+                (
+                    SELECT MAX(COALESCE(NULLIF(TRIM(b.descricao), ''), NULL))
+                    FROM bomnova b
+                    WHERE TRIM(b.codigo_componente) = TRIM(p.codigo_componente)
+                      AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+                ) AS descricao
+            FROM programacao p
+            WHERE p.processo = ?
+            ORDER BY p.id
+        ");
+        mysqli_stmt_bind_param($stmt, 's', $processo);
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+        while ($linha = mysqli_fetch_assoc($res)) {
+            $itens[] = [
+                'part' => (string) ($linha['codigo_componente'] ?? ''),
+                'desc' => (string) ($linha['descricao'] ?? ''),
+                'qtd' => $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 0, ',', '') : '',
+                'preco' => $linha['preco'] !== null ? number_format((float) $linha['preco'], 4, ',', '') : '',
+            ];
+        }
+        mysqli_stmt_close($stmt);
+    }
+    echo json_encode(['itens' => $itens]);
+    exit;
+}
+
+// Lista de processos lançados na Programação, pro dropdown do cabeçalho que
+// puxa os componentes/preços — mesmo padrão do filtro de Processo já usado
+// em programacao.php.
+$processosProgramacao = [];
+$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' ORDER BY processo");
+if ($resProcessosProgramacao) {
+    while ($linhaProc = mysqli_fetch_assoc($resProcessosProgramacao)) {
+        $processosProgramacao[] = $linhaProc['processo'];
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -101,6 +153,19 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             font-size: 1.05rem;
         }
         .po-header input::placeholder { color: #ffd0bd; }
+        .po-header select {
+            background: var(--navy);
+            border: 1px solid #4a6178;
+            color: #ff9b7a;
+            font-weight: 750;
+            text-align: center;
+            text-align-last: center;
+            max-width: 260px;
+            font-size: .95rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .po-header select option { color: #17212b; background: #fff; }
 
         .po-secao-titulo {
             font-weight: 750;
@@ -170,6 +235,21 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
         table.po-tabela .btn-remover-linha {
             border: none; background: none; color: #c53535; font-size: .95rem; cursor: pointer; line-height: 1;
         }
+        /* Células puxadas da Programação (Part Number, Description, Quantity)
+           — mostram texto simples e só entram em modo de edição com DUPLO
+           clique, pra evitar alteração sem querer ao rolar a tela (mesmo
+           padrão usado na Commercial Invoice). */
+        table.po-tabela .celula-pull {
+            cursor: cell;
+            min-height: 20px;
+        }
+        table.po-tabela .celula-pull:hover {
+            background: #eef4fb;
+            box-shadow: inset 0 0 0 1px #b9d3ef;
+        }
+        table.po-tabela .celula-pull input {
+            width: 100%;
+        }
 
         .po-pagamento-titulo {
             text-align: center;
@@ -234,7 +314,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             table.po-tabela .col-acao-largura { display: none; }
             input { color: #000 !important; }
             .rodape-textarea { color: #000 !important; }
-            .po-header input { color: var(--destaque) !important; }
+            .po-header input, .po-header select { color: var(--destaque) !important; }
             .po-invoice-texto textarea { color: var(--destaque) !important; }
         }
     </style>
@@ -264,7 +344,13 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
 
     <div class="po-sheet" id="po-sheet">
         <div class="po-header">
-            Purchase Order: <input type="text" id="po_numero" placeholder="0000000000" size="12">
+            Purchase Order:
+            <select id="select_processo" onchange="carregarProcessoProgramacao()">
+                <option value="">Selecione um processo...</option>
+                <?php foreach ($processosProgramacao as $p): ?>
+                    <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
+                <?php endforeach; ?>
+            </select>
         </div>
 
         <div class="po-secao-titulo">Customer</div>
@@ -479,6 +565,44 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
+        // Transforma uma célula em "editável por duplo clique" — mostra texto
+        // simples, e só vira um <input> quando o usuário dá duplo clique. Isso
+        // é só visual/local (não salva em lugar nenhum, essa tela não usa
+        // banco) — serve pra corrigir um valor puxado da Programação sem
+        // risco de editar sem querer (mesmo padrão da Commercial Invoice).
+        function tornarPull(celula, aoSalvar) {
+            celula.classList.add('celula-pull');
+            celula.addEventListener('dblclick', function () {
+                if (celula.querySelector('input')) return;
+                const valorAtual = celula.dataset.valor || '';
+                celula.textContent = '';
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = valorAtual;
+                celula.appendChild(input);
+                input.focus();
+                input.select();
+                let resolvido = false;
+                function commit() {
+                    if (resolvido) return;
+                    resolvido = true;
+                    const novo = input.value.trim();
+                    definirValorPull(celula, novo);
+                    if (aoSalvar) aoSalvar(novo);
+                }
+                input.addEventListener('blur', commit);
+                input.addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); resolvido = true; definirValorPull(celula, valorAtual); }
+                });
+            });
+        }
+
+        function definirValorPull(celula, valor) {
+            celula.dataset.valor = valor;
+            celula.textContent = valor === '' ? '—' : valor;
+        }
+
         function adicionarLinha(dados) {
             contadorLinhas++;
             const idx = contadorLinhas;
@@ -486,33 +610,52 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
             tr.id = 'linha-' + idx;
             tr.innerHTML = `
                 <td class="col-idx">${idx}</td>
-                <td><input type="text" class="f-part" placeholder="" onchange="buscarDescricaoBom(${idx})"></td>
-                <td><input type="text" class="f-desc" placeholder="Descrição do material"></td>
+                <td class="f-part"></td>
+                <td class="f-desc"></td>
                 <td class="center"><input type="text" class="f-eta" placeholder="dd/mm/aaaa"></td>
                 <td class="center"><input type="text" class="f-unm" placeholder="UN"></td>
-                <td class="num"><input type="text" class="f-qtd" placeholder="0" oninput="recalcularLinha(${idx})"></td>
+                <td class="num f-qtd"></td>
                 <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
                 <td class="num"><input type="text" class="f-total" readonly></td>
                 <td class="col-acao no-print"><button type="button" class="btn-remover-linha" onclick="removerLinha(${idx})" title="Remover linha">✕</button></td>
             `;
             document.getElementById('corpo-itens').appendChild(tr);
+
+            const celPart = tr.querySelector('.f-part');
+            const celDesc = tr.querySelector('.f-desc');
+            const celQtd = tr.querySelector('.f-qtd');
+
+            definirValorPull(celPart, dados && dados.part ? dados.part : '');
+            definirValorPull(celDesc, dados && dados.desc ? dados.desc : '');
+            definirValorPull(celQtd, dados && dados.qtd ? dados.qtd : '');
+
+            tornarPull(celPart, () => buscarDescricaoBom(idx));
+            tornarPull(celDesc);
+            tornarPull(celQtd, () => recalcularLinha(idx));
+
+            if (dados && dados.preco) {
+                tr.querySelector('.f-preco').value = dados.preco;
+            }
+
+            if (dados) { recalcularLinha(idx); }
         }
 
-        // Ao sair do campo Part Number, busca a descrição do componente na BOM.
-        // Se encontrar, preenche a Description (sobrescreve, já que a BOM é a
-        // fonte oficial). Se não encontrar, não faz nada — o campo Description
-        // continua livre pra digitar na mão, não é tratado como erro.
+        // Disparado ao confirmar (duplo clique + Enter/blur) o Part Number de
+        // uma linha — busca a descrição do componente na BOM. Se encontrar,
+        // preenche a Description (sobrescreve, já que a BOM é a fonte
+        // oficial). Se não encontrar, não faz nada — a Description continua
+        // livre pra digitar na mão, não é tratado como erro.
         function buscarDescricaoBom(idx) {
             const linha = document.getElementById('linha-' + idx);
             if (!linha) return;
-            const codigo = linha.querySelector('.f-part').value.trim();
+            const codigo = (linha.querySelector('.f-part').dataset.valor || '').trim();
             if (!codigo) return;
 
             fetch('pedido_compra.php?ajax=buscar_descricao&codigo=' + encodeURIComponent(codigo))
                 .then(r => r.json())
                 .then(dados => {
                     if (dados.descricao) {
-                        linha.querySelector('.f-desc').value = dados.descricao;
+                        definirValorPull(linha.querySelector('.f-desc'), dados.descricao);
                     }
                 })
                 .catch(() => { /* falha de rede — deixa o campo como está, sem travar o preenchimento manual */ });
@@ -535,10 +678,33 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
         function recalcularLinha(idx) {
             const linha = document.getElementById('linha-' + idx);
             if (!linha) return;
-            const qtd = parseNumeroBrPo(linha.querySelector('.f-qtd').value);
+            const qtd = parseNumeroBrPo(linha.querySelector('.f-qtd').dataset.valor);
             const preco = parseNumeroBrPo(linha.querySelector('.f-preco').value);
             linha.querySelector('.f-total').value = formatarNumeroBrPo(qtd * preco);
             recalcularNet();
+        }
+
+        // Ao escolher um Processo no dropdown do cabeçalho, busca os
+        // componentes lançados nele na Programação e substitui as linhas
+        // atuais por eles — Part Number, Description e Quantity vêm da
+        // Programação (editáveis por duplo clique), e o Net Price já vem
+        // preenchido também, mas continua sempre editável direto.
+        function carregarProcessoProgramacao() {
+            const processo = document.getElementById('select_processo').value;
+            if (!processo) return;
+            fetch('pedido_compra.php?ajax=buscar_processo_programacao&processo=' + encodeURIComponent(processo))
+                .then(r => r.json())
+                .then(dados => {
+                    document.getElementById('corpo-itens').innerHTML = '';
+                    contadorLinhas = 0;
+                    if (dados.itens && dados.itens.length) {
+                        dados.itens.forEach(item => adicionarLinha(item));
+                    } else {
+                        adicionarLinha();
+                        alert('Esse processo não tem componentes lançados na Programação ainda.');
+                    }
+                })
+                .catch(() => alert('Erro de conexão ao buscar os componentes desse processo.'));
         }
 
         function recalcularNet() {
