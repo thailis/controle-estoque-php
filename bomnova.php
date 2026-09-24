@@ -88,6 +88,19 @@ function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string
     return ($netPrice / $divisor) * (1 + $ipiFr);
 }
 
+// Exibe Net Price/IPI/PIS/COFINS/ICMS sempre em formato BR (vírgula decimal,
+// 4 casas) na tela — o banco pode ter o valor gravado com ponto (ex.: "13.2000"),
+// mas o resto do site (e o próprio Preço calculado) usa vírgula, então a
+// exibição fica inconsistente se mostrarmos o dado cru direto da tabela.
+function formatarNumeroBomnovaTaxExibicao(?string $valor): string
+{
+    if ($valor === null || trim($valor) === '') {
+        return '';
+    }
+    $numero = parseNumeroBomnovaTax($valor);
+    return $numero !== null ? number_format($numero, 4, ',', '.') : $valor;
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
@@ -867,11 +880,18 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="net_price" data-valor-bruto="<?php echo htmlspecialchars($row['net_price'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['net_price'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="ipi" data-valor-bruto="<?php echo htmlspecialchars($row['ipi'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['ipi'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="pis" data-valor-bruto="<?php echo htmlspecialchars($row['pis'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['pis'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="cofins" data-valor-bruto="<?php echo htmlspecialchars($row['cofins'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['cofins'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="icms" data-valor-bruto="<?php echo htmlspecialchars($row['icms'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['icms'] ?? ''); ?></td>
+                                    <?php
+                                        $netPriceExibir = formatarNumeroBomnovaTaxExibicao($row['net_price'] ?? null);
+                                        $ipiExibir = formatarNumeroBomnovaTaxExibicao($row['ipi'] ?? null);
+                                        $pisExibir = formatarNumeroBomnovaTaxExibicao($row['pis'] ?? null);
+                                        $cofinsExibir = formatarNumeroBomnovaTaxExibicao($row['cofins'] ?? null);
+                                        $icmsExibir = formatarNumeroBomnovaTaxExibicao($row['icms'] ?? null);
+                                    ?>
+                                    <td class="text-end celula-editavel" data-campo="net_price" data-valor-bruto="<?php echo htmlspecialchars($netPriceExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($netPriceExibir); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="ipi" data-valor-bruto="<?php echo htmlspecialchars($ipiExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($ipiExibir); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="pis" data-valor-bruto="<?php echo htmlspecialchars($pisExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($pisExibir); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="cofins" data-valor-bruto="<?php echo htmlspecialchars($cofinsExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($cofinsExibir); ?></td>
+                                    <td class="text-end celula-editavel" data-campo="icms" data-valor-bruto="<?php echo htmlspecialchars($icmsExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($icmsExibir); ?></td>
                                     <?php
                                         $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $row['pis'] ?? null, $row['cofins'] ?? null, $row['icms'] ?? null);
                                     ?>
