@@ -617,7 +617,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         $totalPedidoEditado = $precoEditado * (float) $item['quantidade'];
         echo json_encode([
             'ok' => true,
-            'exibido' => number_format($precoEditado, 2, ',', '.'),
+            'exibido' => number_format($precoEditado, 4, ',', '.'),
             'totalPedido' => number_format($totalPedidoEditado, 2, ',', '.'),
         ]);
         exit;
@@ -854,7 +854,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             ? number_format((float) $linha['importado'], 0, ',', '')
             : '';
 
-        $precoExportado = $linha['preco'] !== null ? number_format((float) $linha['preco'], 2, ',', '') : '';
+        $precoExportado = $linha['preco'] !== null ? number_format((float) $linha['preco'], 4, ',', '') : '';
         $quantidadeRecebidaExportada = $linha['quantidade_recebida'] !== null
             ? number_format((float) $linha['quantidade_recebida'], 0, ',', '')
             : '';
@@ -1228,9 +1228,9 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     ?>
                                     <td class="text-end celula-editavel"
                                         data-id="<?php echo $idLinha; ?>" data-campo="preco"
-                                        data-valor-bruto="<?php echo $precoLinha !== null ? h(number_format($precoLinha, 2, ',', '')) : ''; ?>"
+                                        data-valor-bruto="<?php echo $precoLinha !== null ? h(number_format($precoLinha, 4, ',', '')) : ''; ?>"
                                         title="Duplo clique para editar"
-                                    ><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
+                                    ><?php echo $precoLinha !== null ? number_format($precoLinha, 4, ',', '.') : '—'; ?></td>
 
                                     <td class="text-center <?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
                                         <?php if ($podeEditarLinha): ?>
