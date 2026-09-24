@@ -345,6 +345,111 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     }
 }
 
+// Explode a BOM do "material" do evento EDI e reflete a demanda no estoque de
+// cada componente:
+//   - $tornandoAtendido = true  (Pendente -> Atendido): para cada componente
+//     ativo (mrp <> 'N') ligado a esse material, subtrai quantidade_edi ×
+//     consumo, gravando uma linha NEGATIVA com origem = 'demanda_edi'
+//     (ligada ao evento via origem_edi_id). Essas linhas NUNCA são apagadas
+//     nem editadas depois — são o histórico permanente usado pela coluna
+//     "Demanda" em estoque.php.
+//   - $tornandoAtendido = false (Atendido -> Pendente / reabrir): devolve ao
+//     estoque físico o que ainda estiver pendente de devolução para esse
+//     evento, componente a componente, gravando uma linha POSITIVA de
+//     COMPENSAÇÃO com origem = 'reversao_edi' — sem tocar nas linhas
+//     'demanda_edi' originais. Resultado: o "Total" do Estoque (soma de
+//     todas as origens) volta a refletir o saldo físico real, mas a
+//     "Demanda" (soma só de 'demanda_edi') continua acumulando e nunca
+//     diminui, mesmo se o evento for reaberto depois.
+// Calculado usando o mesmo padrão de explosão de BOM já usado em
+// evolucao_geral.php / detalhe_componente.php / parametros_compra.php.
+function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, float $quantidadeEdi, bool $tornandoAtendido): void
+{
+    $material = trim($material);
+    if ($material === '' || $idEdi <= 0) {
+        return;
+    }
+
+    if ($tornandoAtendido) {
+        if ($quantidadeEdi <= 0) {
+            return;
+        }
+        $stmtBom = mysqli_prepare($conn, "
+            SELECT TRIM(b.codigo_componente) AS codigo_componente,
+                   COALESCE(CAST(NULLIF(REPLACE(TRIM(b.consumo), ',', '.'), '') AS DECIMAL(18,6)), 0) AS consumo
+            FROM bomnova b
+            WHERE TRIM(b.material) = ? AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+        ");
+        mysqli_stmt_bind_param($stmtBom, 's', $material);
+        mysqli_stmt_execute($stmtBom);
+        $resBom = mysqli_stmt_get_result($stmtBom);
+        $itensBom = mysqli_fetch_all($resBom, MYSQLI_ASSOC);
+        mysqli_stmt_close($stmtBom);
+
+        foreach ($itensBom as $linhaBom) {
+            $codigoComponente = $linhaBom['codigo_componente'];
+            $consumo = (float) $linhaBom['consumo'];
+            if ($codigoComponente === '' || $consumo <= 0) {
+                continue;
+            }
+            $quantidadeSubtrair = $quantidadeEdi * $consumo;
+            if ($quantidadeSubtrair <= 0) {
+                continue;
+            }
+
+            $stmtDesc = mysqli_prepare($conn, "SELECT MAX(descricao) AS descricao FROM estoque WHERE codigo_componente = ?");
+            mysqli_stmt_bind_param($stmtDesc, 's', $codigoComponente);
+            mysqli_stmt_execute($stmtDesc);
+            $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? null;
+            mysqli_stmt_close($stmtDesc);
+
+            $estoqueNegativo = -$quantidadeSubtrair;
+            $stmtInsere = mysqli_prepare($conn, "
+                INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id)
+                VALUES (?, ?, ?, NULL, 'demanda_edi', ?)
+            ");
+            mysqli_stmt_bind_param($stmtInsere, 'ssdi', $codigoComponente, $descricao, $estoqueNegativo, $idEdi);
+            mysqli_stmt_execute($stmtInsere);
+            mysqli_stmt_close($stmtInsere);
+        }
+    } else {
+        $stmtNet = mysqli_prepare($conn, "
+            SELECT codigo_componente, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS saldo
+            FROM estoque
+            WHERE origem_edi_id = ? AND origem IN ('demanda_edi', 'reversao_edi')
+            GROUP BY codigo_componente
+        ");
+        mysqli_stmt_bind_param($stmtNet, 'i', $idEdi);
+        mysqli_stmt_execute($stmtNet);
+        $pendentes = mysqli_fetch_all(mysqli_stmt_get_result($stmtNet), MYSQLI_ASSOC);
+        mysqli_stmt_close($stmtNet);
+
+        foreach ($pendentes as $linhaPendente) {
+            $codigoComponente = $linhaPendente['codigo_componente'];
+            $saldo = (float) $linhaPendente['saldo'];
+            // saldo negativo = ainda falta devolver |saldo| ao estoque físico
+            if ($saldo >= -0.0001) {
+                continue;
+            }
+            $devolver = -$saldo;
+
+            $stmtDesc = mysqli_prepare($conn, "SELECT MAX(descricao) AS descricao FROM estoque WHERE codigo_componente = ?");
+            mysqli_stmt_bind_param($stmtDesc, 's', $codigoComponente);
+            mysqli_stmt_execute($stmtDesc);
+            $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? null;
+            mysqli_stmt_close($stmtDesc);
+
+            $stmtInsere = mysqli_prepare($conn, "
+                INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id)
+                VALUES (?, ?, ?, NULL, 'reversao_edi', ?)
+            ");
+            mysqli_stmt_bind_param($stmtInsere, 'ssdi', $codigoComponente, $descricao, $devolver, $idEdi);
+            mysqli_stmt_execute($stmtInsere);
+            mysqli_stmt_close($stmtInsere);
+        }
+    }
+}
+
 // Alternar o status "atendido" de um evento EDI, sem apagar a linha
 //
 // Versão AJAX: mesma lógica acima, mas responde em JSON pra atualizar o
@@ -363,23 +468,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
         exit;
     }
 
-    $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
-    mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
-    mysqli_stmt_execute($stmtToggle);
-    mysqli_stmt_close($stmtToggle);
+    // Busca material/quantidade/estado ANTES de alternar, pra saber a direção
+    // da transição (virando Atendido ou reabrindo) antes de mexer no estoque.
+    $stmtAntes = mysqli_prepare($conn, "SELECT material, quantidade, atendido FROM edi WHERE _tidb_rowid = ?");
+    mysqli_stmt_bind_param($stmtAntes, 'i', $idAlternar);
+    mysqli_stmt_execute($stmtAntes);
+    $itemAntes = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAntes));
+    mysqli_stmt_close($stmtAntes);
 
-    $stmtCheck = mysqli_prepare($conn, "SELECT atendido FROM edi WHERE _tidb_rowid = ?");
-    mysqli_stmt_bind_param($stmtCheck, 'i', $idAlternar);
-    mysqli_stmt_execute($stmtCheck);
-    $itemEdi = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
-    mysqli_stmt_close($stmtCheck);
-
-    if (!$itemEdi) {
+    if (!$itemAntes) {
         echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
         exit;
     }
 
-    $novoAtendido = (int) $itemEdi['atendido'] === 1;
+    $tornandoAtendido = (int) $itemAntes['atendido'] !== 1;
+
+    mysqli_begin_transaction($conn);
+    try {
+        $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
+        mysqli_stmt_execute($stmtToggle);
+        mysqli_stmt_close($stmtToggle);
+
+        aplicarDemandaEdiNoEstoque(
+            $conn,
+            $idAlternar,
+            (string) ($itemAntes['material'] ?? ''),
+            (float) ($itemAntes['quantidade'] ?? 0),
+            $tornandoAtendido
+        );
+
+        mysqli_commit($conn);
+    } catch (Throwable $e) {
+        mysqli_rollback($conn);
+        echo json_encode(['ok' => false, 'erro' => 'Erro ao atualizar estoque: ' . $e->getMessage()]);
+        exit;
+    }
+
+    $novoAtendido = $tornandoAtendido;
     echo json_encode([
         'ok' => true,
         'atendido' => $novoAtendido,
@@ -391,15 +517,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
 }
 
 // Exclui um evento EDI específico (apaga a linha da tabela "edi"). Não mexe
-// em nenhuma outra tabela — programação e estoque são independentes do EDI.
+// na programação (independente do EDI), mas apaga também as linhas de
+// estoque geradas por ESSE evento (origem_edi_id) — tanto a demanda original
+// ('demanda_edi') quanto qualquer reversão ('reversao_edi') — pra não deixar
+// no estoque um desconto "órfão" de um evento que nem existe mais.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_evento_edi') {
     exigirComprador();
     $idExcluir = (int) ($_POST['id'] ?? 0);
     if ($idExcluir > 0) {
-        $stmtExcluir = mysqli_prepare($conn, "DELETE FROM edi WHERE _tidb_rowid = ?");
-        mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
-        mysqli_stmt_execute($stmtExcluir);
-        mysqli_stmt_close($stmtExcluir);
+        mysqli_begin_transaction($conn);
+        try {
+            $stmtExcluirEstoqueEdi = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_edi_id = ?");
+            mysqli_stmt_bind_param($stmtExcluirEstoqueEdi, 'i', $idExcluir);
+            mysqli_stmt_execute($stmtExcluirEstoqueEdi);
+            mysqli_stmt_close($stmtExcluirEstoqueEdi);
+
+            $stmtExcluir = mysqli_prepare($conn, "DELETE FROM edi WHERE _tidb_rowid = ?");
+            mysqli_stmt_bind_param($stmtExcluir, 'i', $idExcluir);
+            mysqli_stmt_execute($stmtExcluir);
+            mysqli_stmt_close($stmtExcluir);
+
+            mysqli_commit($conn);
+        } catch (Throwable $e) {
+            mysqli_rollback($conn);
+        }
     }
 
     header('Location: edi.php?' . http_build_query([
@@ -419,10 +560,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     exigirComprador();
     $idAlternar = (int) ($_POST['id'] ?? 0);
     if ($idAlternar > 0) {
-        $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
-        mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
-        mysqli_stmt_execute($stmtToggle);
-        mysqli_stmt_close($stmtToggle);
+        $stmtAntesFallback = mysqli_prepare($conn, "SELECT material, quantidade, atendido FROM edi WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtAntesFallback, 'i', $idAlternar);
+        mysqli_stmt_execute($stmtAntesFallback);
+        $itemAntesFallback = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAntesFallback));
+        mysqli_stmt_close($stmtAntesFallback);
+
+        if ($itemAntesFallback) {
+            $tornandoAtendidoFallback = (int) $itemAntesFallback['atendido'] !== 1;
+
+            mysqli_begin_transaction($conn);
+            try {
+                $stmtToggle = mysqli_prepare($conn, "UPDATE edi SET atendido = IF(atendido = 1, 0, 1) WHERE _tidb_rowid = ?");
+                mysqli_stmt_bind_param($stmtToggle, 'i', $idAlternar);
+                mysqli_stmt_execute($stmtToggle);
+                mysqli_stmt_close($stmtToggle);
+
+                aplicarDemandaEdiNoEstoque(
+                    $conn,
+                    $idAlternar,
+                    (string) ($itemAntesFallback['material'] ?? ''),
+                    (float) ($itemAntesFallback['quantidade'] ?? 0),
+                    $tornandoAtendidoFallback
+                );
+
+                mysqli_commit($conn);
+            } catch (Throwable $e) {
+                mysqli_rollback($conn);
+            }
+        }
     }
 
     header('Location: edi.php?' . http_build_query([

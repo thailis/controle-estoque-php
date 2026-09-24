@@ -83,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $idxCodigo = null;
                 $idxDescricao = null;
                 $idxEstoqueTotal = null;
-                
+
                 foreach ([
                            'codigo_componente',
                            'componente',
@@ -472,6 +472,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     }
 
     $porPlantaExport = [];
+    $demandaExport = [];
     if (!empty($componentesExport)) {
         $codigos = array_keys($componentesExport);
         $placeholders = implode(',', array_fill(0, count($codigos), '?'));
@@ -489,6 +490,26 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         while ($linha = mysqli_fetch_assoc($resPlantaExport)) {
             $porPlantaExport[$linha['codigo_componente']][$linha['planta']] = (float) $linha['valor'];
         }
+
+        // Demanda acumulada (total já subtraído do estoque por EDIs marcados Atendido,
+        // via explosão da BOM) — soma o valor absoluto das linhas de saída geradas por
+        // esse processo, identificadas por origem_edi_id.
+        // Filtra especificamente origem = 'demanda_edi' (não apenas origem_edi_id IS NOT NULL):
+        // ao reabrir um EDI, a reversão INSERE uma linha de compensação separada
+        // (origem = 'reversao_edi'), sem apagar nem alterar a linha de demanda original.
+        // Assim esse total é sempre o acumulado histórico já subtraído, e nunca diminui.
+        $stmtDemandaExport = mysqli_prepare($conn, "
+            SELECT codigo_componente, SUM(ABS(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0))) AS demanda
+            FROM estoque
+            WHERE origem = 'demanda_edi' AND codigo_componente IN ($placeholders)
+            GROUP BY codigo_componente
+        ");
+        mysqli_stmt_bind_param($stmtDemandaExport, $tiposCodigos, ...$codigos);
+        mysqli_stmt_execute($stmtDemandaExport);
+        $resDemandaExport = mysqli_stmt_get_result($stmtDemandaExport);
+        while ($linha = mysqli_fetch_assoc($resDemandaExport)) {
+            $demandaExport[$linha['codigo_componente']] = (float) $linha['demanda'];
+        }
     }
 
     header('Content-Type: text/csv; charset=UTF-8');
@@ -500,6 +521,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     foreach ($plantas as $p) { $cabecalhoCsv[] = $p; }
     if ($temSemPlanta) { $cabecalhoCsv[] = 'Sem planta'; }
     $cabecalhoCsv[] = 'Total';
+    $cabecalhoCsv[] = 'Demanda';
     $cabecalhoCsv[] = 'MRP';
     fputcsv($saida, $cabecalhoCsv, ';', '"', '');
 
@@ -519,6 +541,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $linhaCsv[] = $valorSemPlanta !== null ? number_format($valorSemPlanta, 2, ',', '') : '';
         }
         $linhaCsv[] = number_format((float) $linha['total'], 2, ',', '');
+        $linhaCsv[] = number_format($demandaExport[$codigo] ?? 0.0, 2, ',', '');
         $linhaCsv[] = $mrpTexto;
         fputcsv($saida, $linhaCsv, ';', '"', '');
     }
@@ -543,6 +566,11 @@ while ($row = mysqli_fetch_assoc($result)) {
 
 // Busca o detalhamento por planta só dos componentes desta página
 $porPlanta = [];
+// Demanda acumulada (total já subtraído do estoque por EDIs marcados Atendido, via
+// explosão da BOM: quantidade do EDI × consumo de cada componente) — mostrada aqui
+// só como referência (não é editável e não entra na conta do Total, que já reflete
+// o saldo líquido real).
+$demandaPorComponente = [];
 if (!empty($componentes)) {
     $codigos = array_keys($componentes);
     $placeholders = implode(',', array_fill(0, count($codigos), '?'));
@@ -559,6 +587,21 @@ if (!empty($componentes)) {
     $resPlantaPagina = mysqli_stmt_get_result($stmtPlanta);
     while ($linha = mysqli_fetch_assoc($resPlantaPagina)) {
         $porPlanta[$linha['codigo_componente']][$linha['planta']] = (float) $linha['valor'];
+    }
+
+    // Mesmo critério do export: só origem = 'demanda_edi' (acumulado histórico,
+    // nunca diminui — reabrir um EDI compensa com uma linha à parte, 'reversao_edi').
+    $stmtDemanda = mysqli_prepare($conn, "
+        SELECT codigo_componente, SUM(ABS(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0))) AS demanda
+        FROM estoque
+        WHERE origem = 'demanda_edi' AND codigo_componente IN ($placeholders)
+        GROUP BY codigo_componente
+    ");
+    mysqli_stmt_bind_param($stmtDemanda, $tiposCodigos, ...$codigos);
+    mysqli_stmt_execute($stmtDemanda);
+    $resDemanda = mysqli_stmt_get_result($stmtDemanda);
+    while ($linha = mysqli_fetch_assoc($resDemanda)) {
+        $demandaPorComponente[$linha['codigo_componente']] = (float) $linha['demanda'];
     }
 }
 ?>
@@ -690,13 +733,14 @@ if (!empty($componentes)) {
                                 <th class="text-end">Sem planta</th>
                             <?php endif; ?>
                             <th class="text-end col-total">Total</th>
+                            <th class="text-end" title="Total acumulado já subtraído do estoque por EDIs marcados Atendido (quantidade × consumo da BOM). É histórico: não diminui se um EDI for reaberto.">Demanda</th>
                             <th>MRP</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($componentes)): ?>
-                            <tr><td colspan="<?php echo 5 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="<?php echo 6 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($componentes as $codigo => $linha): ?>
                                 <?php
@@ -709,6 +753,7 @@ if (!empty($componentes)) {
                                     // Componente e Descrição ficam FORA do formulário (não editáveis) —
                                     // o colspan cobre só as colunas de planta + Total + MRP.
                                     $colspanEdicao = 2 + count($plantas) + ($temSemPlanta ? 1 : 0);
+                                    $demandaLinha = $demandaPorComponente[$codigo] ?? 0.0;
                                 ?>
                                 <tr id="linha-<?php echo h($codigo); ?>">
                                     <td><strong><?php echo h($codigo); ?></strong></td>
@@ -723,6 +768,7 @@ if (!empty($componentes)) {
                                         <td class="text-end celula-editavel" data-id="<?php echo h($codigo); ?>" data-campo="SEM_PLANTA" data-valor-bruto="<?php echo number_format($valorSemPlanta, 2, ',', ''); ?>" title="Duplo clique para editar"><?php echo isset($porPlanta[$codigo]['']) ? number_format($valorSemPlanta, 2, ',', '.') : '—'; ?></td>
                                     <?php endif; ?>
                                     <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
+                                    <td class="text-end text-muted"><?php echo $demandaLinha > 0 ? number_format($demandaLinha, 2, ',', '.') : '—'; ?></td>
                                     <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
                                     <td>
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir este componente do estoque? Remove TODAS as linhas dele (todas as plantas). Essa ação não pode ser desfeita.');">
