@@ -292,7 +292,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
         exit;
     }
 
-    $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, atendido, data FROM programacao WHERE id = ?");
+    $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido, data FROM programacao WHERE id = ?");
     mysqli_stmt_bind_param($stmtBuscaItem, 'i', $idAlternar);
     mysqli_stmt_execute($stmtBuscaItem);
     $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
@@ -319,9 +319,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
             mysqli_stmt_execute($stmtProgOff);
             mysqli_stmt_close($stmtProgOff);
         } else {
-            // Marcar atendido: soma a quantidade recebida no estoque físico
+            // Marcar atendido: soma no estoque físico o valor de Quantidade Recebida
+            // (não a Quantidade pedida/programada) — se ainda não foi preenchida,
+            // entra com 0 (nada físico ainda confirmado).
             $codigoComponente = trim((string) $itemProg['codigo_componente']);
-            $quantidadeRecebida = (float) $itemProg['quantidade'];
+            $quantidadeRecebida = $itemProg['quantidade_recebida'] !== null ? (float) $itemProg['quantidade_recebida'] : 0.0;
 
             $stmtDesc = mysqli_prepare($conn, "
                 SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao
@@ -403,7 +405,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     $idAlternar = (int) ($_POST['id'] ?? 0);
 
     if ($idAlternar > 0) {
-        $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, atendido FROM programacao WHERE id = ?");
+        $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido FROM programacao WHERE id = ?");
         mysqli_stmt_bind_param($stmtBuscaItem, 'i', $idAlternar);
         mysqli_stmt_execute($stmtBuscaItem);
         $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
@@ -426,9 +428,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
                     mysqli_stmt_execute($stmtProgOff);
                     mysqli_stmt_close($stmtProgOff);
                 } else {
-                    // Marcar atendido: soma a quantidade recebida no estoque físico
+                    // Marcar atendido: soma no estoque físico o valor de Quantidade Recebida
+                    // (não a Quantidade pedida/programada) — se ainda não foi preenchida,
+                    // entra com 0 (nada físico ainda confirmado).
                     $codigoComponente = trim((string) $itemProg['codigo_componente']);
-                    $quantidadeRecebida = (float) $itemProg['quantidade'];
+                    $quantidadeRecebida = $itemProg['quantidade_recebida'] !== null ? (float) $itemProg['quantidade_recebida'] : 0.0;
 
                     $stmtDesc = mysqli_prepare($conn, "
                         SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao
