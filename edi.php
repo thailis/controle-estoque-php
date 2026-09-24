@@ -363,6 +363,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 //     diminui, mesmo se o evento for reaberto depois.
 // Calculado usando o mesmo padrão de explosão de BOM já usado em
 // evolucao_geral.php / detalhe_componente.php / parametros_compra.php.
+// Busca, numa única consulta (IN), a descrição já cadastrada de vários
+// componentes de uma vez — evita 1 consulta por componente (era o principal
+// motivo do botão Pendente/Atendido demorar vários segundos em EDIs cuja BOM
+// tem muitos componentes: antes eram 2 idas ao banco por componente).
+function buscarDescricoesEstoque(mysqli $conn, array $codigos): array
+{
+    $codigos = array_values(array_unique(array_filter($codigos, fn($c) => $c !== '')));
+    if (empty($codigos)) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($codigos), '?'));
+    $tipos = str_repeat('s', count($codigos));
+    $stmt = mysqli_prepare($conn, "
+        SELECT codigo_componente, MAX(descricao) AS descricao
+        FROM estoque
+        WHERE codigo_componente IN ($placeholders)
+        GROUP BY codigo_componente
+    ");
+    mysqli_stmt_bind_param($stmt, $tipos, ...$codigos);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $mapa = [];
+    while ($linha = mysqli_fetch_assoc($res)) {
+        $mapa[$linha['codigo_componente']] = $linha['descricao'];
+    }
+    mysqli_stmt_close($stmt);
+    return $mapa;
+}
+
 function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, float $quantidadeEdi, bool $tornandoAtendido): void
 {
     $material = trim($material);
@@ -386,6 +415,11 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
         $itensBom = mysqli_fetch_all($resBom, MYSQLI_ASSOC);
         mysqli_stmt_close($stmtBom);
 
+        // Monta a lista de linhas a inserir primeiro (sem tocar no banco),
+        // depois busca todas as descrições de uma vez e grava tudo num único
+        // INSERT com múltiplas linhas — bem mais rápido que 1 SELECT + 1
+        // INSERT por componente.
+        $linhasParaInserir = [];
         foreach ($itensBom as $linhaBom) {
             $codigoComponente = $linhaBom['codigo_componente'];
             $consumo = (float) $linhaBom['consumo'];
@@ -396,22 +430,26 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
             if ($quantidadeSubtrair <= 0) {
                 continue;
             }
-
-            $stmtDesc = mysqli_prepare($conn, "SELECT MAX(descricao) AS descricao FROM estoque WHERE codigo_componente = ?");
-            mysqli_stmt_bind_param($stmtDesc, 's', $codigoComponente);
-            mysqli_stmt_execute($stmtDesc);
-            $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? null;
-            mysqli_stmt_close($stmtDesc);
-
-            $estoqueNegativo = -$quantidadeSubtrair;
-            $stmtInsere = mysqli_prepare($conn, "
-                INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id)
-                VALUES (?, ?, ?, NULL, 'demanda_edi', ?)
-            ");
-            mysqli_stmt_bind_param($stmtInsere, 'ssdi', $codigoComponente, $descricao, $estoqueNegativo, $idEdi);
-            mysqli_stmt_execute($stmtInsere);
-            mysqli_stmt_close($stmtInsere);
+            $linhasParaInserir[$codigoComponente] = -$quantidadeSubtrair;
         }
+
+        if (empty($linhasParaInserir)) {
+            return;
+        }
+
+        $descricoes = buscarDescricoesEstoque($conn, array_keys($linhasParaInserir));
+
+        $partes = [];
+        foreach ($linhasParaInserir as $codigoComponente => $estoqueNegativo) {
+            $descricao = $descricoes[$codigoComponente] ?? null;
+            $descricaoSql = $descricao === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, (string) $descricao) . "'";
+            $partes[] = "('" . mysqli_real_escape_string($conn, (string) $codigoComponente) . "', "
+                . $descricaoSql . ", " . (float) $estoqueNegativo . ", NULL, 'demanda_edi', " . $idEdi . ")";
+        }
+
+        $sqlInsereLote = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id) VALUES "
+            . implode(', ', $partes);
+        mysqli_query($conn, $sqlInsereLote);
     } else {
         $stmtNet = mysqli_prepare($conn, "
             SELECT codigo_componente, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS saldo
@@ -424,6 +462,7 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
         $pendentes = mysqli_fetch_all(mysqli_stmt_get_result($stmtNet), MYSQLI_ASSOC);
         mysqli_stmt_close($stmtNet);
 
+        $devolucoes = [];
         foreach ($pendentes as $linhaPendente) {
             $codigoComponente = $linhaPendente['codigo_componente'];
             $saldo = (float) $linhaPendente['saldo'];
@@ -431,22 +470,26 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
             if ($saldo >= -0.0001) {
                 continue;
             }
-            $devolver = -$saldo;
-
-            $stmtDesc = mysqli_prepare($conn, "SELECT MAX(descricao) AS descricao FROM estoque WHERE codigo_componente = ?");
-            mysqli_stmt_bind_param($stmtDesc, 's', $codigoComponente);
-            mysqli_stmt_execute($stmtDesc);
-            $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? null;
-            mysqli_stmt_close($stmtDesc);
-
-            $stmtInsere = mysqli_prepare($conn, "
-                INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id)
-                VALUES (?, ?, ?, NULL, 'reversao_edi', ?)
-            ");
-            mysqli_stmt_bind_param($stmtInsere, 'ssdi', $codigoComponente, $descricao, $devolver, $idEdi);
-            mysqli_stmt_execute($stmtInsere);
-            mysqli_stmt_close($stmtInsere);
+            $devolucoes[$codigoComponente] = -$saldo;
         }
+
+        if (empty($devolucoes)) {
+            return;
+        }
+
+        $descricoes = buscarDescricoesEstoque($conn, array_keys($devolucoes));
+
+        $partes = [];
+        foreach ($devolucoes as $codigoComponente => $devolver) {
+            $descricao = $descricoes[$codigoComponente] ?? null;
+            $descricaoSql = $descricao === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, (string) $descricao) . "'";
+            $partes[] = "('" . mysqli_real_escape_string($conn, (string) $codigoComponente) . "', "
+                . $descricaoSql . ", " . (float) $devolver . ", NULL, 'reversao_edi', " . $idEdi . ")";
+        }
+
+        $sqlInsereLote = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id) VALUES "
+            . implode(', ', $partes);
+        mysqli_query($conn, $sqlInsereLote);
     }
 }
 
