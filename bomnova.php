@@ -88,18 +88,29 @@ function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string
     return ($netPrice / $divisor) * (1 + $ipiFr);
 }
 
-// Exibe Net Price/IPI/PIS/COFINS/ICMS sempre em formato BR (vírgula decimal,
-// 4 casas) na tela — o banco pode ter o valor gravado com ponto (ex.: "13.2000"),
-// mas o resto do site (e o próprio Preço calculado) usa vírgula, então a
-// exibição fica inconsistente se mostrarmos o dado cru direto da tabela.
-function formatarNumeroBomnovaTaxExibicao(?string $valor): string
+// Exibe Net Price/IPI/PIS/COFINS/ICMS sempre em formato BR (vírgula decimal) na
+// tela — o banco pode ter o valor gravado com ponto (ex.: "13.2000"), mas o
+// resto do site (e o próprio Preço calculado) usa vírgula, então a exibição
+// fica inconsistente se mostrarmos o dado cru direto da tabela. $casas define
+// quantas casas decimais aparecem (Net Price: 4, IPI/PIS/COFINS: 2, ICMS: 0).
+function formatarNumeroBomnovaTaxExibicao(?string $valor, int $casas = 4): string
 {
     if ($valor === null || trim($valor) === '') {
         return '';
     }
     $numero = parseNumeroBomnovaTax($valor);
-    return $numero !== null ? number_format($numero, 4, ',', '.') : $valor;
+    return $numero !== null ? number_format($numero, $casas, ',', '.') : $valor;
 }
+
+// Casas decimais de exibição por campo: Net Price fica com 4 (precisa de mais
+// precisão pro cálculo do Preço), IPI/PIS/COFINS com 2, ICMS com 0 (inteiro).
+const BOMNOVA_CASAS_DECIMAIS = [
+    'net_price' => 4,
+    'ipi' => 2,
+    'pis' => 2,
+    'cofins' => 2,
+    'icms' => 0,
+];
 
 $mensagens = [];
 $importados = 0;
@@ -149,8 +160,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
                 echo json_encode(['ok' => false, 'erro' => 'Valor inválido.']);
                 exit;
             }
-            $valorParaGravar = number_format($numeroEditado, 4, '.', '');
-            $valorParaExibir = number_format($numeroEditado, 4, ',', '.');
+            $casasDecimais = BOMNOVA_CASAS_DECIMAIS[$campo] ?? 4;
+            $valorParaGravar = number_format($numeroEditado, $casasDecimais, '.', '');
+            $valorParaExibir = number_format($numeroEditado, $casasDecimais, ',', '.');
         }
     }
 
@@ -620,8 +632,12 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
             $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['descricao'],
             $linhaExport['consumo'], $linhaExport['um'],
-            $linhaExport['net_price'], $linhaExport['ipi'], $linhaExport['pis'], $linhaExport['cofins'], $linhaExport['icms'],
-            $precoExport !== null ? number_format($precoExport, 4, ',', '') : '',
+            formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
+            formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
+            formatarNumeroBomnovaTaxExibicao($linhaExport['pis'] ?? null, BOMNOVA_CASAS_DECIMAIS['pis']),
+            formatarNumeroBomnovaTaxExibicao($linhaExport['cofins'] ?? null, BOMNOVA_CASAS_DECIMAIS['cofins']),
+            formatarNumeroBomnovaTaxExibicao($linhaExport['icms'] ?? null, BOMNOVA_CASAS_DECIMAIS['icms']),
+            $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
             $linhaExport['mrp'], $linhaExport['planejamento'],
         ], ';', '"', '');
     }
@@ -881,11 +897,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
                                     <?php
-                                        $netPriceExibir = formatarNumeroBomnovaTaxExibicao($row['net_price'] ?? null);
-                                        $ipiExibir = formatarNumeroBomnovaTaxExibicao($row['ipi'] ?? null);
-                                        $pisExibir = formatarNumeroBomnovaTaxExibicao($row['pis'] ?? null);
-                                        $cofinsExibir = formatarNumeroBomnovaTaxExibicao($row['cofins'] ?? null);
-                                        $icmsExibir = formatarNumeroBomnovaTaxExibicao($row['icms'] ?? null);
+                                        $netPriceExibir = formatarNumeroBomnovaTaxExibicao($row['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']);
+                                        $ipiExibir = formatarNumeroBomnovaTaxExibicao($row['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']);
+                                        $pisExibir = formatarNumeroBomnovaTaxExibicao($row['pis'] ?? null, BOMNOVA_CASAS_DECIMAIS['pis']);
+                                        $cofinsExibir = formatarNumeroBomnovaTaxExibicao($row['cofins'] ?? null, BOMNOVA_CASAS_DECIMAIS['cofins']);
+                                        $icmsExibir = formatarNumeroBomnovaTaxExibicao($row['icms'] ?? null, BOMNOVA_CASAS_DECIMAIS['icms']);
                                     ?>
                                     <td class="text-end celula-editavel" data-campo="net_price" data-valor-bruto="<?php echo htmlspecialchars($netPriceExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($netPriceExibir); ?></td>
                                     <td class="text-end celula-editavel" data-campo="ipi" data-valor-bruto="<?php echo htmlspecialchars($ipiExibir); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($ipiExibir); ?></td>
@@ -895,7 +911,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <?php
                                         $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $row['pis'] ?? null, $row['cofins'] ?? null, $row['icms'] ?? null);
                                     ?>
-                                    <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 4, ',', '.') : '—'; ?></td>
+                                    <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
                                     <td>
                                         <form method="POST" class="d-inline m-0">
                                             <input type="hidden" name="acao" value="toggle_mrp">
@@ -1086,7 +1102,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 return isNaN(numero) ? null : numero;
             }
             function formatarNumeroBr(numero) {
-                return numero.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+                return numero.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             }
             document.querySelectorAll('tbody tr').forEach(function (linha) {
                 const celulaNetPrice = linha.querySelector('td[data-campo="net_price"]');
