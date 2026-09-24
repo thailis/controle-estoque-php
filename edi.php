@@ -493,6 +493,39 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
     }
 }
 
+// Chamado depois que a QUANTIDADE de um evento EDI já existente é editada
+// (tanto pelo duplo clique quanto pelo formulário de edição completa). Se o
+// evento já estiver marcado Atendido, o valor subtraído do estoque tinha
+// ficado baseado na quantidade ANTIGA — aqui ele é recalculado do zero:
+// reverte 100% do que estava lançado pra esse evento (como se tivesse
+// reaberto) e relança já com a quantidade nova (como se tivesse marcado
+// Atendido de novo). Se o evento estiver Pendente, não há nada no estoque
+// pra corrigir ainda, então não faz nada.
+function sincronizarQuantidadeEdiNoEstoque(mysqli $conn, int $idEdi): void
+{
+    $stmt = mysqli_prepare($conn, "SELECT material, quantidade, atendido FROM edi WHERE _tidb_rowid = ?");
+    mysqli_stmt_bind_param($stmt, 'i', $idEdi);
+    mysqli_stmt_execute($stmt);
+    $item = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+
+    if (!$item || (int) $item['atendido'] !== 1) {
+        return;
+    }
+
+    $material = (string) ($item['material'] ?? '');
+    $quantidadeAtual = (float) ($item['quantidade'] ?? 0);
+
+    mysqli_begin_transaction($conn);
+    try {
+        aplicarDemandaEdiNoEstoque($conn, $idEdi, $material, $quantidadeAtual, false); // zera o que estava lançado
+        aplicarDemandaEdiNoEstoque($conn, $idEdi, $material, $quantidadeAtual, true);  // relança com a quantidade nova
+        mysqli_commit($conn);
+    } catch (Throwable $e) {
+        mysqli_rollback($conn);
+    }
+}
+
 // Alternar o status "atendido" de um evento EDI, sem apagar a linha
 //
 // Versão AJAX: mesma lógica acima, mas responde em JSON pra atualizar o
@@ -718,6 +751,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_bind_param($stmt, 'di', $quantidadeEditada, $id);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
+        sincronizarQuantidadeEdiNoEstoque($conn, $id);
         echo json_encode(['ok' => true, 'exibido' => (string) $quantidadeEditada]);
         exit;
     }
@@ -760,6 +794,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         );
         mysqli_stmt_execute($stmtEditar);
         mysqli_stmt_close($stmtEditar);
+        sincronizarQuantidadeEdiNoEstoque($conn, $idEditar);
         $flash = 'editado';
     }
 
