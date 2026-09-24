@@ -387,10 +387,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     }
 
     header('Location: programacao.php?' . http_build_query([
-        'pagina'   => $_POST['pagina_atual'] ?? 1,
-        'busca'    => $_POST['busca_atual'] ?? '',
-        'filtro'   => $_POST['filtro_atual'] ?? '',
-        'excluido' => 1,
+        'pagina'     => $_POST['pagina_atual'] ?? 1,
+        'busca'      => $_POST['busca_atual'] ?? '',
+        'filtro'     => $_POST['filtro_atual'] ?? '',
+        'processo'   => $_POST['processo_atual'] ?? '',
+        'fornecedor' => $_POST['fornecedor_atual'] ?? '',
+        'excluido'   => 1,
     ]));
     exit;
 }
@@ -458,9 +460,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     }
 
     header('Location: programacao.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
+        'pagina'     => $_POST['pagina_atual'] ?? 1,
+        'busca'      => $_POST['busca_atual'] ?? '',
+        'filtro'     => $_POST['filtro_atual'] ?? '',
+        'processo'   => $_POST['processo_atual'] ?? '',
+        'fornecedor' => $_POST['fornecedor_atual'] ?? '',
     ]) . '#linha-' . $idAlternar);
     exit;
 }
@@ -489,10 +493,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     }
 
     header('Location: programacao.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
-        'flash'  => $flash,
+        'pagina'     => $_POST['pagina_atual'] ?? 1,
+        'busca'      => $_POST['busca_atual'] ?? '',
+        'filtro'     => $_POST['filtro_atual'] ?? '',
+        'processo'   => $_POST['processo_atual'] ?? '',
+        'fornecedor' => $_POST['fornecedor_atual'] ?? '',
+        'flash'      => $flash,
     ]));
     exit;
 }
@@ -695,10 +701,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
     }
 
     header('Location: programacao.php?' . http_build_query([
-        'pagina' => $_POST['pagina_atual'] ?? 1,
-        'busca'  => $_POST['busca_atual'] ?? '',
-        'filtro' => $_POST['filtro_atual'] ?? '',
-        'flash'  => $flash,
+        'pagina'     => $_POST['pagina_atual'] ?? 1,
+        'busca'      => $_POST['busca_atual'] ?? '',
+        'filtro'     => $_POST['filtro_atual'] ?? '',
+        'processo'   => $_POST['processo_atual'] ?? '',
+        'fornecedor' => $_POST['fornecedor_atual'] ?? '',
+        'flash'      => $flash,
     ]) . '#linha-' . $idEditar);
     exit;
 }
@@ -714,6 +722,8 @@ $offset = ($pagina - 1) * $porPagina;
 
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
+$processoFiltro = isset($_GET['processo']) ? trim($_GET['processo']) : '';
+$fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
 $editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
 $flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
 
@@ -733,6 +743,24 @@ if ($resComp) {
     }
 }
 
+// Lista de processos existentes na programação, pro filtro
+$processosDisponiveis = [];
+$resProc = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' ORDER BY processo");
+if ($resProc) {
+    while ($linhaProc = mysqli_fetch_assoc($resProc)) {
+        $processosDisponiveis[] = $linhaProc['processo'];
+    }
+}
+
+// Lista de fornecedores existentes na BOM, pro filtro
+$fornecedoresDisponiveis = [];
+$resForn = mysqli_query($conn, "SELECT DISTINCT TRIM(fornecedor) AS fornecedor FROM bomnova WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
+if ($resForn) {
+    while ($linhaForn = mysqli_fetch_assoc($resForn)) {
+        $fornecedoresDisponiveis[] = $linhaForn['fornecedor'];
+    }
+}
+
 $condicoes = [];
 $params = [];
 $tipos = '';
@@ -748,6 +776,18 @@ if ($filtro === 'pendente') {
     $condicoes[] = "(p.atendido = 0 OR p.atendido IS NULL)";
 } elseif ($filtro === 'atendido') {
     $condicoes[] = "p.atendido = 1";
+}
+
+if ($processoFiltro !== '') {
+    $condicoes[] = "p.processo = ?";
+    $params[] = $processoFiltro;
+    $tipos .= 's';
+}
+
+if ($fornecedorFiltro !== '') {
+    $condicoes[] = "EXISTS (SELECT 1 FROM bomnova b2 WHERE TRIM(b2.codigo_componente) = TRIM(p.codigo_componente) AND TRIM(b2.fornecedor) = ?)";
+    $params[] = $fornecedorFiltro;
+    $tipos .= 's';
 }
 
 $where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
@@ -1042,6 +1082,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                 <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                 <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
+                <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                 <div class="col-auto">
                     <label class="form-label small mb-1">Componente</label>
                     <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" placeholder="Ex.: 12000586" required>
@@ -1076,16 +1118,32 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
+                    <select name="processo" class="form-select form-select-sm" onchange="this.form.submit()">
+                        <option value="">Todos os processos</option>
+                        <?php foreach ($processosDisponiveis as $p): ?>
+                            <option value="<?php echo h($p); ?>" <?php echo $processoFiltro === $p ? 'selected' : ''; ?>><?php echo h($p); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select name="fornecedor" class="form-select form-select-sm" onchange="this.form.submit()">
+                        <option value="">Todos os fornecedores</option>
+                        <?php foreach ($fornecedoresDisponiveis as $f): ?>
+                            <option value="<?php echo h($f); ?>" <?php echo $fornecedorFiltro === $f ? 'selected' : ''; ?>><?php echo h($f); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <div class="btn-group" role="group">
-                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
                     </div>
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="programacao.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -1121,7 +1179,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
                                 $idLinha = (int) $row['id'];
                                 $emEdicao = ($editando === $idLinha);
-                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro) . '&processo=' . urlencode($processoFiltro) . '&fornecedor=' . urlencode($fornecedorFiltro);
                                 ?>
                                 <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
@@ -1131,6 +1189,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                                            <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
                                                     title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque)'; ?>">
@@ -1208,6 +1268,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo h($filtro); ?>">
+                                            <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
                                     </td>
@@ -1222,13 +1284,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
