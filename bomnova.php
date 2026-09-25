@@ -75,6 +75,25 @@ function ridLinhaBomnova(): int
     return (int) ($_POST['orig_rid'] ?? 0);
 }
 
+// Lê MRP/Planejamento atuais de UMA linha (pela mesma condição usada no UPDATE).
+// Devolve [mrp, planejamento] já normalizados, ou null se a linha não existe.
+function lerEstadoMrpBomnova(mysqli $conn, array $condicoes, array $valores): ?array
+{
+    $stmt = mysqli_prepare($conn, "SELECT mrp, planejamento FROM bomnova WHERE " . implode(' AND ', $condicoes) . " LIMIT 1");
+    mysqli_stmt_bind_param($stmt, str_repeat('s', count($valores)), ...$valores);
+    mysqli_stmt_execute($stmt);
+    $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+    if (!$linha) {
+        return null;
+    }
+    $mrp = strtoupper(trim((string) ($linha['mrp'] ?? '')));
+    $mrp = $mrp === 'N' ? 'N' : 'S';
+    $plan = strtoupper(trim((string) ($linha['planejamento'] ?? '')));
+    $plan = $mrp === 'N' ? 'N' : ($plan === 'N' ? 'N' : 'S');
+    return [$mrp, $plan];
+}
+
 // Nome de coluna do CSV "normalizado": minúsculo, sem acento e só letras/números.
 // Ex.: "Net Price" / "NET_PRICE" / "net-price" -> "netprice"; "IPI %" -> "ipi";
 // "Descrição" -> "descricao"; "U.M." -> "um".
@@ -353,18 +372,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
     mysqli_stmt_close($stmtToggle);
 
-    if ($linhasAfetadas === 0) {
-        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+    // Relê o estado REAL da linha no banco (0 linhas alteradas também acontece
+    // quando o valor gravado já era o novo — isso não é erro). A tela passa a
+    // mostrar exatamente o que está no banco.
+    $estadoReal = lerEstadoMrpBomnova($conn, $condicoes, $valoresOriginais);
+    if ($estadoReal === null) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha no banco' . (ridLinhaBomnova() > 0 ? ' (id ' . ridLinhaBomnova() . ')' : ' (a tela não enviou o id da linha)') . '. Recarregue a página e tente de novo.']);
         exit;
     }
+    [$mrpReal, $planReal] = $estadoReal;
 
     echo json_encode([
         'ok' => true,
-        'mrpTexto' => $novoMrp,
-        'mrpClasse' => $novoMrp === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
-        'planTexto' => $novoPlanejamento,
-        'planClasse' => $novoPlanejamento === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
-        'planBloqueado' => $novoMrp === 'N',
+        'mrpTexto' => $mrpReal,
+        'mrpClasse' => $mrpReal === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planTexto' => $planReal,
+        'planClasse' => $planReal === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planBloqueado' => $mrpReal === 'N',
     ]);
     exit;
 }
@@ -393,28 +417,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
 
     $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
     $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
-    $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
+    $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE UPPER(TRIM(COALESCE(mrp, 'S'))) <> 'N' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
     $tiposToggle = str_repeat('s', 1 + count($valoresOriginais));
     $parametrosToggle = array_merge([$novoPlanejamentoToggle], $valoresOriginais);
     mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
     mysqli_stmt_execute($stmtToggle);
-    $linhasAfetadas = mysqli_stmt_affected_rows($stmtToggle);
     mysqli_stmt_close($stmtToggle);
 
-    if ($linhasAfetadas === 0) {
-        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+    $estadoReal = lerEstadoMrpBomnova($conn, $condicoes, $valoresOriginais);
+    if ($estadoReal === null) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha no banco' . (ridLinhaBomnova() > 0 ? ' (id ' . ridLinhaBomnova() . ')' : ' (a tela não enviou o id da linha)') . '. Recarregue a página e tente de novo.']);
         exit;
     }
+    [$mrpReal, $planReal] = $estadoReal;
 
     echo json_encode([
         'ok' => true,
-        'mrpTexto' => $mrpAtualPlan,
-        'mrpClasse' => $mrpAtualPlan === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
-        'planTexto' => $novoPlanejamentoToggle,
-        'planClasse' => $novoPlanejamentoToggle === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
-        'planBloqueado' => false,
+        'mrpTexto' => $mrpReal,
+        'mrpClasse' => $mrpReal === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planTexto' => $planReal,
+        'planClasse' => $planReal === 'N' ? 'badge-mrp-n' : 'badge-mrp-s',
+        'planBloqueado' => $mrpReal === 'N',
     ]);
     exit;
 }
