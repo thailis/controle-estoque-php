@@ -100,20 +100,22 @@ function validarComponenteMrp(mysqli $connMrp, string $codigoComponente): array
 
 // Lista os componentes de um processo que entram no MRP. "processos" tem
 // UMA LINHA POR COMPONENTE dentro do mesmo processo, enquanto o Follow tem
-// uma linha só por processo — por isso a integração precisa percorrer TODOS
-// os componentes do processo (antes pegava só o primeiro, e os demais nunca
-// chegavam na Programação do MRP, mesmo com o embarque aparecendo como
-// "Confirmado"). Itens "não controla estoque" ficam de fora. Se o mesmo
-// componente aparecer em mais de uma linha do processo, as quantidades somam.
+// uma linha só por processo — por isso a integração percorre TODOS os
+// componentes do processo. Cada item é identificado por PO + componente
+// (o mesmo componente pode vir em POs diferentes dentro do mesmo processo).
+// Itens "não controla estoque" ficam de fora. Linhas repetidas com o mesmo
+// PO + componente têm as quantidades somadas.
 function buscarComponentesProcesso(mysqli $conn, string $processo): array
 {
     $stmt = mysqli_prepare($conn, "
-        SELECT TRIM(codigo_componente) AS codigo_componente, SUM(quantidade) AS quantidade
+        SELECT TRIM(codigo_componente) AS codigo_componente,
+               TRIM(COALESCE(po, '')) AS po,
+               SUM(quantidade) AS quantidade
         FROM processos
         WHERE processo = ?
           AND LOWER(TRIM(COALESCE(controla_estoque, 'sim'))) <> 'nao'
-        GROUP BY TRIM(codigo_componente)
-        ORDER BY TRIM(codigo_componente)
+        GROUP BY TRIM(codigo_componente), TRIM(COALESCE(po, ''))
+        ORDER BY TRIM(codigo_componente), TRIM(COALESCE(po, ''))
     ");
     mysqli_stmt_bind_param($stmt, 's', $processo);
     mysqli_stmt_execute($stmt);
@@ -122,6 +124,7 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
     while ($linhaComp = mysqli_fetch_assoc($resultado)) {
         $componentes[] = [
             'codigo_componente' => (string) $linhaComp['codigo_componente'],
+            'po' => (string) $linhaComp['po'],
             'quantidade' => (float) ($linhaComp['quantidade'] ?? 0),
         ];
     }
@@ -129,41 +132,61 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
     return $componentes;
 }
 
-// Grava UM componente na Programação do MRP, casando por componente + processo:
-// - se já existe a linha (manual, CSV ou confirmação anterior), SUBSTITUI
-//   "importado" (quantidade do site de Importação) e "data_recebida" (data
-//   efetiva do Follow) — nunca soma. Assim, se a confirmação for refeita,
-//   o MRP fica sempre igual ao site de Importação;
-// - se não existe, cria a linha (Quantidade = 0, já que não houve
-//   planejamento manual; Data = efetiva; Importado e Data Recebida preenchidos).
-// Nunca marca "Atendido" — isso continua sendo decisão manual no MRP
-// (é o clique em "Atendido" que soma no estoque físico).
+// Grava UM item na Programação do MRP. A chave é PROCESSO + PO + COMPONENTE:
+// 1) procura a linha com as três informações iguais;
+// 2) se não achar, aceita uma linha do mesmo componente que tenha UMA das
+//    duas informações igual e a outra EM BRANCO (ex.: linha planejada no MRP
+//    só com o PO, sem o processo — ou linha antiga com o processo, sem o PO).
+//    Nesse caso a linha é completada com o que faltava. Nunca troca um PO ou
+//    processo já preenchido com outro valor;
+// 3) se ainda não achar, CRIA a linha já com processo, PO e componente
+//    (Quantidade = 0, já que não houve planejamento; Data = efetiva).
+// Em todos os casos SUBSTITUI "importado" e "data_recebida" (nunca soma),
+// então refazer a confirmação/sincronização deixa o MRP igual ao site de
+// Importação. Nunca marca "Atendido" (continua manual no MRP).
 // Devolve 'criada' ou 'atualizada'.
-function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente, string $processo, float $quantidade, string $dataEfetiva): string
+function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente, string $processo, string $po, float $quantidade, string $dataEfetiva): string
 {
     $stmtBusca = mysqli_prepare($connMrp, "
-        SELECT id FROM programacao
-        WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ?
+        SELECT id,
+               CASE
+                   WHEN TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ? THEN 1
+                   ELSE 2
+               END AS prioridade
+        FROM programacao
+        WHERE TRIM(codigo_componente) = ?
+          AND (
+                (TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?)
+             OR (TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = '')
+             OR (TRIM(COALESCE(processo, '')) = '' AND TRIM(COALESCE(po, '')) = ? AND ? <> '')
+          )
+        ORDER BY prioridade, id
         LIMIT 1
     ");
-    mysqli_stmt_bind_param($stmtBusca, 'ss', $codigoComponente, $processo);
+    mysqli_stmt_bind_param($stmtBusca, 'ssssssss', $processo, $po, $codigoComponente, $processo, $po, $processo, $po, $po);
     mysqli_stmt_execute($stmtBusca);
     $existente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBusca));
     mysqli_stmt_close($stmtBusca);
 
+    $poGravar = $po !== '' ? $po : null;
+
     if ($existente) {
-        $stmtAtualiza = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ?, data_recebida = ? WHERE id = ?");
-        mysqli_stmt_bind_param($stmtAtualiza, 'dsi', $quantidade, $dataEfetiva, $existente['id']);
+        $stmtAtualiza = mysqli_prepare($connMrp, "
+            UPDATE programacao
+            SET importado = ?, data_recebida = ?, processo = ?, po = COALESCE(?, po)
+            WHERE id = ?
+        ");
+        mysqli_stmt_bind_param($stmtAtualiza, 'dsssi', $quantidade, $dataEfetiva, $processo, $poGravar, $existente['id']);
         mysqli_stmt_execute($stmtAtualiza);
         mysqli_stmt_close($stmtAtualiza);
         return 'atualizada';
     }
 
     $stmtInsere = mysqli_prepare($connMrp, "
-        INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado, data_recebida)
-        VALUES (?, ?, ?, 0, ?, ?)
+        INSERT INTO programacao (codigo_componente, processo, po, data, quantidade, importado, data_recebida)
+        VALUES (?, ?, ?, ?, 0, ?, ?)
     ");
-    mysqli_stmt_bind_param($stmtInsere, 'sssds', $codigoComponente, $processo, $dataEfetiva, $quantidade, $dataEfetiva);
+    mysqli_stmt_bind_param($stmtInsere, 'ssssds', $codigoComponente, $processo, $poGravar, $dataEfetiva, $quantidade, $dataEfetiva);
     mysqli_stmt_execute($stmtInsere);
     mysqli_stmt_close($stmtInsere);
     return 'criada';
@@ -232,11 +255,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                         $criadas = 0;
                         $atualizadas = 0;
                         foreach ($componentes as $comp) {
-                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['quantidade'], $dataEfetiva);
+                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva);
                             $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
                         }
                         mysqli_commit($connMrp);
-                        $complementoMensagem = ' — ' . count($componentes) . " componente(s) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
+                        $complementoMensagem = ' — ' . count($componentes) . " item(ns) (PO + componente) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
                     }
                     mysqli_close($connMrp);
                 } catch (Throwable $e) {
@@ -313,7 +336,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
                         $pulados[] = "{$processoSync} / " . ($comp['codigo_componente'] !== '' ? $comp['codigo_componente'] : '(sem código)');
                         continue;
                     }
-                    $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoSync, $comp['quantidade'], $efetivaSync);
+                    $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoSync, $comp['po'], $comp['quantidade'], $efetivaSync);
                     $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
                 }
             }
@@ -371,7 +394,7 @@ $whereLista = $condicoesLista ? ('WHERE ' . implode(' AND ', $condicoesLista)) :
 
 $sqlLista = "
     SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, f.integrado_mrp,
-           p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.status AS status_processo, p.controla_estoque
+           p.po, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.status AS status_processo, p.controla_estoque
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     $whereLista
@@ -432,12 +455,13 @@ if ($resultContagem) {
         .table-confirmar td, .table-confirmar th { vertical-align: middle; }
         .table-confirmar th:nth-child(1), .table-confirmar td:nth-child(1) { width: 110px; }
         .table-confirmar th:nth-child(2), .table-confirmar td:nth-child(2) { width: 150px; }
-        .table-confirmar th:nth-child(3), .table-confirmar td:nth-child(3) { width: 130px; }
-        .table-confirmar th:nth-child(4), .table-confirmar td:nth-child(4) { width: 150px; }
-        .table-confirmar th:nth-child(5), .table-confirmar td:nth-child(5) { width: auto; }
-        .table-confirmar th:nth-child(6), .table-confirmar td:nth-child(6) { width: 110px; }
-        .table-confirmar th:nth-child(7), .table-confirmar td:nth-child(7) { width: 150px; }
-        .table-confirmar th:nth-child(8), .table-confirmar td:nth-child(8) { width: 170px; }
+        .table-confirmar th:nth-child(3), .table-confirmar td:nth-child(3) { width: 130px; } /* PO */
+        .table-confirmar th:nth-child(4), .table-confirmar td:nth-child(4) { width: 130px; }
+        .table-confirmar th:nth-child(5), .table-confirmar td:nth-child(5) { width: 150px; }
+        .table-confirmar th:nth-child(6), .table-confirmar td:nth-child(6) { width: auto; }
+        .table-confirmar th:nth-child(7), .table-confirmar td:nth-child(7) { width: 110px; }
+        .table-confirmar th:nth-child(8), .table-confirmar td:nth-child(8) { width: 150px; }
+        .table-confirmar th:nth-child(9), .table-confirmar td:nth-child(9) { width: 170px; }
         /* A classe .description-cell do dashboard.css (compartilhada com Follow/
            Processos/Pagamento) já vem com "display: block" — funciona lá, mas
            aqui, aplicada direto no <td>, tira a célula do modelo de tabela e
@@ -487,7 +511,7 @@ if ($resultContagem) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por <strong>processo + PO + componente</strong> (se não existir essa combinação, a linha é criada com as três informações) — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
             <form method="POST" class="mt-3 mb-0" onsubmit="return confirm('Reenviar TODOS os embarques já confirmados para a Programação do MRP? Importado e Data Recebida serão substituídos pelos valores do site de Importação, e linhas que faltam serão criadas.');">
                 <input type="hidden" name="acao" value="sincronizar_mrp">
                 <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com o MRP</button>
@@ -545,6 +569,7 @@ if ($resultContagem) {
                         <tr>
                             <th>Status</th>
                             <th>Processo</th>
+                            <th>PO</th>
                             <th>Componente</th>
                             <th>Fornecedor</th>
                             <th>Descrição</th>
@@ -555,7 +580,7 @@ if ($resultContagem) {
                     </thead>
                     <tbody>
                         <?php if (empty($registros)): ?>
-                            <tr><td colspan="8" class="empty-state">Nenhum embarque encontrado com esses filtros.</td></tr>
+                            <tr><td colspan="9" class="empty-state">Nenhum embarque encontrado com esses filtros.</td></tr>
                         <?php else: ?>
                             <?php foreach ($registros as $p): ?>
                                 <?php
@@ -589,6 +614,7 @@ if ($resultContagem) {
                                 <tr>
                                     <td><span class="badge <?php echo $badgeClasseSituacao; ?>"><?php echo h($badgeTextoSituacao); ?></span></td>
                                     <td><span class="component-code"><?php echo h($p['processo']); ?></span></td>
+                                    <td><?php echo h(trim((string) ($p['po'] ?? '')) !== '' ? $p['po'] : '—'); ?></td>
                                     <td><?php echo h($p['codigo_componente'] ?? '—'); ?></td>
                                     <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>

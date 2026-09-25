@@ -166,6 +166,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 if ($indiceProcesso === false) {
                     $indiceProcesso = null;
                 }
+                // Coluna "po" opcional (PO do pedido — casa com o PO de Processos
+                // do site de Importação na hora de confirmar entrega)
+                $indicePo = array_search('po', $cabecalho, true);
+                if ($indicePo === false) {
+                    $indicePo = null;
+                }
 
                 if ($indiceComponente === null) {
                     $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'componente' ou 'codigo_componente' no cabeçalho.";
@@ -177,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "🗑️ Tabela 'programacao' esvaziada antes da importação.";
                 }
 
-                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?)");
+                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT id FROM programacao WHERE TRIM(codigo_componente) = ? AND data = ? LIMIT 1");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ? WHERE id = ?");
                 // Só usada quando o CSV traz uma coluna de Preço pareada com aquele
@@ -209,6 +215,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $processoLinha = $indiceProcesso !== null ? trim($linha[$indiceProcesso] ?? '') : '';
                     $processoLinha = $processoLinha !== '' ? $processoLinha : null;
+                    $poLinha = $indicePo !== null ? trim($linha[$indicePo] ?? '') : '';
+                    $poLinha = $poLinha !== '' ? $poLinha : null;
 
                     // Uma linha da planilha pode gerar várias entradas de programação
                     // (Programação 1, Programação 2, Programação 3...).
@@ -284,7 +292,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             continue;
                         }
 
-                        mysqli_stmt_bind_param($stmtInsert, "sssdd", $codigoComponente, $processoLinha, $data, $quantidade, $preco);
+                        mysqli_stmt_bind_param($stmtInsert, "ssssdd", $codigoComponente, $poLinha, $processoLinha, $data, $quantidade, $preco);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
                         } else {
@@ -524,6 +532,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $componenteManual = trim($_POST['componente_manual'] ?? '');
     $processoManual = trim($_POST['processo_manual'] ?? '');
     $processoManual = $processoManual !== '' ? $processoManual : null;
+    $poManual = trim($_POST['po_manual'] ?? '');
+    $poManual = $poManual !== '' ? $poManual : null;
     $dataManual = parseDataProgramacao(trim($_POST['data_manual'] ?? ''));
     $quantidadeManual = parseQuantidade(trim($_POST['quantidade_manual'] ?? ''));
     // Preço é opcional na entrada manual — Data Recebida/Quantidade Recebida não entram
@@ -534,8 +544,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
 
     $flash = 'erro_dados';
     if ($componenteManual !== '' && $dataManual !== null && $quantidadeManual !== null) {
-        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?)");
-        mysqli_stmt_bind_param($stmtInsManual, "sssdd", $componenteManual, $processoManual, $dataManual, $quantidadeManual, $precoManual);
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco) VALUES (?, ?, ?, ?, ?, ?)");
+        mysqli_stmt_bind_param($stmtInsManual, "ssssdd", $componenteManual, $poManual, $processoManual, $dataManual, $quantidadeManual, $precoManual);
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
         $flash = 'inserido';
@@ -568,7 +578,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    $camposAceitos = ['data', 'quantidade', 'processo', 'preco', 'data_recebida', 'quantidade_recebida'];
+    $camposAceitos = ['data', 'quantidade', 'po', 'processo', 'preco', 'data_recebida', 'quantidade_recebida'];
     if ($id <= 0 || !in_array($campo, $camposAceitos, true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
@@ -587,9 +597,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     // Preço, Data Recebida e Quantidade Recebida não afetam o estoque (não têm a
     // mesma trava de "atendido" que Processo/Data/Quantidade têm), então podem ser
     // editados a qualquer momento, mesmo com o item já atendido.
-    $camposComTravaAtendido = ['processo', 'data', 'quantidade'];
+    $camposComTravaAtendido = ['po', 'processo', 'data', 'quantidade'];
     if (in_array($campo, $camposComTravaAtendido, true) && (int) $item['atendido'] === 1) {
         echo json_encode(['ok' => false, 'erro' => 'Reabra o item antes de editar.']);
+        exit;
+    }
+
+    if ($campo === 'po') {
+        $poEditado = $valor !== '' ? $valor : null;
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET po = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $poEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $poEditado ?? '']);
         exit;
     }
 
@@ -794,7 +814,13 @@ if ($resComp) {
 
 // Lista de processos existentes na programação, pro filtro
 $processosDisponiveis = [];
-$resProc = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' ORDER BY processo");
+$resProc = mysqli_query($conn, "
+    SELECT DISTINCT valor AS processo FROM (
+        SELECT TRIM(processo) AS valor FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> ''
+        UNION
+        SELECT TRIM(po) AS valor FROM programacao WHERE po IS NOT NULL AND TRIM(po) <> ''
+    ) t ORDER BY valor
+");
 if ($resProc) {
     while ($linhaProc = mysqli_fetch_assoc($resProc)) {
         $processosDisponiveis[] = $linhaProc['processo'];
@@ -829,9 +855,10 @@ if ($filtro === 'pendente') {
 
 if ($processoFiltro !== '') {
     // Caixa de texto: aceita parte do código (ex.: "Y26A" ou "001")
-    $condicoes[] = "TRIM(p.processo) LIKE ?";
+    $condicoes[] = "(TRIM(p.processo) LIKE ? OR TRIM(p.po) LIKE ?)";
     $params[] = '%' . $processoFiltro . '%';
-    $tipos .= 's';
+    $params[] = '%' . $processoFiltro . '%';
+    $tipos .= 'ss';
 }
 
 if ($fornecedorFiltro !== '') {
@@ -867,7 +894,7 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido,
+    $sqlExport = "SELECT p.codigo_componente, p.po, p.processo, p.data, p.quantidade, p.importado, p.atendido,
                          p.preco, p.data_recebida, p.quantidade_recebida, bg.pn
                   FROM programacao p
                   LEFT JOIN (
@@ -889,7 +916,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'PN', 'Processo', 'Preço', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'PN', 'PO', 'Processo', 'Preço', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
         $dataRecebidaExportada = $linha['data_recebida'] ? (new DateTimeImmutable($linha['data_recebida']))->format('d/m/Y') : '';
@@ -915,7 +942,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         fputcsv(
             $saida,
             [
-                $linha['codigo_componente'], $linha['pn'] ?? '', $linha['processo'] ?? '', $precoExportado, $data,
+                $linha['codigo_componente'], $linha['pn'] ?? '', $linha['po'] ?? '', $linha['processo'] ?? '', $precoExportado, $data,
                 $quantidadeExportada, $importadoExportado, $totalPedidoExportado, $dataRecebidaExportada,
                 $quantidadeRecebidaExportada, $saldoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
             ],
@@ -928,7 +955,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT p.id, p.codigo_componente, p.processo, p.data, p.quantidade, p.importado, p.atendido,
+$sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.data, p.quantidade, p.importado, p.atendido,
                p.preco, p.data_recebida, p.quantidade_recebida,
                bg.descricao, bg.fornecedores, bg.pn
         FROM programacao p
@@ -1101,8 +1128,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Formato simples</strong> (uma programação por linha):<br>
-                        <code>codigo_componente, processo, data, quantidade, preco</code><br>
-                        As colunas <code>processo</code> e <code>preco</code> são opcionais.<br><br>
+                        <code>codigo_componente, po, processo, data, quantidade, preco</code><br>
+                        As colunas <code>po</code>, <code>processo</code> e <code>preco</code> são opcionais.<br><br>
                         <strong>Formato da planilha</strong> (várias programações na mesma linha, como no Excel):<br>
                         <code>Componente, ..., Programação 1, Quantidade, Preço, Programação 2, Quantidade 2, Preço 2, Programação 3, Quantidade...</code><br>
                         Qualquer coluna com "quantidade" no nome é pareada automaticamente com a coluna de data logo antes dela. Se a coluna logo depois da Quantidade tiver "preco" no nome, ela é pareada com aquele lançamento (opcional — sem ela, o Preço fica em branco pra editar depois). Deixe em branco as programações que não existirem.<br><br>
@@ -1139,8 +1166,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" placeholder="Ex.: 12000586" required>
                 </div>
                 <div class="col-auto">
+                    <label class="form-label small mb-1">PO</label>
+                    <input type="text" name="po_manual" class="form-control form-control-sm" placeholder="Opcional">
+                </div>
+                <div class="col-auto">
                     <label class="form-label small mb-1">Processo</label>
-                    <input type="text" name="processo_manual" class="form-control form-control-sm" placeholder="Opcional">
+                    <input type="text" name="processo_manual" class="form-control form-control-sm" placeholder="Opcional (ex.: Y26A3P0011)">
                 </div>
                 <div class="col-auto">
                     <label class="form-label small mb-1">Data</label>
@@ -1168,7 +1199,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
-                    <input type="text" name="processo" class="form-control form-control-sm" placeholder="Processo..." list="lista-processos" autocomplete="off" value="<?php echo h($processoFiltro); ?>" onchange="this.form.submit()">
+                    <input type="text" name="processo" class="form-control form-control-sm" placeholder="PO ou processo..." list="lista-processos" autocomplete="off" value="<?php echo h($processoFiltro); ?>" onchange="this.form.submit()">
                     <datalist id="lista-processos">
                         <?php foreach ($processosDisponiveis as $p): ?>
                             <option value="<?php echo h($p); ?>"></option>
@@ -1204,7 +1235,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <thead>
                         <tr>
                             <th>Situação</th>
-                            <th>Processo</th>
+                            <th>PO</th>
+                            <th title="Processo do site de Importação (ex.: Y26A3P0011)">Processo</th>
                             <th>Componente</th>
                             <th>PN</th>
                             <th>Descrição</th>
@@ -1222,7 +1254,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="15" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="16" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1250,6 +1282,13 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         </form>
                                     </td>
                                     <?php $podeEditarLinha = !$estaAtendido; ?>
+                                    <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
+                                        <?php if ($podeEditarLinha): ?>
+                                        data-id="<?php echo $idLinha; ?>" data-campo="po"
+                                        data-valor-bruto="<?php echo h($row['po'] ?? ''); ?>"
+                                        title="Duplo clique para editar"
+                                        <?php endif; ?>
+                                    ><?php echo h($row['po'] ?? ''); ?></td>
                                     <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
                                         <?php if ($podeEditarLinha): ?>
                                         data-id="<?php echo $idLinha; ?>" data-campo="processo"
@@ -1394,14 +1433,20 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
 
                     const idLinha = form.querySelector('input[name="id"]').value;
-                    const celulaProcesso = linha.children[1];
-                    // Ordem atual das colunas: 0 Situação, 1 Processo, 2 Componente, 3 PN,
-                    // 4 Descrição, 5 Fornecedor, 6 Preço, 7 Data, 8 Quantidade, 9 Importado,
-                    // 10 Total Pedido, 11 Data Recebida, 12 Quantidade Recebida, 13 Saldo, 14 Excluir.
-                    const celulaData = linha.children[7];
-                    const celulaQtd = linha.children[8];
-                    if (celulaProcesso && celulaData && celulaQtd) {
+                    const celulaPo = linha.children[1];
+                    const celulaProcesso = linha.children[2];
+                    // Ordem atual das colunas: 0 Situação, 1 PO, 2 Processo, 3 Componente, 4 PN,
+                    // 5 Descrição, 6 Fornecedor, 7 Preço, 8 Data, 9 Quantidade, 10 Importado,
+                    // 11 Total Pedido, 12 Data Recebida, 13 Quantidade Recebida, 14 Saldo, 15 Excluir.
+                    const celulaData = linha.children[8];
+                    const celulaQtd = linha.children[9];
+                    if (celulaPo && celulaProcesso && celulaData && celulaQtd) {
                         if (json.atendido) {
+                            celulaPo.className = '';
+                            celulaPo.removeAttribute('data-id');
+                            celulaPo.removeAttribute('data-campo');
+                            celulaPo.removeAttribute('data-valor-bruto');
+                            celulaPo.removeAttribute('title');
                             celulaProcesso.className = '';
                             celulaProcesso.removeAttribute('data-id');
                             celulaProcesso.removeAttribute('data-campo');
@@ -1418,6 +1463,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                             celulaQtd.removeAttribute('data-valor-bruto');
                             celulaQtd.removeAttribute('title');
                         } else {
+                            celulaPo.className = 'celula-editavel';
+                            celulaPo.setAttribute('data-id', idLinha);
+                            celulaPo.setAttribute('data-campo', 'po');
+                            celulaPo.setAttribute('data-valor-bruto', celulaPo.textContent.trim());
+                            celulaPo.setAttribute('title', 'Duplo clique para editar');
                             celulaProcesso.className = 'celula-editavel';
                             celulaProcesso.setAttribute('data-id', idLinha);
                             celulaProcesso.setAttribute('data-campo', 'processo');
@@ -1493,7 +1543,7 @@ while ($row = mysqli_fetch_assoc($result)) {
 
             document.querySelectorAll('tbody tr[id^="linha-"]').forEach(function (linha) {
                 const celulaPreco = linha.querySelector('td[data-campo="preco"]');
-                const celulaQtd = linha.querySelector('td[data-campo="quantidade"]') || linha.children[8];
+                const celulaQtd = linha.querySelector('td[data-campo="quantidade"]') || linha.children[9];
                 const celulaQtdRecebida = linha.querySelector('td[data-campo="quantidade_recebida"]');
                 const celulaTotal = linha.querySelector('td.js-total-pedido');
                 const celulaSaldo = linha.querySelector('td.js-saldo');
