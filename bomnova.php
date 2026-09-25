@@ -180,7 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -652,7 +652,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, modelo, mrp, planejamento) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -724,6 +724,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // Moeda opcional no CSV — sem ela (ou vazia), entra BRL.
                     $moeda = strtoupper(trim((string) ($pegar('moeda', 'currency') ?? '')));
                     $moeda = $moeda !== '' ? $moeda : 'BRL';
+                    // Modelo opcional no CSV. Sem ele, fica vazio (preenchido pelo SQL de
+                    // equivalência material -> modelo, ou por duplo clique).
+                    $modelo = trim((string) ($pegar('modelo') ?? ''));
+                    $modelo = $modelo !== '' ? $modelo : null;
                     $mrp = $pegar('mrp');
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
@@ -741,7 +745,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $planejamento = 'S';
                     }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $mrp, $planejamento];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $modelo, $mrp, $planejamento];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -772,10 +776,10 @@ $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $condicoesWhere[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ?)";
+    $condicoesWhere[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ? OR modelo LIKE ?)";
     $buscaLike = "%$busca%";
-    $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
-    $tipos .= 'sssss';
+    $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
+    $tipos .= 'ssssss';
 }
 if ($projetoFiltro !== '') {
     $condicoesWhere[] = "projeto = ?";
@@ -823,7 +827,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($temFiltro) {
@@ -839,7 +843,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -848,7 +852,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         );
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
-            $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['descricao'],
+            $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['modelo'] ?? '', $linhaExport['descricao'],
             $linhaExport['consumo'], $linhaExport['um'],
             formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
@@ -864,7 +868,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
+$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -1099,6 +1103,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Fornecedor</th>
                             <th>Componente</th>
                             <th>PN</th>
+                            <th>Modelo</th>
                             <th>Descrição</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
@@ -1116,7 +1121,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="20" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="21" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1155,6 +1160,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="fornecedor" data-valor-bruto="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="codigo_componente" data-valor-bruto="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
