@@ -98,9 +98,81 @@ function validarComponenteMrp(mysqli $connMrp, string $codigoComponente): array
     return ['valido' => true, 'motivo' => null, 'descricao' => $resultado['descricao_bom']];
 }
 
+// Lista os componentes de um processo que entram no MRP. "processos" tem
+// UMA LINHA POR COMPONENTE dentro do mesmo processo, enquanto o Follow tem
+// uma linha só por processo — por isso a integração precisa percorrer TODOS
+// os componentes do processo (antes pegava só o primeiro, e os demais nunca
+// chegavam na Programação do MRP, mesmo com o embarque aparecendo como
+// "Confirmado"). Itens "não controla estoque" ficam de fora. Se o mesmo
+// componente aparecer em mais de uma linha do processo, as quantidades somam.
+function buscarComponentesProcesso(mysqli $conn, string $processo): array
+{
+    $stmt = mysqli_prepare($conn, "
+        SELECT TRIM(codigo_componente) AS codigo_componente, SUM(quantidade) AS quantidade
+        FROM processos
+        WHERE processo = ?
+          AND LOWER(TRIM(COALESCE(controla_estoque, 'sim'))) <> 'nao'
+        GROUP BY TRIM(codigo_componente)
+        ORDER BY TRIM(codigo_componente)
+    ");
+    mysqli_stmt_bind_param($stmt, 's', $processo);
+    mysqli_stmt_execute($stmt);
+    $resultado = mysqli_stmt_get_result($stmt);
+    $componentes = [];
+    while ($linhaComp = mysqli_fetch_assoc($resultado)) {
+        $componentes[] = [
+            'codigo_componente' => (string) $linhaComp['codigo_componente'],
+            'quantidade' => (float) ($linhaComp['quantidade'] ?? 0),
+        ];
+    }
+    mysqli_stmt_close($stmt);
+    return $componentes;
+}
+
+// Grava UM componente na Programação do MRP, casando por componente + processo:
+// - se já existe a linha (manual, CSV ou confirmação anterior), SUBSTITUI
+//   "importado" (quantidade do site de Importação) e "data_recebida" (data
+//   efetiva do Follow) — nunca soma. Assim, se a confirmação for refeita,
+//   o MRP fica sempre igual ao site de Importação;
+// - se não existe, cria a linha (Quantidade = 0, já que não houve
+//   planejamento manual; Data = efetiva; Importado e Data Recebida preenchidos).
+// Nunca marca "Atendido" — isso continua sendo decisão manual no MRP
+// (é o clique em "Atendido" que soma no estoque físico).
+// Devolve 'criada' ou 'atualizada'.
+function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente, string $processo, float $quantidade, string $dataEfetiva): string
+{
+    $stmtBusca = mysqli_prepare($connMrp, "
+        SELECT id FROM programacao
+        WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ?
+        LIMIT 1
+    ");
+    mysqli_stmt_bind_param($stmtBusca, 'ss', $codigoComponente, $processo);
+    mysqli_stmt_execute($stmtBusca);
+    $existente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBusca));
+    mysqli_stmt_close($stmtBusca);
+
+    if ($existente) {
+        $stmtAtualiza = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ?, data_recebida = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmtAtualiza, 'dsi', $quantidade, $dataEfetiva, $existente['id']);
+        mysqli_stmt_execute($stmtAtualiza);
+        mysqli_stmt_close($stmtAtualiza);
+        return 'atualizada';
+    }
+
+    $stmtInsere = mysqli_prepare($connMrp, "
+        INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado, data_recebida)
+        VALUES (?, ?, ?, 0, ?, ?)
+    ");
+    mysqli_stmt_bind_param($stmtInsere, 'sssds', $codigoComponente, $processo, $dataEfetiva, $quantidade, $dataEfetiva);
+    mysqli_stmt_execute($stmtInsere);
+    mysqli_stmt_close($stmtInsere);
+    return 'criada';
+}
+
 $mensagem = null;
 $erro = null;
 
+// ---------- Confirmar entrega (1 embarque = TODOS os componentes do processo) ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_entrega') {
     $followId = (int) ($_POST['follow_id'] ?? 0);
     $dataEfetiva = trim($_POST['data_efetiva'] ?? '');
@@ -108,11 +180,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     if ($followId <= 0 || $dataEfetiva === '') {
         $erro = 'Dados incompletos — selecione o embarque e informe a data de entrega.';
     } else {
-        // Busca o processo ligado a esse follow, e dele puxa componente + quantidade
         $stmt = mysqli_prepare($conn, "
-            SELECT f.id, f.processo, f.integrado_mrp, p.codigo_componente, p.descricao, p.quantidade, p.planta, p.status AS status_processo, p.controla_estoque
+            SELECT f.id, f.processo, f.integrado_mrp,
+                   (SELECT COUNT(*) FROM processos WHERE processo = f.processo) AS total_linhas_processo,
+                   (SELECT COUNT(*) FROM processos WHERE processo = f.processo AND LOWER(TRIM(status)) = 'cancelado') AS linhas_canceladas
             FROM follow f
-            JOIN processos p ON p.processo = f.processo
             WHERE f.id = ?
         ");
         mysqli_stmt_bind_param($stmt, 'i', $followId);
@@ -120,105 +192,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
         $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
         mysqli_stmt_close($stmt);
 
-        if (!$linha) {
+        if (!$linha || (int) $linha['total_linhas_processo'] === 0) {
             $erro = 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.';
         } elseif ((int) $linha['integrado_mrp'] === 1) {
-            $erro = 'Esse embarque já foi confirmado anteriormente — não é possível confirmar de novo (evita duplicar).';
-        } elseif (strtolower(trim((string) ($linha['status_processo'] ?? ''))) === 'cancelado') {
-            // Trava no servidor — mesmo que alguém envie o follow_id direto (sem passar
-            // pela lista, que já filtra isso), a confirmação é bloqueada aqui também.
+            $erro = 'Esse embarque já foi confirmado anteriormente — não é possível confirmar de novo (evita duplicar). Use "Sincronizar com o MRP" se precisar reenviar.';
+        } elseif ((int) $linha['linhas_canceladas'] > 0) {
+            // Trava no servidor — mesmo que alguém envie o follow_id direto.
             $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega.";
         } else {
-            // Item marcado "não controla estoque" (tooling, amostra) em Processos:
-            // ainda passa por aqui e finaliza normalmente no site de Importação
-            // (Follow vira "fechado", Processo vira "finalizado"), mas PULA
-            // completamente a parte de MRP — não conecta no MRP, não grava nada
-            // em programacao. É só um fechamento de rastreio logístico.
-            $controlaEstoque = strtolower(trim((string) ($linha['controla_estoque'] ?? 'sim'))) !== 'nao';
-            $quantidadeConfirmada = (float) $linha['quantidade'];
+            $processoTrim = trim((string) $linha['processo']);
+            $componentes = buscarComponentesProcesso($conn, $processoTrim);
             $prosseguirComFechamento = true;
             $complementoMensagem = '';
 
-            if ($controlaEstoque) {
+            if (empty($componentes)) {
+                // Todos os itens do processo são "não controla estoque" (tooling,
+                // amostra): fecha só no site de Importação, sem tocar no MRP.
+                $complementoMensagem = ' — itens não controlam estoque, apenas o status foi atualizado no site de Importação (sem lançamento no MRP).';
+            } else {
                 try {
                     $connMrp = conectarMrp();
-                    $validacao = validarComponenteMrp($connMrp, $linha['codigo_componente']);
 
-                    if (!$validacao['valido']) {
-                        // BLOQUEIA — não grava nada no MRP, não fecha o Follow/Processo.
-                        // O follow.efetiva pode até já estar preenchido (é rastreio
-                        // logístico, continua válido), mas a integração fica pendente
-                        // até o componente ser corrigido/cadastrado.
-                        $erro = "❌ Integração bloqueada — {$validacao['motivo']}";
+                    // Valida TODOS os componentes antes de gravar qualquer um —
+                    // se um falhar, nada é gravado (nem fecha o Follow/Processo),
+                    // pra não deixar o processo pela metade no MRP.
+                    $invalidos = [];
+                    foreach ($componentes as $comp) {
+                        $validacao = validarComponenteMrp($connMrp, $comp['codigo_componente']);
+                        if (!$validacao['valido']) {
+                            $invalidos[] = $validacao['motivo'];
+                        }
+                    }
+
+                    if (!empty($invalidos)) {
+                        $erro = '❌ Integração bloqueada — nada foi gravado. ' . implode(' | ', $invalidos);
                         $prosseguirComFechamento = false;
                     } else {
-                        // Componente confirmado no MRP — segue com a integração.
-                        //
-                        // Em vez de alimentar o estoque físico direto (o que inflava o
-                        // saldo na hora, duplicando o que já estava planejado em
-                        // Programação), a confirmação de entrega grava dentro de
-                        // "programacao" do MRP — comparando por componente + processo:
-                        // - se já existe uma linha de programação pra esse componente+
-                        //   processo (cadastrada manualmente ou via CSV), só atualiza a
-                        //   coluna "importado" dela com a quantidade confirmada agora
-                        //   (SUBSTITUI o valor anterior, nunca soma — em entregas
-                        //   parciais, "importado" sempre mostra o último valor
-                        //   confirmado);
-                        // - se não existir nenhuma linha ainda pra esse componente+
-                        //   processo, cria uma nova (Quantidade = 0, já que não houve
-                        //   planejamento manual prévio; "importado" já preenchido com o
-                        //   valor confirmado).
-                        // Nos dois casos, "data_recebida" da Programação recebe a data
-                        // EFETIVA do Follow (substitui a anterior, igual ao "importado").
-                        // Em nenhum dos dois casos isso marca a linha como "Atendido" —
-                        // isso continua sendo decisão manual de quem usa o MRP, feita na
-                        // tela de Programação. É o clique manual em "Atendido" que, de
-                        // fato, soma a quantidade no estoque físico.
-                        $processoTrim = trim((string) $linha['processo']);
-
-                        $stmtBuscaProg = mysqli_prepare($connMrp, "
-                            SELECT id FROM programacao
-                            WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ?
-                            LIMIT 1
-                        ");
-                        mysqli_stmt_bind_param($stmtBuscaProg, 'ss', $linha['codigo_componente'], $processoTrim);
-                        mysqli_stmt_execute($stmtBuscaProg);
-                        $progExistente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaProg));
-                        mysqli_stmt_close($stmtBuscaProg);
-
-                        if ($progExistente) {
-                            $stmtAtualizaProg = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ?, data_recebida = ? WHERE id = ?");
-                            mysqli_stmt_bind_param($stmtAtualizaProg, 'dsi', $quantidadeConfirmada, $dataEfetiva, $progExistente['id']);
-                            mysqli_stmt_execute($stmtAtualizaProg);
-                            mysqli_stmt_close($stmtAtualizaProg);
-                        } else {
-                            $stmtInsereProg = mysqli_prepare($connMrp, "
-                                INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado, data_recebida)
-                                VALUES (?, ?, ?, 0, ?, ?)
-                            ");
-                            mysqli_stmt_bind_param($stmtInsereProg, 'sssds', $linha['codigo_componente'], $processoTrim, $dataEfetiva, $quantidadeConfirmada, $dataEfetiva);
-                            mysqli_stmt_execute($stmtInsereProg);
-                            mysqli_stmt_close($stmtInsereProg);
+                        mysqli_begin_transaction($connMrp);
+                        $criadas = 0;
+                        $atualizadas = 0;
+                        foreach ($componentes as $comp) {
+                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['quantidade'], $dataEfetiva);
+                            $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
                         }
-                        mysqli_close($connMrp);
-
-                        $complementoMensagem = " lançada em Programação do MRP (colunas \"Importado\" e \"Data Recebida\").";
+                        mysqli_commit($connMrp);
+                        $complementoMensagem = ' — ' . count($componentes) . " componente(s) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
                     }
+                    mysqli_close($connMrp);
                 } catch (Throwable $e) {
-                    $erro = '❌ Erro ao conectar/gravar no MRP: ' . $e->getMessage();
+                    if (isset($connMrp) && $connMrp instanceof mysqli) {
+                        @mysqli_rollback($connMrp);
+                    }
+                    $erro = '❌ Erro ao conectar/gravar no MRP (nada foi gravado): ' . $e->getMessage();
                     $prosseguirComFechamento = false;
                 }
-            } else {
-                // Não controla estoque: não faz NENHUMA chamada ao MRP.
-                $complementoMensagem = ' — item não controla estoque, apenas o status foi atualizado no site de Importação (sem lançamento no MRP).';
             }
 
             if ($prosseguirComFechamento) {
-                // Marca o follow como entregue, "confirmado" e FECHADO — o status do
-                // Follow só vira "fechado" neste momento exato, nunca é digitado
-                // manualmente. integrado_mrp aqui significa "já passou por essa
-                // confirmação" (trava contra duplicar), mesmo quando o item não
-                // controla estoque e não tocou o MRP de verdade.
+                // Follow vira "fechado" e Processo vira "finalizado" só aqui —
+                // nunca digitados. integrado_mrp = trava contra duplicar.
                 $stmtUpdate = mysqli_prepare($conn, "
                     UPDATE follow
                     SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
@@ -228,15 +260,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                 mysqli_stmt_execute($stmtUpdate);
                 mysqli_stmt_close($stmtUpdate);
 
-                // O status do Processo segue o mesmo gatilho: nasce "aberto",
-                // e só vira "finalizado" neste exato momento — nunca digitado.
                 $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
                 mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
                 mysqli_stmt_execute($stmtProcessoStatus);
                 mysqli_stmt_close($stmtProcessoStatus);
 
-                $mensagem = "✅ Entrega confirmada — componente {$linha['codigo_componente']}, quantidade " . number_format($quantidadeConfirmada, 0, ',', '.') . $complementoMensagem;
+                $mensagem = "✅ Entrega confirmada — processo {$processoTrim}" . $complementoMensagem;
             }
+        }
+    }
+}
+
+// ---------- Sincronizar com o MRP ----------
+// Reenvia TODOS os embarques já confirmados (Follow fechado, processo não
+// cancelado) pra Programação do MRP, usando exatamente a mesma gravação da
+// confirmação (substitui Importado e Data Recebida; cria a linha se faltar).
+// Serve pra corrigir o que ficou pra trás (ex.: processos confirmados antes
+// da correção, quando só o 1º componente ia pro MRP). Pode rodar quantas
+// vezes quiser — como sempre substitui, nunca duplica nem soma.
+// Se o mesmo processo tiver mais de um embarque confirmado, vale a data
+// efetiva mais recente. Componente que não existe no MRP é pulado e listado.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_mrp') {
+    $resultadoFollows = mysqli_query($conn, "
+        SELECT f.processo, f.efetiva
+        FROM follow f
+        WHERE f.integrado_mrp = 1
+          AND f.efetiva IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM processos pc
+              WHERE pc.processo = f.processo AND LOWER(TRIM(pc.status)) = 'cancelado'
+          )
+        ORDER BY f.efetiva ASC, f.integrado_em ASC
+    ");
+    $efetivaPorProcesso = [];
+    while ($linhaFollow = mysqli_fetch_assoc($resultadoFollows)) {
+        // Ordenado por efetiva ASC: o último que sobrescreve é o mais recente
+        $efetivaPorProcesso[trim((string) $linhaFollow['processo'])] = $linhaFollow['efetiva'];
+    }
+
+    if (empty($efetivaPorProcesso)) {
+        $mensagem = 'Nenhum embarque confirmado pra sincronizar.';
+    } else {
+        try {
+            $connMrp = conectarMrp();
+            $criadas = 0;
+            $atualizadas = 0;
+            $pulados = [];
+            foreach ($efetivaPorProcesso as $processoSync => $efetivaSync) {
+                foreach (buscarComponentesProcesso($conn, $processoSync) as $comp) {
+                    $validacao = validarComponenteMrp($connMrp, $comp['codigo_componente']);
+                    if (!$validacao['valido']) {
+                        $pulados[] = "{$processoSync} / " . ($comp['codigo_componente'] !== '' ? $comp['codigo_componente'] : '(sem código)');
+                        continue;
+                    }
+                    $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoSync, $comp['quantidade'], $efetivaSync);
+                    $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
+                }
+            }
+            mysqli_close($connMrp);
+
+            $mensagem = '🔄 Sincronização concluída — ' . count($efetivaPorProcesso) . " processo(s) conferido(s): $atualizadas linha(s) atualizada(s), $criadas linha(s) criada(s) na Programação do MRP.";
+            if (!empty($pulados)) {
+                $erro = '⚠️ ' . count($pulados) . ' componente(s) não encontrado(s) no MRP e pulado(s): ' . implode(', ', $pulados);
+            }
+        } catch (Throwable $e) {
+            $erro = '❌ Erro durante a sincronização com o MRP (o que já tinha sido gravado até aqui permanece): ' . $e->getMessage();
         }
     }
 }
@@ -399,7 +487,12 @@ if ($resultContagem) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <form method="POST" class="mt-3 mb-0" onsubmit="return confirm('Reenviar TODOS os embarques já confirmados para a Programação do MRP? Importado e Data Recebida serão substituídos pelos valores do site de Importação, e linhas que faltam serão criadas.');">
+                <input type="hidden" name="acao" value="sincronizar_mrp">
+                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com o MRP</button>
+                <small class="text-muted ms-2">Reenvia todos os confirmados (todos os componentes de cada processo). Pode rodar mais de uma vez — substitui, não duplica.</small>
+            </form>
         </section>
 
         <section class="filter-panel mb-4">
