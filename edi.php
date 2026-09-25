@@ -41,6 +41,57 @@ function registrarLinhaProcessada(
     ];
 }
 
+// PN do EDI vem da BOM (bomnova), pelo Material — não precisa ser digitado
+// nem vir no CSV. Regra, por material:
+//  1) linha da BOM cujo COMPONENTE é o próprio material -> PN dessa linha;
+//  2) senão, se todas as linhas da BOM daquele material tiverem um único PN
+//     (ignorando vazio e "0") -> esse PN;
+//  3) senão fica vazio (a BOM não define um PN único pro material).
+// Recebe vários materiais de uma vez (1 ida ao banco por regra).
+function buscarPnsBom(mysqli $conn, array $materiais): array
+{
+    $materiais = array_values(array_unique(array_filter(array_map(fn($m) => trim((string) $m), $materiais), fn($m) => $m !== '')));
+    if (empty($materiais)) {
+        return [];
+    }
+    $ph = implode(',', array_fill(0, count($materiais), '?'));
+    $tipos = str_repeat('s', count($materiais));
+    $mapa = [];
+
+    $stmt = mysqli_prepare($conn, "
+        SELECT TRIM(material) AS material, MIN(TRIM(pn)) AS pn, COUNT(DISTINCT TRIM(pn)) AS qtd
+        FROM bomnova
+        WHERE TRIM(material) IN ($ph) AND pn IS NOT NULL AND TRIM(pn) NOT IN ('', '0')
+        GROUP BY TRIM(material)
+    ");
+    mysqli_stmt_bind_param($stmt, $tipos, ...$materiais);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    while ($l = mysqli_fetch_assoc($res)) {
+        if ((int) $l['qtd'] === 1) {
+            $mapa[$l['material']] = $l['pn'];
+        }
+    }
+    mysqli_stmt_close($stmt);
+
+    // Regra 1 tem prioridade: sobrescreve a regra 2 quando existir
+    $stmt = mysqli_prepare($conn, "
+        SELECT TRIM(codigo_componente) AS material, MAX(TRIM(pn)) AS pn
+        FROM bomnova
+        WHERE TRIM(codigo_componente) IN ($ph) AND pn IS NOT NULL AND TRIM(pn) NOT IN ('', '0')
+        GROUP BY TRIM(codigo_componente)
+    ");
+    mysqli_stmt_bind_param($stmt, $tipos, ...$materiais);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    while ($l = mysqli_fetch_assoc($res)) {
+        $mapa[$l['material']] = $l['pn'];
+    }
+    mysqli_stmt_close($stmt);
+
+    return $mapa;
+}
+
 function calcularPeriodoSemana(int $semana): ?array
 {
     if ($semana >= 30 && $semana <= 53) {
@@ -177,6 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "🗑️ Tabela 'edi' esvaziada antes da importação.";
                 }
 
+                $cachePnBom = [];
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
@@ -199,8 +251,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                     $dados = array_combine($cabecalho, $linha);
 
-                    $pn2 = $dados['pn2'] ?? null;
                     $material = $dados['material'] ?? null;
+                    // PN: usa o do CSV se vier (coluna "pn" ou "pn2"); senão puxa da BOM
+                    $pn2 = trim((string) ($dados['pn'] ?? $dados['pn2'] ?? ''));
+                    if ($pn2 === '') {
+                        $chaveMaterialPn = trim((string) $material);
+                        if (!array_key_exists($chaveMaterialPn, $cachePnBom)) {
+                            $cachePnBom[$chaveMaterialPn] = buscarPnsBom($conn, [$chaveMaterialPn])[$chaveMaterialPn] ?? null;
+                        }
+                        $pn2 = $cachePnBom[$chaveMaterialPn];
+                    }
+                    $dados['pn2'] = $pn2;
                     $marca = $dados['marca'] ?? null;
                     $projeto = $dados['projeto'] ?? null;
                     $modelo = $dados['modelo'] ?? null;
@@ -683,8 +744,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 // que já usávamos antes — agora a data é o dado de entrada, não a semana).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
-    $pn2Manual = trim($_POST['pn2_manual'] ?? '') ?: null;
     $materialManual = trim($_POST['material_manual'] ?? '');
+    // PN não é mais digitado: vem da BOM pelo material
+    $pn2Manual = buscarPnsBom($conn, [$materialManual])[$materialManual] ?? null;
     $marcaManual = trim($_POST['marca_manual'] ?? '') ?: null;
     $projetoManual = trim($_POST['projeto_manual'] ?? '') ?: null;
     $modeloManual = trim($_POST['modelo_manual'] ?? '') ?: null;
@@ -931,10 +993,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['PN2', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
-    while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
+    fputcsv($saida, ['PN', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
+    $linhasExport = mysqli_fetch_all($resultExport, MYSQLI_ASSOC);
+    $pnBomExport = buscarPnsBom($conn, array_map(fn($l) => $l['material'], array_filter($linhasExport, fn($l) => trim((string) ($l['pn2'] ?? '')) === '')));
+    foreach ($linhasExport as $linhaExport) {
+        $pnExport = trim((string) ($linhaExport['pn2'] ?? '')) !== '' ? $linhaExport['pn2'] : ($pnBomExport[trim((string) $linhaExport['material'])] ?? '');
         fputcsv($saida, [
-            $linhaExport['pn2'], $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
+            $pnExport, $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
             $linhaExport['ano'], formatarDataBr($linhaExport['data_inicio']),
             ((int) ($linhaExport['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
@@ -966,6 +1031,18 @@ $rows = [];
 while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
+// EDIs antigos sem PN gravado: mostra o PN da BOM na hora (sem gravar)
+$materiaisSemPn = [];
+foreach ($rows as $r) {
+    if (trim((string) ($r['pn2'] ?? '')) === '') { $materiaisSemPn[] = $r['material']; }
+}
+$pnBomPagina = buscarPnsBom($conn, $materiaisSemPn);
+foreach ($rows as &$r) {
+    if (trim((string) ($r['pn2'] ?? '')) === '') {
+        $r['pn2'] = $pnBomPagina[trim((string) $r['material'])] ?? '';
+    }
+}
+unset($r);
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1095,7 +1172,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <tr>
                                         <th>Resultado</th>
                                         <th>Material</th>
-                                        <th>PN2</th>
+                                        <th>PN</th>
                                         <th>Projeto</th>
                                         <th>Evento</th>
                                         <th>Semana</th>
@@ -1177,7 +1254,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>pn2, material, marca, projeto, modelo, evento, data, quantidade</code><br>
+                        <code>material, marca, projeto, modelo, evento, data, quantidade</code><br>
+                        O <strong>PN</strong> não precisa vir: é puxado da BOM pelo material (se o CSV trouxer a coluna <code>pn</code>, ela é usada).<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
@@ -1208,10 +1286,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                     <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                     <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">PN2</label>
-                        <input type="text" name="pn2_manual" class="form-control form-control-sm" style="width:130px">
-                    </div>
                     <div class="col-auto">
                         <label class="form-label small mb-1">Material *</label>
                         <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
@@ -1301,7 +1375,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <thead>
                         <tr>
                             <th>Situação</th>
-                            <th>PN2</th>
+                            <th>PN</th>
                             <th>Material</th>
                             <th>Marca</th>
                             <th>Projeto</th>
