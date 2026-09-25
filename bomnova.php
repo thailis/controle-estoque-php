@@ -169,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -198,6 +198,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
             $valorParaGravar = number_format($numeroEditado, $casasDecimais, '.', '');
             $valorParaExibir = number_format($numeroEditado, $casasDecimais, ',', '.');
         }
+    }
+
+    // Moeda: texto curto em maiúsculas (USD, EUR...). Apagar volta pro padrão BRL.
+    if ($campo === 'moeda') {
+        $moedaEditada = strtoupper($novoValor);
+        if (mb_strlen($moedaEditada) > 10) {
+            echo json_encode(['ok' => false, 'erro' => 'Moeda com no máximo 10 caracteres (ex.: USD).']);
+            exit;
+        }
+        $valorParaGravar = $moedaEditada !== '' ? $moedaEditada : 'BRL';
+        $valorParaExibir = $valorParaGravar;
     }
 
     // Consumo é número: aceita "1,5" ou "1.5" (ponto sozinho = decimal, nunca
@@ -537,7 +548,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -606,6 +617,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $cofins = $cofinsBruto !== '' ? parseNumeroBomnovaTax((string) $cofinsBruto) : null;
                     $icmsBruto = trim((string) ($pegar('icms') ?? ''));
                     $icms = $icmsBruto !== '' ? parseNumeroBomnovaTax((string) $icmsBruto) : null;
+                    // Moeda opcional no CSV — sem ela (ou vazia), entra BRL.
+                    $moeda = strtoupper(trim((string) ($pegar('moeda', 'currency') ?? '')));
+                    $moeda = $moeda !== '' ? $moeda : 'BRL';
                     $mrp = $pegar('mrp');
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
@@ -623,7 +637,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $planejamento = 'S';
                     }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $mrp, $planejamento];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $mrp, $planejamento];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -705,7 +719,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($temFiltro) {
@@ -721,7 +735,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'MRP', 'Planejamento'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -738,6 +752,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             formatarNumeroBomnovaTaxExibicao($cofinsExport, BOMNOVA_CASAS_DECIMAIS['cofins']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['icms'] ?? null, BOMNOVA_CASAS_DECIMAIS['icms']),
             $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
+            ($linhaExport['moeda'] ?? '') !== '' ? $linhaExport['moeda'] : 'BRL',
             $linhaExport['mrp'], $linhaExport['planejamento'],
         ], ';', '"', '');
     }
@@ -745,7 +760,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, mrp, planejamento
+$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -888,6 +903,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp</code><br>
                         A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
+                        A coluna <code>moeda</code> é opcional — sem ela, entra <strong>BRL</strong> (dá pra trocar depois com duplo clique).<br>
                         As colunas <code>net_price</code> (ou <code>Net Price</code>), <code>ipi, pis, cofins, icms</code> (aceita também <code>IPI %</code> etc.) também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
@@ -948,6 +964,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-end">COFINS %</th>
                             <th class="text-end">ICMS %</th>
                             <th class="text-end" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)">Preço</th>
+                            <th>Moeda</th>
                             <th>MRP</th>
                             <th>Planejamento</th>
                             <th title="Excluir">Excluir</th>
@@ -955,7 +972,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="20" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1018,6 +1035,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         $precoLinha = calcularPrecoBomnova($row['net_price'] ?? null, $row['ipi'] ?? null, $pisComPadrao, $cofinsComPadrao, $row['icms'] ?? null);
                                     ?>
                                     <td class="text-end text-muted js-preco-bomnova" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)"><?php echo $precoLinha !== null ? number_format($precoLinha, 2, ',', '.') : '—'; ?></td>
+                                    <?php $moedaLinha = ($row['moeda'] ?? '') !== '' ? $row['moeda'] : 'BRL'; ?>
+                                    <td class="celula-editavel" data-campo="moeda" data-valor-bruto="<?php echo htmlspecialchars($moedaLinha); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($moedaLinha); ?></td>
                                     <td>
                                         <form method="POST" class="d-inline m-0">
                                             <input type="hidden" name="acao" value="toggle_mrp">
