@@ -41,12 +41,12 @@ function registrarLinhaProcessada(
     ];
 }
 
-// PN, Tipo e Projeto do EDI vêm da BOM (bomnova), pelo Material — não são
+// PN, Tipo, Projeto e Modelo do EDI vêm da BOM (bomnova), pelo Material — não são
 // digitados nem lidos do CSV. Regra, por material:
 //  - PN: a linha da BOM cujo COMPONENTE é o próprio material (a linha do
 //    tanque) -> PN dela; senão, se o material tiver um único PN na BOM, esse;
 //    senão vazio. (PN vazio ou "0" é ignorado.)
-//  - Tipo e Projeto: os da linha do tanque, se existir; senão o valor que mais
+//  - Tipo, Projeto e Modelo: os da linha do tanque, se existir; senão o valor que mais
 //    aparece nas linhas da BOM daquele material.
 // Recebe vários materiais de uma vez. Devolve [material => ['pn','tipo','projeto']].
 function buscarDadosBom(mysqli $conn, array $materiais): array
@@ -59,14 +59,14 @@ function buscarDadosBom(mysqli $conn, array $materiais): array
     $tipos = str_repeat('s', count($materiais));
     $dados = [];
     foreach ($materiais as $m) {
-        $dados[$m] = ['pn' => null, 'tipo' => null, 'projeto' => null];
+        $dados[$m] = ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
     }
 
     // Todas as linhas da BOM desses materiais (mais as linhas "do tanque",
     // cujo componente = material) numa consulta só
     $stmt = mysqli_prepare($conn, "
         SELECT TRIM(material) AS material, TRIM(codigo_componente) AS componente,
-               TRIM(COALESCE(pn, '')) AS pn, TRIM(COALESCE(tipo, '')) AS tipo, TRIM(COALESCE(projeto, '')) AS projeto
+               TRIM(COALESCE(pn, '')) AS pn, TRIM(COALESCE(tipo, '')) AS tipo, TRIM(COALESCE(projeto, '')) AS projeto, TRIM(COALESCE(modelo, '')) AS modelo
         FROM bomnova
         WHERE TRIM(material) IN ($ph) OR TRIM(codigo_componente) IN ($ph)
     ");
@@ -79,6 +79,7 @@ function buscarDadosBom(mysqli $conn, array $materiais): array
     $pnsDoMaterial = []; // material => [pn => true]
     $contTipo = [];      // material => [tipo => qtd]
     $contProjeto = [];
+    $contModelo = [];
     while ($l = mysqli_fetch_assoc($res)) {
         if (isset($dados[$l['componente']])) {
             $linhaTanque[$l['componente']] = $l;
@@ -90,6 +91,7 @@ function buscarDadosBom(mysqli $conn, array $materiais): array
         if ($l['pn'] !== '' && $l['pn'] !== '0') { $pnsDoMaterial[$m][$l['pn']] = true; }
         if ($l['tipo'] !== '') { $contTipo[$m][$l['tipo']] = ($contTipo[$m][$l['tipo']] ?? 0) + 1; }
         if ($l['projeto'] !== '') { $contProjeto[$m][$l['projeto']] = ($contProjeto[$m][$l['projeto']] ?? 0) + 1; }
+        if ($l['modelo'] !== '') { $contModelo[$m][$l['modelo']] = ($contModelo[$m][$l['modelo']] ?? 0) + 1; }
     }
     mysqli_stmt_close($stmt);
 
@@ -106,6 +108,7 @@ function buscarDadosBom(mysqli $conn, array $materiais): array
         $dados[$m]['pn'] = $pnTanque ?? $pnUnico;
         $dados[$m]['tipo'] = ($t !== null && $t['tipo'] !== '') ? $t['tipo'] : $maisFrequente($contTipo[$m] ?? null);
         $dados[$m]['projeto'] = ($t !== null && $t['projeto'] !== '') ? $t['projeto'] : $maisFrequente($contProjeto[$m] ?? null);
+        $dados[$m]['modelo'] = ($t !== null && $t['modelo'] !== '') ? $t['modelo'] : $maisFrequente($contModelo[$m] ?? null);
     }
     return $dados;
 }
@@ -280,12 +283,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $dados = array_combine($cabecalho, $linha);
 
                     $material = $dados['material'] ?? null;
-                    // PN, Tipo e Projeto vêm da BOM pelo material (colunas do CSV
+                    // PN, Tipo, Projeto e Modelo vêm da BOM pelo material (colunas do CSV
                     // com esses nomes são ignoradas — exceto PN, usado só se a BOM
                     // não tiver PN pra esse material).
                     $chaveMaterialBom = trim((string) $material);
                     if (!array_key_exists($chaveMaterialBom, $cacheDadosBom)) {
-                        $cacheDadosBom[$chaveMaterialBom] = buscarDadosBom($conn, [$chaveMaterialBom])[$chaveMaterialBom] ?? ['pn' => null, 'tipo' => null, 'projeto' => null];
+                        $cacheDadosBom[$chaveMaterialBom] = buscarDadosBom($conn, [$chaveMaterialBom])[$chaveMaterialBom] ?? ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
                     }
                     $dadosBomLinha = $cacheDadosBom[$chaveMaterialBom];
                     $pnCsv = trim((string) ($dados['pn'] ?? $dados['pn2'] ?? ''));
@@ -294,7 +297,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $marca = $dadosBomLinha['tipo'];      // coluna "marca" do banco = Tipo (da BOM)
                     $projeto = $dadosBomLinha['projeto'];
                     $dados['projeto'] = $projeto ?? '';
-                    $modelo = $dados['modelo'] ?? null;
+                    $modelo = $dadosBomLinha['modelo'];  // Modelo também vem da BOM
                     $evento = $dados['evento'] ?? null;
                     $dataBruta = $dados['data'] ?? null;
                     $quantidadeBruta = $dados['quantidade'] ?? '';
@@ -785,13 +788,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $dadosBomTodos = buscarDadosBom($conn, $materiaisEdi);
     $linhasSync = 0;
     $semBom = 0;
-    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto) WHERE TRIM(material) = ?");
+    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto), modelo = COALESCE(?, modelo) WHERE TRIM(material) = ?");
     foreach ($dadosBomTodos as $mat => $d) {
-        if ($d['pn'] === null && $d['tipo'] === null && $d['projeto'] === null) {
+        if ($d['pn'] === null && $d['tipo'] === null && $d['projeto'] === null && $d['modelo'] === null) {
             $semBom++;
             continue;
         }
-        mysqli_stmt_bind_param($stmtSync, 'ssss', $d['pn'], $d['tipo'], $d['projeto'], $mat);
+        mysqli_stmt_bind_param($stmtSync, 'sssss', $d['pn'], $d['tipo'], $d['projeto'], $d['modelo'], $mat);
         mysqli_stmt_execute($stmtSync);
         $linhasSync += max(0, mysqli_stmt_affected_rows($stmtSync));
     }
@@ -803,12 +806,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
     $materialManual = trim($_POST['material_manual'] ?? '');
-    // PN, Tipo e Projeto não são digitados: vêm da BOM pelo material
-    $dadosBomManual = buscarDadosBom($conn, [$materialManual])[$materialManual] ?? ['pn' => null, 'tipo' => null, 'projeto' => null];
+    // PN, Tipo, Projeto e Modelo não são digitados: vêm da BOM pelo material
+    $dadosBomManual = buscarDadosBom($conn, [$materialManual])[$materialManual] ?? ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
     $pn2Manual = $dadosBomManual['pn'];
     $marcaManual = $dadosBomManual['tipo'];
     $projetoManual = $dadosBomManual['projeto'];
-    $modeloManual = trim($_POST['modelo_manual'] ?? '') ?: null;
+    $modeloManual = $dadosBomManual['modelo']; // Modelo vem da BOM
     $eventoManual = trim($_POST['evento_manual'] ?? '');
     $dataManualTexto = trim($_POST['data_manual'] ?? '');
     $quantidadeManual = parseQuantidadeEdi(trim($_POST['quantidade_manual'] ?? ''));
@@ -947,7 +950,7 @@ $flashMap = [
     'inserido'   => ['success', '✅ Evento adicionado com sucesso.'],
     'editado'    => ['success', '✅ Registro atualizado.'],
     'erro_dados' => ['danger', '❌ Confira material, evento, semana (30-53/2026 ou 1-29/2027) e quantidade.'],
-    'sync_bom'   => ['success', '🔄 PN, Tipo e Projeto atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
+    'sync_bom'   => ['success', '🔄 PN, Tipo, Projeto e Modelo atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -1061,6 +1064,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $pnExport = $dExp['pn'] ?? $linhaExport['pn2'];
         $linhaExport['marca'] = $dExp['tipo'] ?? $linhaExport['marca'];
         $linhaExport['projeto'] = $dExp['projeto'] ?? $linhaExport['projeto'];
+        $linhaExport['modelo'] = $dExp['modelo'] ?? $linhaExport['modelo'];
         fputcsv($saida, [
             $pnExport, $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
@@ -1103,6 +1107,7 @@ foreach ($rows as &$r) {
         $r['pn2'] = $d['pn'] ?? $r['pn2'];
         $r['marca'] = $d['tipo'] ?? $r['marca'];
         $r['projeto'] = $d['projeto'] ?? $r['projeto'];
+        $r['modelo'] = $d['modelo'] ?? $r['modelo'];
     }
 }
 unset($r);
@@ -1317,8 +1322,8 @@ unset($r);
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>material, modelo, evento, data, quantidade</code><br>
-                        <strong>PN, Tipo e Projeto</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas; o <code>pn</code> do CSV só é usado se a BOM não tiver PN pro material).<br>
+                        <code>material, evento, data, quantidade</code><br>
+                        <strong>PN, Tipo, Projeto e Modelo</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas; o <code>pn</code> do CSV só é usado se a BOM não tiver PN pro material).<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
@@ -1339,10 +1344,10 @@ unset($r);
         </datalist>
 
         <div class="card p-3 mb-4">
-            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar PN, Tipo e Projeto de TODOS os EDIs com os dados da BOM?');">
+            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar PN, Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
                 <input type="hidden" name="acao" value="sincronizar_bom_edi">
-                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar PN / Tipo / Projeto pela BOM</button>
-                <small class="text-muted">PN, Tipo e Projeto sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
+                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar PN / Tipo / Projeto / Modelo pela BOM</button>
+                <small class="text-muted">PN, Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
             </form>
         </div>
 
@@ -1360,10 +1365,6 @@ unset($r);
                     <div class="col-auto">
                         <label class="form-label small mb-1">Material *</label>
                         <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Modelo</label>
-                        <input type="text" name="modelo_manual" class="form-control form-control-sm" style="width:150px">
                     </div>
                     <div class="col-auto">
                         <label class="form-label small mb-1">Evento *</label>
