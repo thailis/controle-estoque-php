@@ -169,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -200,6 +200,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         }
     }
 
+    // Consumo é número: aceita "1,5" ou "1.5" (ponto sozinho = decimal, nunca
+    // milhar) e grava sempre com ponto, pra não dar erro/valor torto no banco.
+    if ($campo === 'consumo') {
+        if ($novoValor === '') {
+            $valorParaGravar = null;
+            $valorParaExibir = '';
+        } else {
+            $consumoEditado = parseNumeroBomnovaTax($novoValor);
+            if ($consumoEditado === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Consumo inválido.']);
+                exit;
+            }
+            $valorParaGravar = rtrim(rtrim(number_format($consumoEditado, 6, '.', ''), '0'), '.');
+            $valorParaExibir = $valorParaGravar;
+        }
+    }
+
     $camposCompostos = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
     $valoresOriginais = [];
     foreach ($camposCompostos as $c) {
@@ -213,13 +230,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $tiposEditar = str_repeat('s', 1 + count($camposCompostos));
     $parametrosEditar = array_merge([$valorParaGravar], $valoresOriginais);
     mysqli_stmt_bind_param($stmtEditar, $tiposEditar, ...$parametrosEditar);
-    mysqli_stmt_execute($stmtEditar);
+    try {
+        mysqli_stmt_execute($stmtEditar);
+    } catch (Throwable $erroEditar) {
+        mysqli_stmt_close($stmtEditar);
+        echo json_encode(['ok' => false, 'erro' => 'Não foi possível salvar: ' . $erroEditar->getMessage()]);
+        exit;
+    }
     $linhasAfetadas = mysqli_stmt_affected_rows($stmtEditar);
     mysqli_stmt_close($stmtEditar);
 
     if ($linhasAfetadas === 0) {
         echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
         exit;
+    }
+
+    // Consumo faz parte da "chave" da linha: devolve o valor EXATAMENTE como o
+    // banco guardou (ex.: 1.5 pode virar "1.5000" numa coluna decimal), pra tela
+    // usar esse mesmo texto nas próximas edições/cliques da linha.
+    if ($campo === 'consumo' && $valorParaGravar !== null) {
+        $condRelida = [];
+        $valoresRelidos = [];
+        foreach ($camposCompostos as $i => $c) {
+            if ($c === 'consumo') {
+                $condRelida[] = 'consumo = ?';
+                $valoresRelidos[] = $valorParaGravar;
+            } else {
+                $condRelida[] = "COALESCE($c, '') = ?";
+                $valoresRelidos[] = $valoresOriginais[$i];
+            }
+        }
+        $stmtRelido = mysqli_prepare($conn, "SELECT consumo FROM bomnova WHERE " . implode(' AND ', $condRelida) . " LIMIT 1");
+        mysqli_stmt_bind_param($stmtRelido, str_repeat('s', count($valoresRelidos)), ...$valoresRelidos);
+        mysqli_stmt_execute($stmtRelido);
+        $consumoRelido = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtRelido))['consumo'] ?? null;
+        mysqli_stmt_close($stmtRelido);
+        if ($consumoRelido !== null) {
+            $valorParaExibir = (string) $consumoRelido;
+        }
     }
 
     echo json_encode(['ok' => true, 'exibido' => $valorParaExibir]);
@@ -942,7 +990,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="projeto" data-valor-bruto="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="tipo" data-valor-bruto="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['tipo'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="fornecedor" data-valor-bruto="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="codigo_componente" data-valor-bruto="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
@@ -1139,6 +1187,39 @@ while ($row = mysqli_fetch_assoc($result)) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // A BOM não tem coluna id: cada linha é achada no banco pela combinação
+        // de Planta, Projeto, Material, Tipo, Fornecedor, Componente, PN,
+        // Descrição, Consumo e U.M. Quando um DESSES campos é editado, a "chave"
+        // da linha muda — então aqui atualiza, na mesma linha da tela, o contexto
+        // (data-extra) das outras células e os campos orig_* dos botões (MRP,
+        // Planejamento, Excluir). Sem isso, a 2ª edição/clique na mesma linha
+        // dava "Não achei essa linha exata" até recarregar a página.
+        document.addEventListener('inline-edit:salvo', function (evento) {
+            const campo = evento.detail && evento.detail.campo;
+            const camposChave = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+            if (!camposChave.includes(campo)) return;
+            const linha = evento.target.closest('tr');
+            if (!linha) return;
+            const celulaEditada = linha.querySelector('td[data-campo="' + campo + '"]');
+            if (!celulaEditada) return;
+            // "exibido" = valor como ficou gravado no banco (no Consumo pode ser
+            // diferente do digitado, ex.: "1,5" -> "1.5000"); é esse que identifica a linha.
+            const novoValor = String(evento.detail.exibido ?? celulaEditada.textContent).trim();
+            celulaEditada.dataset.valorBruto = novoValor;
+
+            linha.querySelectorAll('td[data-extra]').forEach(function (celula) {
+                try {
+                    const contexto = JSON.parse(celula.dataset.extra || '{}');
+                    contexto[campo] = novoValor;
+                    celula.dataset.extra = JSON.stringify(contexto);
+                } catch (e) { /* contexto ilegível — deixa como está */ }
+            });
+            linha.querySelectorAll('input[name="orig_' + campo + '"]').forEach(function (input) {
+                input.value = novoValor;
+            });
+        });
+    </script>
     <script>
         // A edição por duplo clique (assets/inline-edit.js) só atualiza a célula
         // que foi editada — não sabe que o Preço de uma linha depende de outras
