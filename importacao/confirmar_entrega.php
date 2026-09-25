@@ -110,6 +110,7 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
     $stmt = mysqli_prepare($conn, "
         SELECT TRIM(codigo_componente) AS codigo_componente,
                TRIM(COALESCE(po, '')) AS po,
+               MAX(NULLIF(UPPER(TRIM(moeda)), '')) AS moeda,
                SUM(quantidade) AS quantidade
         FROM processos
         WHERE processo = ?
@@ -125,6 +126,7 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
         $componentes[] = [
             'codigo_componente' => (string) $linhaComp['codigo_componente'],
             'po' => (string) $linhaComp['po'],
+            'moeda' => (string) ($linhaComp['moeda'] ?? ''),
             'quantidade' => (float) ($linhaComp['quantidade'] ?? 0),
         ];
     }
@@ -141,11 +143,13 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
 //    processo já preenchido com outro valor;
 // 3) se ainda não achar, CRIA a linha já com processo, PO e componente
 //    (Quantidade = 0, já que não houve planejamento; Data = efetiva).
-// Em todos os casos SUBSTITUI "importado" e "data_recebida" (nunca soma),
+// Em todos os casos SUBSTITUI "importado", "data_recebida" e "moeda" (a
+// Programação nasce com BRL por padrão e passa a ter a moeda do processo;
+// se o processo não tiver moeda, mantém a que estava) — nunca soma,
 // então refazer a confirmação/sincronização deixa o MRP igual ao site de
 // Importação. Nunca marca "Atendido" (continua manual no MRP).
 // Devolve 'criada' ou 'atualizada'.
-function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente, string $processo, string $po, float $quantidade, string $dataEfetiva): string
+function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente, string $processo, string $po, float $quantidade, string $dataEfetiva, string $moeda = ''): string
 {
     $stmtBusca = mysqli_prepare($connMrp, "
         SELECT id,
@@ -169,24 +173,25 @@ function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente
     mysqli_stmt_close($stmtBusca);
 
     $poGravar = $po !== '' ? $po : null;
+    $moedaGravar = $moeda !== '' ? $moeda : null;
 
     if ($existente) {
         $stmtAtualiza = mysqli_prepare($connMrp, "
             UPDATE programacao
-            SET importado = ?, data_recebida = ?, processo = ?, po = COALESCE(?, po)
+            SET importado = ?, data_recebida = ?, processo = ?, po = COALESCE(?, po), moeda = COALESCE(?, moeda, 'BRL')
             WHERE id = ?
         ");
-        mysqli_stmt_bind_param($stmtAtualiza, 'dsssi', $quantidade, $dataEfetiva, $processo, $poGravar, $existente['id']);
+        mysqli_stmt_bind_param($stmtAtualiza, 'dssssi', $quantidade, $dataEfetiva, $processo, $poGravar, $moedaGravar, $existente['id']);
         mysqli_stmt_execute($stmtAtualiza);
         mysqli_stmt_close($stmtAtualiza);
         return 'atualizada';
     }
 
     $stmtInsere = mysqli_prepare($connMrp, "
-        INSERT INTO programacao (codigo_componente, processo, po, data, quantidade, importado, data_recebida)
-        VALUES (?, ?, ?, ?, 0, ?, ?)
+        INSERT INTO programacao (codigo_componente, processo, po, data, quantidade, importado, data_recebida, moeda)
+        VALUES (?, ?, ?, ?, 0, ?, ?, COALESCE(?, 'BRL'))
     ");
-    mysqli_stmt_bind_param($stmtInsere, 'ssssds', $codigoComponente, $processo, $poGravar, $dataEfetiva, $quantidade, $dataEfetiva);
+    mysqli_stmt_bind_param($stmtInsere, 'ssssdss', $codigoComponente, $processo, $poGravar, $dataEfetiva, $quantidade, $dataEfetiva, $moedaGravar);
     mysqli_stmt_execute($stmtInsere);
     mysqli_stmt_close($stmtInsere);
     return 'criada';
@@ -255,7 +260,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                         $criadas = 0;
                         $atualizadas = 0;
                         foreach ($componentes as $comp) {
-                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva);
+                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva, $comp['moeda']);
                             $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
                         }
                         mysqli_commit($connMrp);
@@ -336,7 +341,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
                         $pulados[] = "{$processoSync} / " . ($comp['codigo_componente'] !== '' ? $comp['codigo_componente'] : '(sem código)');
                         continue;
                     }
-                    $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoSync, $comp['po'], $comp['quantidade'], $efetivaSync);
+                    $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoSync, $comp['po'], $comp['quantidade'], $efetivaSync, $comp['moeda']);
                     $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
                 }
             }
