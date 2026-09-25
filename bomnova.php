@@ -64,6 +64,16 @@ function parseNumeroBomnovaTax(string $valor): ?float
 // Impostos em branco contam como 0%. Se o denominador do gross-up zerar (ou ficar
 // negativo/zero), a divisão não faz sentido, então também retorna null nesse caso
 // extremo.
+// Nome de coluna do CSV "normalizado": minúsculo, sem acento e só letras/números.
+// Ex.: "Net Price" / "NET_PRICE" / "net-price" -> "netprice"; "IPI %" -> "ipi";
+// "Descrição" -> "descricao"; "U.M." -> "um".
+function normalizarCabecalhoBomnova(string $nome): string
+{
+    $nome = mb_strtolower(trim($nome), 'UTF-8');
+    $nome = strtr($nome, ['á'=>'a','à'=>'a','â'=>'a','ã'=>'a','ä'=>'a','é'=>'e','ê'=>'e','è'=>'e','í'=>'i','î'=>'i','ó'=>'o','ô'=>'o','õ'=>'o','ö'=>'o','ú'=>'u','û'=>'u','ü'=>'u','ç'=>'c']);
+    return preg_replace('/[^a-z0-9]/', '', $nome);
+}
+
 function calcularPrecoBomnova(?string $netPriceTexto, ?string $ipiTexto, ?string $pisTexto, ?string $cofinsTexto, ?string $icmsTexto): ?float
 {
     $netPrice = $netPriceTexto !== null ? parseNumeroBomnovaTax($netPriceTexto) : null;
@@ -508,31 +518,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
 
                     $dados = array_combine($cabecalho, $linha);
+                    // Também indexa por nome "normalizado" (sem acento, espaço, %, ponto,
+                    // sublinhado...) pra aceitar cabeçalhos como "Net Price", "NET_PRICE",
+                    // "IPI %", "Descrição", "U.M." — inclusive o próprio CSV exportado
+                    // por esta tela, que antes não era reconhecido na reimportação.
+                    $dadosNorm = [];
+                    foreach ($dados as $chaveCab => $valorCab) {
+                        $dadosNorm[normalizarCabecalhoBomnova((string) $chaveCab)] = $valorCab;
+                    }
+                    $pegar = function (string ...$nomes) use ($dados, $dadosNorm) {
+                        foreach ($nomes as $nome) {
+                            if (array_key_exists($nome, $dados)) { return $dados[$nome]; }
+                            $n = normalizarCabecalhoBomnova($nome);
+                            if (array_key_exists($n, $dadosNorm)) { return $dadosNorm[$n]; }
+                        }
+                        return null;
+                    };
 
                     $planta = $dados['planta'] ?? null;
                     $projeto = $dados['projeto'] ?? null;
                     $material = $dados['material'] ?? null;
                     $tipo = $dados['tipo'] ?? null;
                     $fornecedor = $dados['fornecedor'] ?? null;
-                    $codigo_componente = $dados['codigo_componente'] ?? $dados['componente'] ?? $dados['codigo do componente'] ?? $dados['código do componente'] ?? $dados['codigo componente'] ?? null;
-                    $pn = $dados['pn'] ?? null;
-                    $descricao = $dados['descricao'] ?? null;
-                    $consumoBruto = $dados['consumo'] ?? '';
+                    $codigo_componente = $pegar('codigo_componente', 'componente', 'codigo do componente', 'codigo componente', 'part number');
+                    $pn = $pegar('pn');
+                    $descricao = $pegar('descricao', 'description');
+                    $consumoBruto = $pegar('consumo') ?? '';
                     $consumo = $consumoBruto !== '' ? parseNumeroBr((string) $consumoBruto) : null;
-                    $um = $dados['um'] ?? null;
+                    $um = $pegar('um', 'unidade');
                     // Net Price e os impostos (%) são opcionais no CSV — se não vierem,
                     // ficam em branco e podem ser digitados depois direto na tela.
-                    $netPriceBruto = $dados['net_price'] ?? $dados['netprice'] ?? '';
+                    $netPriceBruto = trim((string) ($pegar('net_price', 'net price', 'preco liquido', 'preco net') ?? ''));
                     $netPrice = $netPriceBruto !== '' ? parseNumeroBomnovaTax((string) $netPriceBruto) : null;
-                    $ipiBruto = $dados['ipi'] ?? '';
+                    $ipiBruto = trim((string) ($pegar('ipi') ?? ''));
                     $ipi = $ipiBruto !== '' ? parseNumeroBomnovaTax((string) $ipiBruto) : null;
-                    $pisBruto = $dados['pis'] ?? '';
+                    $pisBruto = trim((string) ($pegar('pis') ?? ''));
                     $pis = $pisBruto !== '' ? parseNumeroBomnovaTax((string) $pisBruto) : null;
-                    $cofinsBruto = $dados['cofins'] ?? '';
+                    $cofinsBruto = trim((string) ($pegar('cofins') ?? ''));
                     $cofins = $cofinsBruto !== '' ? parseNumeroBomnovaTax((string) $cofinsBruto) : null;
-                    $icmsBruto = $dados['icms'] ?? '';
+                    $icmsBruto = trim((string) ($pegar('icms') ?? ''));
                     $icms = $icmsBruto !== '' ? parseNumeroBomnovaTax((string) $icmsBruto) : null;
-                    $mrp = $dados['mrp'] ?? null;
+                    $mrp = $pegar('mrp');
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
                     }
@@ -541,7 +567,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // e a coluna não vier no arquivo (ou vier com valor inválido),
                     // assume 'S' — comportamento igual ao que já existia antes dessa
                     // coluna existir.
-                    $planejamentoBruto = $dados['planejamento'] ?? null;
+                    $planejamentoBruto = $pegar('planejamento');
                     $planejamento = $planejamentoBruto !== null ? strtoupper(trim($planejamentoBruto)) : null;
                     if ($mrp === 'N') {
                         $planejamento = 'N';
@@ -814,7 +840,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp</code><br>
                         A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
-                        As colunas <code>net_price, ipi, pis, cofins, icms</code> também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
+                        As colunas <code>net_price</code> (ou <code>Net Price</code>), <code>ipi, pis, cofins, icms</code> (aceita também <code>IPI %</code> etc.) também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
                         Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
