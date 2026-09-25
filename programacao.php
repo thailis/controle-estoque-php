@@ -1348,7 +1348,6 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <div class="card p-3 mb-4">
             <form method="GET" class="row g-2 align-items-center">
-                <input type="hidden" name="filtro" value="<?php echo h($filtro); ?>">
                 <div class="col-auto flex-grow-1">
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
                 </div>
@@ -1369,11 +1368,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </select>
                 </div>
                 <div class="col-auto">
-                    <div class="btn-group" role="group">
-                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
-                    </div>
+                    <select name="filtro" class="form-select form-select-sm" onchange="this.form.submit()" title="Situação">
+                        <option value="" <?php echo $filtro === '' ? 'selected' : ''; ?>>Todas as situações</option>
+                        <option value="pendente" <?php echo $filtro === 'pendente' ? 'selected' : ''; ?>>Pendente</option>
+                        <option value="atendido" <?php echo $filtro === 'atendido' ? 'selected' : ''; ?>>Atendido</option>
+                    </select>
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
