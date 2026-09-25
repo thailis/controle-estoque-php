@@ -919,6 +919,20 @@ while ($row = mysqli_fetch_assoc($result)) {
             line-height: 1;
         }
         .btn-remover-linha:hover { color: #a12727; }
+
+        /* Tabela principal da BOM: fonte um pouco menor e mais respiro entre
+           as colunas (são ~20 colunas, ficavam coladas umas nas outras). */
+        .tabela-bom { font-size: 0.8rem; }
+        .tabela-bom th,
+        .tabela-bom td {
+            padding: 0.4rem 0.75rem;
+            vertical-align: middle;
+        }
+        .tabela-bom th { font-size: 0.78rem; }
+        .tabela-bom th:first-child,
+        .tabela-bom td:first-child { padding-left: 0.5rem; }
+        .tabela-bom .inline-edit-input { font-size: 0.8rem; }
+        .tabela-bom .mrp-toggle-btn { font-size: 0.75rem; }
     </style>
 </head>
 <body>
@@ -1093,7 +1107,7 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <div class="card">
             <div class="card-body table-responsive">
-                <table class="table table-hover table-sm">
+                <table class="table table-hover table-sm tabela-bom">
                     <thead>
                         <tr>
                             <th>Planta</th>
