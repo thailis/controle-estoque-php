@@ -950,7 +950,7 @@ $flashMap = [
     'inserido'   => ['success', '✅ Evento adicionado com sucesso.'],
     'editado'    => ['success', '✅ Registro atualizado.'],
     'erro_dados' => ['danger', '❌ Confira material, evento, semana (30-53/2026 ou 1-29/2027) e quantidade.'],
-    'sync_bom'   => ['success', '🔄 PN, Tipo, Projeto e Modelo atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
+    'sync_bom'   => ['success', '🔄 Tipo, Projeto e Modelo atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -1056,7 +1056,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['PN', 'Material', 'Tipo', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Material', 'Tipo', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
     $linhasExport = mysqli_fetch_all($resultExport, MYSQLI_ASSOC);
     $dadosBomExport = buscarDadosBom($conn, array_map(fn($l) => $l['material'], $linhasExport));
     foreach ($linhasExport as $linhaExport) {
@@ -1066,7 +1066,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $linhaExport['projeto'] = $dExp['projeto'] ?? $linhaExport['projeto'];
         $linhaExport['modelo'] = $dExp['modelo'] ?? $linhaExport['modelo'];
         fputcsv($saida, [
-            $pnExport, $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
+            $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
             $linhaExport['ano'], formatarDataBr($linhaExport['data_inicio']),
             ((int) ($linhaExport['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
@@ -1240,7 +1240,6 @@ unset($r);
                                     <tr>
                                         <th>Resultado</th>
                                         <th>Material</th>
-                                        <th>PN</th>
                                         <th>Projeto</th>
                                         <th>Evento</th>
                                         <th>Semana</th>
@@ -1264,7 +1263,6 @@ unset($r);
                                         <tr>
                                             <td><span class="badge text-bg-<?php echo $badge[0]; ?>"><?php echo $badge[1]; ?></span></td>
                                             <td><span class="codigo-material"><?php echo htmlspecialchars($linhaProcessada['material']); ?></span></td>
-                                            <td><?php echo htmlspecialchars($linhaProcessada['pn2']); ?></td>
                                             <td><?php echo htmlspecialchars($linhaProcessada['projeto']); ?></td>
                                             <td><?php echo htmlspecialchars($linhaProcessada['evento']); ?></td>
                                             <td><?php echo htmlspecialchars($linhaProcessada['semana']); ?></td>
@@ -1323,7 +1321,7 @@ unset($r);
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
                         <code>material, evento, data, quantidade</code><br>
-                        <strong>PN, Tipo, Projeto e Modelo</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas; o <code>pn</code> do CSV só é usado se a BOM não tiver PN pro material).<br>
+                        <strong>Tipo, Projeto e Modelo</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas).<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
@@ -1344,10 +1342,10 @@ unset($r);
         </datalist>
 
         <div class="card p-3 mb-4">
-            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar PN, Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
+            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
                 <input type="hidden" name="acao" value="sincronizar_bom_edi">
-                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar PN / Tipo / Projeto / Modelo pela BOM</button>
-                <small class="text-muted">PN, Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
+                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar Tipo / Projeto / Modelo pela BOM</button>
+                <small class="text-muted">Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
             </form>
         </div>
 
@@ -1392,7 +1390,7 @@ unset($r);
             <form method="GET" class="row g-2 align-items-center">
                 <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
                 <div class="col-auto flex-grow-1">
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, PN ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
                 <div class="col-auto">
                     <select name="ano" class="form-select" onchange="this.form.submit()">
@@ -1439,7 +1437,6 @@ unset($r);
                     <thead>
                         <tr>
                             <th>Situação</th>
-                            <th>PN</th>
                             <th>Material</th>
                             <th>Tipo</th>
                             <th>Projeto</th>
@@ -1453,7 +1450,7 @@ unset($r);
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1481,7 +1478,6 @@ unset($r);
                                             </button>
                                         </form>
                                     </td>
-                                    <td><?php echo htmlspecialchars($row['pn2'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
