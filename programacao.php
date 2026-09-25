@@ -536,6 +536,100 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     exit;
 }
 
+// ---------- Situação em lote (por Processo ou PO) ----------
+// Digita um Processo (ex.: Y26A3P0011) ou um PO (ex.: 5500157663) e muda a
+// Situação de TODAS as linhas dele de uma vez. A busca é EXATA (não "contém")
+// pra não pegar pedidos parecidos sem querer. Cada linha passa pela mesma
+// regra do clique individual:
+// - Atendido: soma no estoque físico a Quantidade Recebida (vazia = 0) e grava
+//   origem_programacao_id; linhas que já estavam atendidas ficam como estão;
+// - Pendente (reabrir): remove a linha de estoque que aquela programação gerou;
+//   linhas que já estavam pendentes ficam como estão.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situacao_em_lote') {
+    exigirComprador();
+    $chaveLote = trim($_POST['chave_lote'] ?? '');
+    $situacaoLote = trim($_POST['situacao_lote'] ?? '');
+    $flashLote = 'lote_erro';
+    $qtdLote = 0;
+
+    if ($chaveLote !== '' && in_array($situacaoLote, ['atendido', 'pendente'], true)) {
+        $marcarAtendido = $situacaoLote === 'atendido';
+        $atendidoAtual = $marcarAtendido ? 0 : 1; // só mexe em quem está na situação oposta
+
+        $stmtLinhasLote = mysqli_prepare($conn, "
+            SELECT id, codigo_componente, quantidade_recebida
+            FROM programacao
+            WHERE (TRIM(COALESCE(processo, '')) = ? OR TRIM(COALESCE(po, '')) = ?)
+              AND COALESCE(atendido, 0) = ?
+        ");
+        mysqli_stmt_bind_param($stmtLinhasLote, 'ssi', $chaveLote, $chaveLote, $atendidoAtual);
+        mysqli_stmt_execute($stmtLinhasLote);
+        $resLinhasLote = mysqli_stmt_get_result($stmtLinhasLote);
+        $linhasLote = [];
+        while ($l = mysqli_fetch_assoc($resLinhasLote)) { $linhasLote[] = $l; }
+        mysqli_stmt_close($stmtLinhasLote);
+
+        if (empty($linhasLote)) {
+            $flashLote = 'lote_nada';
+        } else {
+            mysqli_begin_transaction($conn);
+            try {
+                foreach ($linhasLote as $l) {
+                    $idLote = (int) $l['id'];
+                    if ($marcarAtendido) {
+                        $codigoLote = trim((string) $l['codigo_componente']);
+                        $qtdRecebidaLote = $l['quantidade_recebida'] !== null ? (float) $l['quantidade_recebida'] : 0.0;
+
+                        $stmtDescLote = mysqli_prepare($conn, "SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao FROM bomnova WHERE TRIM(codigo_componente) = ?");
+                        mysqli_stmt_bind_param($stmtDescLote, 's', $codigoLote);
+                        mysqli_stmt_execute($stmtDescLote);
+                        $descLote = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescLote))['descricao'] ?? '';
+                        mysqli_stmt_close($stmtDescLote);
+
+                        $plantaLote = 'Recebido';
+                        $stmtInsLote = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
+                        mysqli_stmt_bind_param($stmtInsLote, 'ssdsi', $codigoLote, $descLote, $qtdRecebidaLote, $plantaLote, $idLote);
+                        mysqli_stmt_execute($stmtInsLote);
+                        mysqli_stmt_close($stmtInsLote);
+
+                        $stmtOnLote = mysqli_prepare($conn, "UPDATE programacao SET atendido = 1 WHERE id = ?");
+                        mysqli_stmt_bind_param($stmtOnLote, 'i', $idLote);
+                        mysqli_stmt_execute($stmtOnLote);
+                        mysqli_stmt_close($stmtOnLote);
+                    } else {
+                        $stmtDelLote = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_programacao_id = ?");
+                        mysqli_stmt_bind_param($stmtDelLote, 'i', $idLote);
+                        mysqli_stmt_execute($stmtDelLote);
+                        mysqli_stmt_close($stmtDelLote);
+
+                        $stmtOffLote = mysqli_prepare($conn, "UPDATE programacao SET atendido = 0 WHERE id = ?");
+                        mysqli_stmt_bind_param($stmtOffLote, 'i', $idLote);
+                        mysqli_stmt_execute($stmtOffLote);
+                        mysqli_stmt_close($stmtOffLote);
+                    }
+                }
+                mysqli_commit($conn);
+                $flashLote = $marcarAtendido ? 'lote_atendido' : 'lote_pendente';
+                $qtdLote = count($linhasLote);
+            } catch (Throwable $erroLote) {
+                mysqli_rollback($conn);
+                error_log('Erro na situação em lote da programação: ' . $erroLote->getMessage());
+                $flashLote = 'lote_erro';
+            }
+        }
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'busca'      => '',
+        'filtro'     => '',
+        'processo'   => $chaveLote,
+        'fornecedor' => '',
+        'flash'      => $flashLote,
+        'lote_qtd'   => $qtdLote,
+    ]));
+    exit;
+}
+
 // Inserção manual de uma nova programação direto pelo site, sem CSV
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
@@ -831,6 +925,10 @@ $flashMap = [
     'editado'       => ['success', '✅ Registro atualizado.'],
     'erro_dados'    => ['danger', '❌ Componente, data ou quantidade inválidos.'],
     'erro_atendido' => ['warning', '⚠️ Esse item já está atendido — reabra antes de editar.'],
+    'lote_atendido' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) marcada(s) como Atendido (somadas no estoque pela Quantidade Recebida).'],
+    'lote_pendente' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) reaberta(s) como Pendente (entradas de estoque removidas).'],
+    'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
+    'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
 ];
 
 // Lista de componentes existentes na BOM, pra sugerir no campo de entrada manual
@@ -1224,6 +1322,28 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </form>
             <small class="text-muted d-block mt-2">PN e Descrição vêm automaticamente da BOM pelo código do componente. Data Recebida, Quantidade Recebida e Saldo ficam disponíveis pra editar (duplo clique) depois que o material chegar.</small>
+        </div>
+
+        <div class="card p-3 mb-4">
+            <h2 class="h6 mb-3">✔️ Situação em lote (todos os itens de um Processo ou PO)</h2>
+            <form method="POST" class="row g-2 align-items-end" onsubmit="return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
+                <input type="hidden" name="acao" value="situacao_em_lote">
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Processo ou PO</label>
+                    <input type="text" name="chave_lote" list="lista-processos" autocomplete="off" class="form-control form-control-sm" placeholder="Ex.: Y26A3P0011 ou 5500157663" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Nova situação</label>
+                    <select name="situacao_lote" class="form-select form-select-sm">
+                        <option value="atendido">Atendido</option>
+                        <option value="pendente">Pendente (reabrir)</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
+                </div>
+            </form>
+            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual.</small>
         </div>
 
         <div class="card p-3 mb-4">

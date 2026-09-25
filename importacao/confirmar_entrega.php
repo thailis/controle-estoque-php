@@ -60,10 +60,8 @@ function conectarMrp(): mysqli
     return $connMrp;
 }
 
-// Confirma se o componente existe de verdade no MRP antes de deixar a
-// integração seguir. Checa em parametros_compra OU bomnova — basta existir
-// em um dos dois pra considerar válido (um componente pode ter parâmetros
-// cadastrados sem ainda estar na BOM, ou vice-versa).
+// Confirma se o componente existe na BOM do MRP antes de deixar a integração
+// seguir. Componente fora da BOM não é importado.
 function validarComponenteMrp(mysqli $connMrp, string $codigoComponente): array
 {
     $codigo = trim($codigoComponente);
@@ -85,12 +83,13 @@ function validarComponenteMrp(mysqli $connMrp, string $codigoComponente): array
     $resultado = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
 
-    $existe = ((int) $resultado['em_parametros'] > 0) || ((int) $resultado['em_bom'] > 0);
+    // Só entra no MRP o que existe na BOM (Parâmetros de Compra sozinho não basta).
+    $existe = (int) $resultado['em_bom'] > 0;
 
     if (!$existe) {
         return [
             'valido' => false,
-            'motivo' => "Componente \"$codigo\" não foi encontrado no MRP (nem em Parâmetros de Compra, nem na BOM). Confira se o código foi digitado certo antes de confirmar a entrega.",
+            'motivo' => "Componente \"$codigo\" não está cadastrado na BOM do MRP — não é importado. Confira se o código foi digitado certo antes de confirmar a entrega.",
             'descricao' => null,
         ];
     }
@@ -349,7 +348,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
 
             $mensagem = '🔄 Sincronização concluída — ' . count($efetivaPorProcesso) . " processo(s) conferido(s): $atualizadas linha(s) atualizada(s), $criadas linha(s) criada(s) na Programação do MRP.";
             if (!empty($pulados)) {
-                $erro = '⚠️ ' . count($pulados) . ' componente(s) não encontrado(s) no MRP e pulado(s): ' . implode(', ', $pulados);
+                $erro = '⚠️ ' . count($pulados) . ' componente(s) fora da BOM do MRP e não importado(s): ' . implode(', ', $pulados);
             }
         } catch (Throwable $e) {
             $erro = '❌ Erro durante a sincronização com o MRP (o que já tinha sido gravado até aqui permanece): ' . $e->getMessage();
@@ -516,7 +515,7 @@ if ($resultContagem) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por <strong>processo + PO + componente</strong> (se não existir essa combinação, a linha é criada com as três informações) — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra a BOM do MRP antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por <strong>processo + PO + componente</strong> (se não existir essa combinação, a linha é criada com as três informações) — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
             <form method="POST" class="mt-3 mb-0" onsubmit="return confirm('Reenviar TODOS os embarques já confirmados para a Programação do MRP? Importado e Data Recebida serão substituídos pelos valores do site de Importação, e linhas que faltam serão criadas.');">
                 <input type="hidden" name="acao" value="sincronizar_mrp">
                 <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com o MRP</button>
