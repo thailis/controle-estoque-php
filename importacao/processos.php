@@ -867,6 +867,9 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
     <style>
+        /* Mesma largura da tela de Programação (98% da janela). O dashboard.css
+           compartilhado trava .dashboard-container em 1780px — sobrescrito só aqui. */
+        .dashboard-container { max-width: 98vw; }
         /* Espaçamento extra — a tabela tem muitas colunas, então o padding
            padrão do dashboard.css (12px) fica meio apertado nessa tela. */
         #tabela-processos td, #tabela-processos th { padding: 14px 16px; }
