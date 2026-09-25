@@ -299,7 +299,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
             $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
             $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
             $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
-            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&status_alterado=1');
+            $statusVolta = (string) ($_POST['status_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&status=' . urlencode($statusVolta) . '&status_alterado=1');
             exit;
         }
     }
@@ -338,7 +339,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
             $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
             $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
             $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
-            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&controla_alterado=1');
+            $statusVolta = (string) ($_POST['status_atual'] ?? '');
+            header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&status=' . urlencode($statusVolta) . '&controla_alterado=1');
             exit;
         }
     }
@@ -359,7 +361,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     $componenteVolta = (string) ($_POST['componente_atual'] ?? '');
     $categoriaVolta = (string) ($_POST['categoria_atual'] ?? '');
     $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
-    header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&excluido=1');
+    $statusVolta = (string) ($_POST['status_atual'] ?? '');
+    header('Location: processos.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&planta=' . urlencode($plantaVolta) . '&componente=' . urlencode($componenteVolta) . '&categoria=' . urlencode($categoriaVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&status=' . urlencode($statusVolta) . '&excluido=1');
     exit;
 }
 
@@ -689,6 +692,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     }
 }
 
+// Filtro de Status: "aberto" inclui status vazio/nulo (a tela mostra esses como Aberto)
+function condicaoStatusProcesso(string $status): ?string {
+    switch ($status) {
+        case 'aberto':     return "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('finalizado', 'cancelado')";
+        case 'cancelado':  return "LOWER(TRIM(status)) = 'cancelado'";
+        case 'finalizado': return "LOWER(TRIM(status)) = 'finalizado'";
+        default:           return null;
+    }
+}
+
 // ---------- Exportação CSV ----------
 if (isset($_GET['exportar'])) {
     $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
@@ -696,6 +709,7 @@ if (isset($_GET['exportar'])) {
     $filtroComponenteExp = trim($_GET['componente'] ?? '');
     $filtroCategoriaExp = trim($_GET['categoria'] ?? '');
     $filtroFornecedorExp = trim($_GET['fornecedor'] ?? '');
+    $filtroStatusExp = trim($_GET['status'] ?? '');
 
     $condicoesExp = [];
     $paramsExp = [];
@@ -725,6 +739,10 @@ if (isset($_GET['exportar'])) {
         $condicoesExp[] = "fornecedor = ?";
         $paramsExp[] = $filtroFornecedorExp;
         $tiposExp .= 's';
+    }
+    $condStatusExp = condicaoStatusProcesso($filtroStatusExp);
+    if ($condStatusExp !== null) {
+        $condicoesExp[] = $condStatusExp;
     }
     $where = !empty($condicoesExp) ? ('WHERE ' . implode(' AND ', $condicoesExp)) : '';
 
@@ -767,6 +785,8 @@ $filtroPlanta = trim($_GET['planta'] ?? '');
 $filtroComponente = trim($_GET['componente'] ?? '');
 $filtroCategoria = trim($_GET['categoria'] ?? '');
 $filtroFornecedor = trim($_GET['fornecedor'] ?? '');
+$filtroStatus = trim($_GET['status'] ?? '');
+if (condicaoStatusProcesso($filtroStatus) === null) { $filtroStatus = ''; }
 
 // Listas pros filtros em dropdown (só valores que já existem de verdade na base)
 $plantasDisponiveis = [];
@@ -790,7 +810,7 @@ if ($busca !== '') {
     $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
     $tipos .= 'ssss';
 }
-// Os 4 filtros abaixo são independentes entre si e da busca livre — combinam
+// Os 5 filtros abaixo são independentes entre si e da busca livre — combinam
 // com AND (cada um restringe mais o resultado), diferente da busca livre
 // (que usa OR entre as colunas pra achar qualquer correspondência).
 if ($filtroPlanta !== '') {
@@ -812,6 +832,9 @@ if ($filtroFornecedor !== '') {
     $condicoes[] = "fornecedor = ?";
     $params[] = $filtroFornecedor;
     $tipos .= 's';
+}
+if ($filtroStatus !== '') {
+    $condicoes[] = condicaoStatusProcesso($filtroStatus);
 }
 
 $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
@@ -1079,13 +1102,22 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </select>
                 </div>
                 <div class="col-md-2">
+                    <label class="form-label">Status</label>
+                    <select name="status" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach (['aberto' => 'Aberto', 'cancelado' => 'Cancelado', 'finalizado' => 'Finalizado'] as $valorSt => $rotuloSt): ?>
+                            <option value="<?php echo $valorSt; ?>" <?php echo $filtroStatus === $valorSt ? 'selected' : ''; ?>><?php echo $rotuloSt; ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
                 </div>
                 <div class="col-md-2">
                     <a href="processos.php" class="btn btn-outline-secondary w-100">Limpar filtros</a>
                 </div>
                 <div class="col-md-2">
-                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
+                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
                 </div>
             </form>
         </section>
@@ -1153,6 +1185,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
                                                 <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
                                                 <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
+                                                <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $statusCancelado ? 'status-critico' : 'status-atencao'; ?>" style="cursor:pointer;" title="Clique pra alternar entre Aberto e Cancelado">
                                                     <?php echo $statusCancelado ? 'Cancelado' : 'Aberto'; ?>
                                                 </button>
@@ -1174,6 +1207,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                                 <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
                                                 <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
                                                 <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
+                                                <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                                 <button type="submit" class="status-badge border-0 <?php echo $controlaEstoqueRow ? 'status-ok' : 'status-sem_demanda'; ?>" style="cursor:pointer;" title="Clique pra alternar — 'Não' significa que esse item não entra no Confirmar Entrega (ex.: tooling, amostra)">
                                                     <?php echo $controlaEstoqueRow ? 'Sim' : 'Não'; ?>
                                                 </button>
@@ -1210,6 +1244,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                             <input type="hidden" name="componente_atual" value="<?php echo h($filtroComponente); ?>">
                                             <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
+                                                <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
                                     </td>
@@ -1227,7 +1262,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>
