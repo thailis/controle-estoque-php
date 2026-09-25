@@ -1161,7 +1161,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th class="text-end" title="Calculado automaticamente: [Net Price ÷ (100% − (ICMS% + (PIS% − ICMS%×PIS%) + (COFINS% − ICMS%×COFINS%)))] × (1 + IPI%)">Preço</th>
                             <th>Moeda</th>
                             <th>MRP</th>
-                            <th>Planejamento</th>
+                            <th title="Planejamento">Plan</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
