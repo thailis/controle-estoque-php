@@ -828,8 +828,9 @@ if ($filtro === 'pendente') {
 }
 
 if ($processoFiltro !== '') {
-    $condicoes[] = "p.processo = ?";
-    $params[] = $processoFiltro;
+    // Caixa de texto: aceita parte do código (ex.: "Y26A" ou "001")
+    $condicoes[] = "TRIM(p.processo) LIKE ?";
+    $params[] = '%' . $processoFiltro . '%';
     $tipos .= 's';
 }
 
@@ -1167,12 +1168,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
-                    <select name="processo" class="form-select form-select-sm" onchange="this.form.submit()">
-                        <option value="">Todos os processos</option>
+                    <input type="text" name="processo" class="form-control form-control-sm" placeholder="Processo..." list="lista-processos" autocomplete="off" value="<?php echo h($processoFiltro); ?>" onchange="this.form.submit()">
+                    <datalist id="lista-processos">
                         <?php foreach ($processosDisponiveis as $p): ?>
-                            <option value="<?php echo h($p); ?>" <?php echo $processoFiltro === $p ? 'selected' : ''; ?>><?php echo h($p); ?></option>
+                            <option value="<?php echo h($p); ?>"></option>
                         <?php endforeach; ?>
-                    </select>
+                    </datalist>
                 </div>
                 <div class="col-auto">
                     <select name="fornecedor" class="form-select form-select-sm" onchange="this.form.submit()">
