@@ -168,6 +168,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                         //   processo, cria uma nova (Quantidade = 0, já que não houve
                         //   planejamento manual prévio; "importado" já preenchido com o
                         //   valor confirmado).
+                        // Nos dois casos, "data_recebida" da Programação recebe a data
+                        // EFETIVA do Follow (substitui a anterior, igual ao "importado").
                         // Em nenhum dos dois casos isso marca a linha como "Atendido" —
                         // isso continua sendo decisão manual de quem usa o MRP, feita na
                         // tela de Programação. É o clique manual em "Atendido" que, de
@@ -185,22 +187,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                         mysqli_stmt_close($stmtBuscaProg);
 
                         if ($progExistente) {
-                            $stmtAtualizaProg = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ? WHERE id = ?");
-                            mysqli_stmt_bind_param($stmtAtualizaProg, 'di', $quantidadeConfirmada, $progExistente['id']);
+                            $stmtAtualizaProg = mysqli_prepare($connMrp, "UPDATE programacao SET importado = ?, data_recebida = ? WHERE id = ?");
+                            mysqli_stmt_bind_param($stmtAtualizaProg, 'dsi', $quantidadeConfirmada, $dataEfetiva, $progExistente['id']);
                             mysqli_stmt_execute($stmtAtualizaProg);
                             mysqli_stmt_close($stmtAtualizaProg);
                         } else {
                             $stmtInsereProg = mysqli_prepare($connMrp, "
-                                INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado)
-                                VALUES (?, ?, ?, 0, ?)
+                                INSERT INTO programacao (codigo_componente, processo, data, quantidade, importado, data_recebida)
+                                VALUES (?, ?, ?, 0, ?, ?)
                             ");
-                            mysqli_stmt_bind_param($stmtInsereProg, 'sssd', $linha['codigo_componente'], $processoTrim, $dataEfetiva, $quantidadeConfirmada);
+                            mysqli_stmt_bind_param($stmtInsereProg, 'sssds', $linha['codigo_componente'], $processoTrim, $dataEfetiva, $quantidadeConfirmada, $dataEfetiva);
                             mysqli_stmt_execute($stmtInsereProg);
                             mysqli_stmt_close($stmtInsereProg);
                         }
                         mysqli_close($connMrp);
 
-                        $complementoMensagem = " lançada em Programação do MRP (coluna \"Importado\").";
+                        $complementoMensagem = " lançada em Programação do MRP (colunas \"Importado\" e \"Data Recebida\").";
                     }
                 } catch (Throwable $e) {
                     $erro = '❌ Erro ao conectar/gravar no MRP: ' . $e->getMessage();
@@ -397,7 +399,7 @@ if ($resultContagem) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra o MRP (Parâmetros de Compra e BOM) antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por componente + processo — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
         </section>
 
         <section class="filter-panel mb-4">
