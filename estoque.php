@@ -864,10 +864,19 @@ if (!empty($componentes)) {
             if (!totalCel) return;
 
             // Aceita "1234,56", "1.234,56" e "1234.56" (valor como foi digitado)
+            // Mesma regra do parseNumeroBr() do servidor: com vírgula, ponto é
+            // milhar ("1.234,56"); sem vírgula, "4.259" (grupos de 3 dígitos após
+            // o ponto) também é milhar = 4259; senão o ponto é decimal ("2.5").
             function paraNumero(texto) {
                 texto = String(texto || '0').trim();
                 if (texto.includes(',')) {
                     texto = texto.replace(/\./g, '').replace(',', '.');
+                } else if (texto.includes('.')) {
+                    const partes = texto.split('.');
+                    const pareceMilhar = partes.slice(1).every((p) => /^\d{3}$/.test(p));
+                    if (pareceMilhar) {
+                        texto = partes.join('');
+                    }
                 }
                 const n = parseFloat(texto);
                 return isNaN(n) ? 0 : n;
