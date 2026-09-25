@@ -41,14 +41,15 @@ function registrarLinhaProcessada(
     ];
 }
 
-// PN do EDI vem da BOM (bomnova), pelo Material — não precisa ser digitado
-// nem vir no CSV. Regra, por material:
-//  1) linha da BOM cujo COMPONENTE é o próprio material -> PN dessa linha;
-//  2) senão, se todas as linhas da BOM daquele material tiverem um único PN
-//     (ignorando vazio e "0") -> esse PN;
-//  3) senão fica vazio (a BOM não define um PN único pro material).
-// Recebe vários materiais de uma vez (1 ida ao banco por regra).
-function buscarPnsBom(mysqli $conn, array $materiais): array
+// PN, Tipo e Projeto do EDI vêm da BOM (bomnova), pelo Material — não são
+// digitados nem lidos do CSV. Regra, por material:
+//  - PN: a linha da BOM cujo COMPONENTE é o próprio material (a linha do
+//    tanque) -> PN dela; senão, se o material tiver um único PN na BOM, esse;
+//    senão vazio. (PN vazio ou "0" é ignorado.)
+//  - Tipo e Projeto: os da linha do tanque, se existir; senão o valor que mais
+//    aparece nas linhas da BOM daquele material.
+// Recebe vários materiais de uma vez. Devolve [material => ['pn','tipo','projeto']].
+function buscarDadosBom(mysqli $conn, array $materiais): array
 {
     $materiais = array_values(array_unique(array_filter(array_map(fn($m) => trim((string) $m), $materiais), fn($m) => $m !== '')));
     if (empty($materiais)) {
@@ -56,39 +57,66 @@ function buscarPnsBom(mysqli $conn, array $materiais): array
     }
     $ph = implode(',', array_fill(0, count($materiais), '?'));
     $tipos = str_repeat('s', count($materiais));
-    $mapa = [];
+    $dados = [];
+    foreach ($materiais as $m) {
+        $dados[$m] = ['pn' => null, 'tipo' => null, 'projeto' => null];
+    }
 
+    // Todas as linhas da BOM desses materiais (mais as linhas "do tanque",
+    // cujo componente = material) numa consulta só
     $stmt = mysqli_prepare($conn, "
-        SELECT TRIM(material) AS material, MIN(TRIM(pn)) AS pn, COUNT(DISTINCT TRIM(pn)) AS qtd
+        SELECT TRIM(material) AS material, TRIM(codigo_componente) AS componente,
+               TRIM(COALESCE(pn, '')) AS pn, TRIM(COALESCE(tipo, '')) AS tipo, TRIM(COALESCE(projeto, '')) AS projeto
         FROM bomnova
-        WHERE TRIM(material) IN ($ph) AND pn IS NOT NULL AND TRIM(pn) NOT IN ('', '0')
-        GROUP BY TRIM(material)
+        WHERE TRIM(material) IN ($ph) OR TRIM(codigo_componente) IN ($ph)
     ");
-    mysqli_stmt_bind_param($stmt, $tipos, ...$materiais);
+    $valores = array_merge($materiais, $materiais);
+    mysqli_stmt_bind_param($stmt, $tipos . $tipos, ...$valores);
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
+
+    $linhaTanque = [];   // material => linha onde componente = material
+    $pnsDoMaterial = []; // material => [pn => true]
+    $contTipo = [];      // material => [tipo => qtd]
+    $contProjeto = [];
     while ($l = mysqli_fetch_assoc($res)) {
-        if ((int) $l['qtd'] === 1) {
-            $mapa[$l['material']] = $l['pn'];
+        if (isset($dados[$l['componente']])) {
+            $linhaTanque[$l['componente']] = $l;
         }
+        $m = $l['material'];
+        if (!isset($dados[$m])) {
+            continue;
+        }
+        if ($l['pn'] !== '' && $l['pn'] !== '0') { $pnsDoMaterial[$m][$l['pn']] = true; }
+        if ($l['tipo'] !== '') { $contTipo[$m][$l['tipo']] = ($contTipo[$m][$l['tipo']] ?? 0) + 1; }
+        if ($l['projeto'] !== '') { $contProjeto[$m][$l['projeto']] = ($contProjeto[$m][$l['projeto']] ?? 0) + 1; }
     }
     mysqli_stmt_close($stmt);
 
-    // Regra 1 tem prioridade: sobrescreve a regra 2 quando existir
-    $stmt = mysqli_prepare($conn, "
-        SELECT TRIM(codigo_componente) AS material, MAX(TRIM(pn)) AS pn
-        FROM bomnova
-        WHERE TRIM(codigo_componente) IN ($ph) AND pn IS NOT NULL AND TRIM(pn) NOT IN ('', '0')
-        GROUP BY TRIM(codigo_componente)
-    ");
-    mysqli_stmt_bind_param($stmt, $tipos, ...$materiais);
-    mysqli_stmt_execute($stmt);
-    $res = mysqli_stmt_get_result($stmt);
-    while ($l = mysqli_fetch_assoc($res)) {
-        $mapa[$l['material']] = $l['pn'];
-    }
-    mysqli_stmt_close($stmt);
+    $maisFrequente = function (?array $contagem): ?string {
+        if (empty($contagem)) { return null; }
+        arsort($contagem);
+        return (string) array_key_first($contagem);
+    };
 
+    foreach ($materiais as $m) {
+        $t = $linhaTanque[$m] ?? null;
+        $pnTanque = $t !== null && $t['pn'] !== '' && $t['pn'] !== '0' ? $t['pn'] : null;
+        $pnUnico = isset($pnsDoMaterial[$m]) && count($pnsDoMaterial[$m]) === 1 ? (string) array_key_first($pnsDoMaterial[$m]) : null;
+        $dados[$m]['pn'] = $pnTanque ?? $pnUnico;
+        $dados[$m]['tipo'] = ($t !== null && $t['tipo'] !== '') ? $t['tipo'] : $maisFrequente($contTipo[$m] ?? null);
+        $dados[$m]['projeto'] = ($t !== null && $t['projeto'] !== '') ? $t['projeto'] : $maisFrequente($contProjeto[$m] ?? null);
+    }
+    return $dados;
+}
+
+// Atalho: só o PN (material => pn), pra quem só precisa dele.
+function buscarPnsBom(mysqli $conn, array $materiais): array
+{
+    $mapa = [];
+    foreach (buscarDadosBom($conn, $materiais) as $m => $d) {
+        if ($d['pn'] !== null) { $mapa[$m] = $d['pn']; }
+    }
     return $mapa;
 }
 
@@ -228,7 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "🗑️ Tabela 'edi' esvaziada antes da importação.";
                 }
 
-                $cachePnBom = [];
+                $cacheDadosBom = [];
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
@@ -252,18 +280,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $dados = array_combine($cabecalho, $linha);
 
                     $material = $dados['material'] ?? null;
-                    // PN: usa o do CSV se vier (coluna "pn" ou "pn2"); senão puxa da BOM
-                    $pn2 = trim((string) ($dados['pn'] ?? $dados['pn2'] ?? ''));
-                    if ($pn2 === '') {
-                        $chaveMaterialPn = trim((string) $material);
-                        if (!array_key_exists($chaveMaterialPn, $cachePnBom)) {
-                            $cachePnBom[$chaveMaterialPn] = buscarPnsBom($conn, [$chaveMaterialPn])[$chaveMaterialPn] ?? null;
-                        }
-                        $pn2 = $cachePnBom[$chaveMaterialPn];
+                    // PN, Tipo e Projeto vêm da BOM pelo material (colunas do CSV
+                    // com esses nomes são ignoradas — exceto PN, usado só se a BOM
+                    // não tiver PN pra esse material).
+                    $chaveMaterialBom = trim((string) $material);
+                    if (!array_key_exists($chaveMaterialBom, $cacheDadosBom)) {
+                        $cacheDadosBom[$chaveMaterialBom] = buscarDadosBom($conn, [$chaveMaterialBom])[$chaveMaterialBom] ?? ['pn' => null, 'tipo' => null, 'projeto' => null];
                     }
+                    $dadosBomLinha = $cacheDadosBom[$chaveMaterialBom];
+                    $pnCsv = trim((string) ($dados['pn'] ?? $dados['pn2'] ?? ''));
+                    $pn2 = $dadosBomLinha['pn'] ?? ($pnCsv !== '' ? $pnCsv : null);
                     $dados['pn2'] = $pn2;
-                    $marca = $dados['marca'] ?? null;
-                    $projeto = $dados['projeto'] ?? null;
+                    $marca = $dadosBomLinha['tipo'];      // coluna "marca" do banco = Tipo (da BOM)
+                    $projeto = $dadosBomLinha['projeto'];
+                    $dados['projeto'] = $projeto ?? '';
                     $modelo = $dados['modelo'] ?? null;
                     $evento = $dados['evento'] ?? null;
                     $dataBruta = $dados['data'] ?? null;
@@ -742,13 +772,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
 // Inclusão manual de um novo evento EDI direto pelo site, sem CSV.
 // Semana/Ano são calculados a partir da data digitada (caminho inverso do
 // que já usávamos antes — agora a data é o dado de entrada, não a semana).
+// ---------- Atualizar PN / Tipo / Projeto de todos os EDIs pela BOM ----------
+// Regrava nos EDIs já existentes o PN, Tipo (coluna "marca" no banco) e Projeto
+// vindos da BOM, material a material. Onde a BOM não tiver o dado, mantém o que
+// já estava. Útil depois de mudar a BOM, e pra acertar EDIs antigos (que tinham
+// esses campos digitados/importados) — também deixa o filtro de Projeto certo.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_bom_edi') {
+    exigirComprador();
+    $resMateriaisEdi = mysqli_query($conn, "SELECT DISTINCT TRIM(material) AS material FROM edi WHERE material IS NOT NULL AND TRIM(material) <> ''");
+    $materiaisEdi = [];
+    while ($l = mysqli_fetch_assoc($resMateriaisEdi)) { $materiaisEdi[] = $l['material']; }
+    $dadosBomTodos = buscarDadosBom($conn, $materiaisEdi);
+    $linhasSync = 0;
+    $semBom = 0;
+    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto) WHERE TRIM(material) = ?");
+    foreach ($dadosBomTodos as $mat => $d) {
+        if ($d['pn'] === null && $d['tipo'] === null && $d['projeto'] === null) {
+            $semBom++;
+            continue;
+        }
+        mysqli_stmt_bind_param($stmtSync, 'ssss', $d['pn'], $d['tipo'], $d['projeto'], $mat);
+        mysqli_stmt_execute($stmtSync);
+        $linhasSync += max(0, mysqli_stmt_affected_rows($stmtSync));
+    }
+    mysqli_stmt_close($stmtSync);
+    header('Location: edi.php?' . http_build_query(['flash' => 'sync_bom', 'sync_linhas' => $linhasSync, 'sync_sem_bom' => $semBom]));
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
     $materialManual = trim($_POST['material_manual'] ?? '');
-    // PN não é mais digitado: vem da BOM pelo material
-    $pn2Manual = buscarPnsBom($conn, [$materialManual])[$materialManual] ?? null;
-    $marcaManual = trim($_POST['marca_manual'] ?? '') ?: null;
-    $projetoManual = trim($_POST['projeto_manual'] ?? '') ?: null;
+    // PN, Tipo e Projeto não são digitados: vêm da BOM pelo material
+    $dadosBomManual = buscarDadosBom($conn, [$materialManual])[$materialManual] ?? ['pn' => null, 'tipo' => null, 'projeto' => null];
+    $pn2Manual = $dadosBomManual['pn'];
+    $marcaManual = $dadosBomManual['tipo'];
+    $projetoManual = $dadosBomManual['projeto'];
     $modeloManual = trim($_POST['modelo_manual'] ?? '') ?: null;
     $eventoManual = trim($_POST['evento_manual'] ?? '');
     $dataManualTexto = trim($_POST['data_manual'] ?? '');
@@ -888,6 +947,7 @@ $flashMap = [
     'inserido'   => ['success', '✅ Evento adicionado com sucesso.'],
     'editado'    => ['success', '✅ Registro atualizado.'],
     'erro_dados' => ['danger', '❌ Confira material, evento, semana (30-53/2026 ou 1-29/2027) e quantidade.'],
+    'sync_bom'   => ['success', '🔄 PN, Tipo e Projeto atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -993,11 +1053,14 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['PN', 'Material', 'Marca', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['PN', 'Material', 'Tipo', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
     $linhasExport = mysqli_fetch_all($resultExport, MYSQLI_ASSOC);
-    $pnBomExport = buscarPnsBom($conn, array_map(fn($l) => $l['material'], array_filter($linhasExport, fn($l) => trim((string) ($l['pn2'] ?? '')) === '')));
+    $dadosBomExport = buscarDadosBom($conn, array_map(fn($l) => $l['material'], $linhasExport));
     foreach ($linhasExport as $linhaExport) {
-        $pnExport = trim((string) ($linhaExport['pn2'] ?? '')) !== '' ? $linhaExport['pn2'] : ($pnBomExport[trim((string) $linhaExport['material'])] ?? '');
+        $dExp = $dadosBomExport[trim((string) $linhaExport['material'])] ?? null;
+        $pnExport = $dExp['pn'] ?? $linhaExport['pn2'];
+        $linhaExport['marca'] = $dExp['tipo'] ?? $linhaExport['marca'];
+        $linhaExport['projeto'] = $dExp['projeto'] ?? $linhaExport['projeto'];
         fputcsv($saida, [
             $pnExport, $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
@@ -1031,15 +1094,15 @@ $rows = [];
 while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
-// EDIs antigos sem PN gravado: mostra o PN da BOM na hora (sem gravar)
-$materiaisSemPn = [];
-foreach ($rows as $r) {
-    if (trim((string) ($r['pn2'] ?? '')) === '') { $materiaisSemPn[] = $r['material']; }
-}
-$pnBomPagina = buscarPnsBom($conn, $materiaisSemPn);
+// PN / Tipo / Projeto exibidos sempre da BOM (fonte oficial); se a BOM não
+// tiver o dado pra aquele material, mostra o que está gravado no EDI.
+$dadosBomPagina = buscarDadosBom($conn, array_map(fn($r) => $r['material'], $rows));
 foreach ($rows as &$r) {
-    if (trim((string) ($r['pn2'] ?? '')) === '') {
-        $r['pn2'] = $pnBomPagina[trim((string) $r['material'])] ?? '';
+    $d = $dadosBomPagina[trim((string) $r['material'])] ?? null;
+    if ($d !== null) {
+        $r['pn2'] = $d['pn'] ?? $r['pn2'];
+        $r['marca'] = $d['tipo'] ?? $r['marca'];
+        $r['projeto'] = $d['projeto'] ?? $r['projeto'];
     }
 }
 unset($r);
@@ -1254,8 +1317,8 @@ unset($r);
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>material, marca, projeto, modelo, evento, data, quantidade</code><br>
-                        O <strong>PN</strong> não precisa vir: é puxado da BOM pelo material (se o CSV trouxer a coluna <code>pn</code>, ela é usada).<br>
+                        <code>material, modelo, evento, data, quantidade</code><br>
+                        <strong>PN, Tipo e Projeto</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas; o <code>pn</code> do CSV só é usado se a BOM não tiver PN pro material).<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
@@ -1276,6 +1339,14 @@ unset($r);
         </datalist>
 
         <div class="card p-3 mb-4">
+            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar PN, Tipo e Projeto de TODOS os EDIs com os dados da BOM?');">
+                <input type="hidden" name="acao" value="sincronizar_bom_edi">
+                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar PN / Tipo / Projeto pela BOM</button>
+                <small class="text-muted">PN, Tipo e Projeto sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
+            </form>
+        </div>
+
+        <div class="card p-3 mb-4">
             <details>
                 <summary>➕ Novo evento (entrada manual)</summary>
                 <form method="POST" class="row g-2 align-items-end mt-3">
@@ -1289,14 +1360,6 @@ unset($r);
                     <div class="col-auto">
                         <label class="form-label small mb-1">Material *</label>
                         <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Marca</label>
-                        <input type="text" name="marca_manual" class="form-control form-control-sm" style="width:130px">
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Projeto</label>
-                        <input type="text" name="projeto_manual" class="form-control form-control-sm" style="width:130px">
                     </div>
                     <div class="col-auto">
                         <label class="form-label small mb-1">Modelo</label>
@@ -1377,7 +1440,7 @@ unset($r);
                             <th>Situação</th>
                             <th>PN</th>
                             <th>Material</th>
-                            <th>Marca</th>
+                            <th>Tipo</th>
                             <th>Projeto</th>
                             <th>Modelo</th>
                             <th>Evento</th>
