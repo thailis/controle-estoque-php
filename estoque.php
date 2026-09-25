@@ -101,9 +101,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 // Qualquer coluna que não seja codigo/descricao/estoque é tratada como
                 // uma coluna de planta (ex.: "2401", "2403"), usando o texto original
                 // do cabeçalho (sem normalizar) como identificador da planta.
+                // Colunas que o próprio "Exportar CSV" desta tela gera e que NÃO são
+                // planta — ignoradas pra o CSV exportado poder ser reimportado sem
+                // virar estoque falso. "Sem planta" vira estoque sem planta (NULL).
+                $colunasIgnoradas = ['total', 'demanda', 'mrp'];
                 $colunasPlanta = [];
                 foreach ($cabecalhoOriginal as $indice => $nomeOriginal) {
                     if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal) {
+                        continue;
+                    }
+                    if (in_array($cabecalho[$indice], $colunasIgnoradas, true)) {
+                        continue;
+                    }
+                    if ($cabecalho[$indice] === 'sem planta') {
+                        $colunasPlanta[$indice] = null;
                         continue;
                     }
                     $nomeLimpo = trim($nomeOriginal);
@@ -179,11 +190,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $valor = parseNumeroBr($valorBruto);
                         if ($valor === null) {
                             $erros++;
-                            $mensagens[] = "⚠️ Linha $linhaNum, planta '$nomePlanta': valor '$valorBruto' inválido.";
+                            $mensagens[] = "⚠️ Linha $linhaNum, planta '" . ($nomePlanta ?? 'Sem planta') . "': valor '$valorBruto' inválido.";
                             continue;
                         }
                         $lote[] = [$codigo_componente, $descricao, $valor, $nomePlanta];
-                        $gravouAlgumaPlanta = true;
+                        $gravouAlgumaPlanta = true; // (nomePlanta null = coluna "Sem planta")
 
                         if (count($lote) >= $tamanhoLote) {
                             $flushLote();
@@ -381,7 +392,9 @@ $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $where = "WHERE e.codigo_componente LIKE ? OR e.descricao LIKE ?";
+    // Filtra o COMPONENTE inteiro (todas as linhas dele), não só as linhas cuja
+    // descrição bate — senão o Total ficava parcial ao buscar por descrição.
+    $where = "WHERE e.codigo_componente IN (SELECT codigo_componente FROM estoque WHERE codigo_componente LIKE ? OR descricao LIKE ?)";
     $buscaLike = "%$busca%";
     $params = [$buscaLike, $buscaLike];
     $tipos = 'ss';
@@ -443,6 +456,48 @@ function montarSqlComponentes(string $where): string
             GROUP BY e.codigo_componente";
 }
 
+// Demanda PENDENTE por componente: EDIs ainda NÃO atendidos × consumo da BOM.
+// Mesma explosão usada em edi.php ao marcar Atendido: casa pelo MATERIAL do
+// EDI e só considera linhas da BOM com MRP <> 'N'. Os EDIs já atendidos NÃO
+// entram aqui — eles já foram baixados do estoque (linhas 'demanda_edi', na
+// coluna "Sem planta"), então entrar de novo seria descontar duas vezes.
+// Se a BOM tiver linhas repetidas do mesmo componente no mesmo material,
+// usa o maior consumo (não soma as repetições).
+function demandaPendentePorComponente(mysqli $conn, array $codigos): array
+{
+    $codigosTrim = array_values(array_unique(array_filter(array_map(fn($c) => trim((string) $c), $codigos), fn($c) => $c !== '')));
+    if (empty($codigosTrim)) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($codigosTrim), '?'));
+    $stmt = mysqli_prepare($conn, "
+        SELECT b.codigo_componente,
+               SUM(COALESCE(CAST(e.quantidade AS DECIMAL(18,4)), 0) * b.consumo) AS demanda
+        FROM edi e
+        JOIN (
+            SELECT TRIM(material) AS material,
+                   TRIM(codigo_componente) AS codigo_componente,
+                   MAX(COALESCE(CAST(NULLIF(REPLACE(TRIM(consumo), ',', '.'), '') AS DECIMAL(18,6)), 0)) AS consumo
+            FROM bomnova
+            WHERE (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
+              AND TRIM(codigo_componente) IN ($placeholders)
+            GROUP BY TRIM(material), TRIM(codigo_componente)
+        ) b ON b.material = TRIM(e.material)
+        WHERE (e.atendido = 0 OR e.atendido IS NULL)
+          AND b.consumo > 0
+        GROUP BY b.codigo_componente
+    ");
+    mysqli_stmt_bind_param($stmt, str_repeat('s', count($codigosTrim)), ...$codigosTrim);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $mapa = [];
+    while ($linha = mysqli_fetch_assoc($res)) {
+        $mapa[$linha['codigo_componente']] = (float) $linha['demanda'];
+    }
+    mysqli_stmt_close($stmt);
+    return $mapa;
+}
+
 function statusMrp(?int $totalLinhas, ?int $temAtivo): array
 {
     if ($totalLinhas === null) {
@@ -491,24 +546,9 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $porPlantaExport[$linha['codigo_componente']][$linha['planta']] = (float) $linha['valor'];
         }
 
-        // Demanda acumulada (total já subtraído do estoque por EDIs marcados Atendido,
-        // via explosão da BOM) — soma o valor absoluto das linhas de saída geradas por
-        // esse processo, identificadas por origem_edi_id.
-        // Filtra especificamente origem = 'demanda_edi' (não apenas origem_edi_id IS NOT NULL):
-        // ao reabrir um EDI, a reversão INSERE uma linha de compensação separada
-        // (origem = 'reversao_edi'), sem apagar nem alterar a linha de demanda original.
-        // Assim esse total é sempre o acumulado histórico já subtraído, e nunca diminui.
-        $stmtDemandaExport = mysqli_prepare($conn, "
-            SELECT codigo_componente, SUM(ABS(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0))) AS demanda
-            FROM estoque
-            WHERE origem = 'demanda_edi' AND codigo_componente IN ($placeholders)
-            GROUP BY codigo_componente
-        ");
-        mysqli_stmt_bind_param($stmtDemandaExport, $tiposCodigos, ...$codigos);
-        mysqli_stmt_execute($stmtDemandaExport);
-        $resDemandaExport = mysqli_stmt_get_result($stmtDemandaExport);
-        while ($linha = mysqli_fetch_assoc($resDemandaExport)) {
-            $demandaExport[$linha['codigo_componente']] = (float) $linha['demanda'];
+        $demandaPendenteExport = demandaPendentePorComponente($conn, $codigos);
+        foreach ($codigos as $cod) {
+            $demandaExport[$cod] = $demandaPendenteExport[trim((string) $cod)] ?? 0.0;
         }
     }
 
@@ -520,8 +560,8 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     $cabecalhoCsv = ['Componente', 'Descrição'];
     foreach ($plantas as $p) { $cabecalhoCsv[] = $p; }
     if ($temSemPlanta) { $cabecalhoCsv[] = 'Sem planta'; }
-    $cabecalhoCsv[] = 'Total';
     $cabecalhoCsv[] = 'Demanda';
+    $cabecalhoCsv[] = 'Total';
     $cabecalhoCsv[] = 'MRP';
     fputcsv($saida, $cabecalhoCsv, ';', '"', '');
 
@@ -540,8 +580,9 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $valorSemPlanta = $porPlantaExport[$codigo][''] ?? null;
             $linhaCsv[] = $valorSemPlanta !== null ? number_format($valorSemPlanta, 2, ',', '') : '';
         }
-        $linhaCsv[] = number_format((float) $linha['total'], 2, ',', '');
-        $linhaCsv[] = number_format($demandaExport[$codigo] ?? 0.0, 2, ',', '');
+        $demandaCsv = $demandaExport[$codigo] ?? 0.0;
+        $linhaCsv[] = number_format($demandaCsv, 2, ',', '');
+        $linhaCsv[] = number_format((float) $linha['total'] - $demandaCsv, 2, ',', '');
         $linhaCsv[] = $mrpTexto;
         fputcsv($saida, $linhaCsv, ';', '"', '');
     }
@@ -566,10 +607,10 @@ while ($row = mysqli_fetch_assoc($result)) {
 
 // Busca o detalhamento por planta só dos componentes desta página
 $porPlanta = [];
-// Demanda acumulada (total já subtraído do estoque por EDIs marcados Atendido, via
-// explosão da BOM: quantidade do EDI × consumo de cada componente) — mostrada aqui
-// só como referência (não é editável e não entra na conta do Total, que já reflete
-// o saldo líquido real).
+// Demanda = EDIs ainda NÃO atendidos × consumo da BOM (ver
+// demandaPendentePorComponente). Total da tela = estoque (plantas + sem planta)
+// − Demanda. Quando o EDI é marcado Atendido, a quantidade sai da Demanda e
+// entra como baixa no estoque ("Sem planta") — o Total não muda.
 $demandaPorComponente = [];
 if (!empty($componentes)) {
     $codigos = array_keys($componentes);
@@ -589,19 +630,9 @@ if (!empty($componentes)) {
         $porPlanta[$linha['codigo_componente']][$linha['planta']] = (float) $linha['valor'];
     }
 
-    // Mesmo critério do export: só origem = 'demanda_edi' (acumulado histórico,
-    // nunca diminui — reabrir um EDI compensa com uma linha à parte, 'reversao_edi').
-    $stmtDemanda = mysqli_prepare($conn, "
-        SELECT codigo_componente, SUM(ABS(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0))) AS demanda
-        FROM estoque
-        WHERE origem = 'demanda_edi' AND codigo_componente IN ($placeholders)
-        GROUP BY codigo_componente
-    ");
-    mysqli_stmt_bind_param($stmtDemanda, $tiposCodigos, ...$codigos);
-    mysqli_stmt_execute($stmtDemanda);
-    $resDemanda = mysqli_stmt_get_result($stmtDemanda);
-    while ($linha = mysqli_fetch_assoc($resDemanda)) {
-        $demandaPorComponente[$linha['codigo_componente']] = (float) $linha['demanda'];
+    $demandaPendente = demandaPendentePorComponente($conn, $codigos);
+    foreach ($codigos as $cod) {
+        $demandaPorComponente[$cod] = $demandaPendente[trim((string) $cod)] ?? 0.0;
     }
 }
 ?>
@@ -699,7 +730,7 @@ if (!empty($componentes)) {
                         <code>codigo_componente, descricao, estoque</code><br><br>
                         <strong>Formato por planta</strong> (uma coluna de estoque por planta, como no Excel):<br>
                         <code>codigo_componente, descricao, estoque, 2401, 2403, ...</code><br>
-                        Qualquer coluna que não seja <code>codigo_componente</code>, <code>descricao</code> ou <code>estoque</code> é tratada como uma planta. A coluna <code>estoque</code> (total) não é gravada nesse formato — o sistema soma sozinho o valor de todas as plantas.<br><br>
+                        Qualquer coluna que não seja <code>codigo_componente</code>, <code>descricao</code> ou <code>estoque</code> é tratada como uma planta — exceto <code>Total</code>, <code>Demanda</code> e <code>MRP</code> (ignoradas) e <code>Sem planta</code> (estoque sem planta). Assim o próprio CSV exportado por esta tela pode ser reimportado. A coluna <code>estoque</code> (total) não é gravada nesse formato — o sistema soma sozinho o valor de todas as plantas.<br><br>
                         Números aceitam formato "1234.56" ou "1.234,56". Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
@@ -730,10 +761,10 @@ if (!empty($componentes)) {
                                 <th class="text-end">Estoque <?php echo h($p); ?></th>
                             <?php endforeach; ?>
                             <?php if ($temSemPlanta): ?>
-                                <th class="text-end">Sem planta</th>
+                                <th class="text-end" title="Linhas sem planta: baixas de EDIs já atendidos (negativas), reversões de EDIs reabertos e ajustes manuais.">Sem planta</th>
                             <?php endif; ?>
-                            <th class="text-end col-total">Total</th>
-                            <th class="text-end" title="Total acumulado já subtraído do estoque por EDIs marcados Atendido (quantidade × consumo da BOM). É histórico: não diminui se um EDI for reaberto.">Demanda</th>
+                            <th class="text-end" title="EDIs ainda não atendidos × consumo do componente na BOM (ex.: EDI de 100 tanques com consumo 2 = 200). Quando o EDI é marcado Atendido, sai daqui e vira baixa em &quot;Sem planta&quot;.">Demanda</th>
+                            <th class="text-end col-total" title="Estoque das plantas + Sem planta − Demanda">Total</th>
                             <th>MRP</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
@@ -761,14 +792,14 @@ if (!empty($componentes)) {
 
                                     <?php foreach ($plantas as $p): ?>
                                         <?php $valorPlanta = $porPlanta[$codigo][$p] ?? 0.0; ?>
-                                        <td class="text-end celula-editavel" data-id="<?php echo h($codigo); ?>" data-campo="<?php echo h($p); ?>" data-valor-bruto="<?php echo number_format($valorPlanta, 2, ',', ''); ?>" title="Duplo clique para editar"><?php echo isset($porPlanta[$codigo][$p]) ? number_format($valorPlanta, 2, ',', '.') : '—'; ?></td>
+                                        <td class="text-end celula-editavel js-parcela" data-id="<?php echo h($codigo); ?>" data-campo="<?php echo h($p); ?>" data-valor-bruto="<?php echo number_format($valorPlanta, 2, ',', ''); ?>" title="Duplo clique para editar"><?php echo isset($porPlanta[$codigo][$p]) ? number_format($valorPlanta, 2, ',', '.') : '—'; ?></td>
                                     <?php endforeach; ?>
                                     <?php if ($temSemPlanta): ?>
                                         <?php $valorSemPlanta = $porPlanta[$codigo][''] ?? 0.0; ?>
-                                        <td class="text-end celula-editavel" data-id="<?php echo h($codigo); ?>" data-campo="SEM_PLANTA" data-valor-bruto="<?php echo number_format($valorSemPlanta, 2, ',', ''); ?>" title="Duplo clique para editar"><?php echo isset($porPlanta[$codigo]['']) ? number_format($valorSemPlanta, 2, ',', '.') : '—'; ?></td>
+                                        <td class="text-end celula-editavel js-parcela" data-id="<?php echo h($codigo); ?>" data-campo="SEM_PLANTA" data-valor-bruto="<?php echo number_format($valorSemPlanta, 2, ',', ''); ?>" title="Duplo clique para editar"><?php echo isset($porPlanta[$codigo]['']) ? number_format($valorSemPlanta, 2, ',', '.') : '—'; ?></td>
                                     <?php endif; ?>
-                                    <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
-                                    <td class="text-end text-muted"><?php echo $demandaLinha > 0 ? number_format($demandaLinha, 2, ',', '.') : '—'; ?></td>
+                                    <td class="text-end text-muted js-demanda" data-demanda="<?php echo h((string) $demandaLinha); ?>"><?php echo $demandaLinha > 0 ? number_format($demandaLinha, 2, ',', '.') : '—'; ?></td>
+                                    <td class="text-end col-total"><?php echo number_format((float) $linha['total'] - $demandaLinha, 2, ',', '.'); ?></td>
                                     <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
                                     <td>
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir este componente do estoque? Remove TODAS as linhas dele (todas as plantas). Essa ação não pode ser desfeita.');">
@@ -812,7 +843,7 @@ if (!empty($componentes)) {
     <script src="assets/inline-edit.js"></script>
     <script>
         // O Total nunca é editado manualmente — ele é sempre a soma das colunas
-        // de estoque preenchidas na própria linha. Como a edição por duplo
+        // de estoque da própria linha menos a Demanda (EDIs pendentes). Como a edição por duplo
         // clique só atualiza a célula editada (sem recarregar a página), esse
         // listener recalcula o Total daquela linha na hora, assim que qualquer
         // planta é salva com sucesso.
@@ -823,14 +854,24 @@ if (!empty($componentes)) {
             const totalCel = linha.querySelector('.col-total');
             if (!totalCel) return;
 
-            let soma = 0;
-            linha.querySelectorAll('td.celula-editavel').forEach((celula) => {
-                const bruto = (celula.dataset.valorBruto || '0').replace(',', '.');
-                const numero = parseFloat(bruto);
-                if (!isNaN(numero)) {
-                    soma += numero;
+            // Aceita "1234,56", "1.234,56" e "1234.56" (valor como foi digitado)
+            function paraNumero(texto) {
+                texto = String(texto || '0').trim();
+                if (texto.includes(',')) {
+                    texto = texto.replace(/\./g, '').replace(',', '.');
                 }
+                const n = parseFloat(texto);
+                return isNaN(n) ? 0 : n;
+            }
+
+            let soma = 0;
+            linha.querySelectorAll('td.js-parcela').forEach((celula) => {
+                soma += paraNumero(celula.dataset.valorBruto);
             });
+            const celDemanda = linha.querySelector('td.js-demanda');
+            if (celDemanda) {
+                soma -= parseFloat(celDemanda.dataset.demanda || '0') || 0;
+            }
 
             totalCel.textContent = soma.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         });
