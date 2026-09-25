@@ -497,6 +497,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     exit;
 }
 
+// ---------- Sincronizar Net Price / Moeda a partir da Programação ----------
+// Para cada componente, pega na Programação a linha com Preço preenchido (> 0)
+// e a data MAIS FUTURA (o pedido mais distante vale — ex.: hoje 0,05, mas há
+// pedido pra jan/2027 com outro preço -> usa o de jan/2027). Empate na mesma
+// data: vale a linha lançada por último. O Preço da Programação é NET (sem
+// impostos), então vai direto pro Net Price; a Moeda vem junto (vazia = BRL).
+// Atualiza TODAS as linhas da BOM daquele componente. Componente sem preço na
+// Programação não é tocado (mantém o Net Price digitado à mão).
+$resultadoSyncPreco = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_precos_programacao') {
+    exigirComprador();
+    $origemPrecos = "
+        SELECT comp, preco, moeda, data FROM (
+            SELECT TRIM(codigo_componente) AS comp,
+                   ROUND(preco, 4) AS preco,
+                   COALESCE(NULLIF(UPPER(TRIM(moeda)), ''), 'BRL') AS moeda,
+                   data,
+                   ROW_NUMBER() OVER (PARTITION BY TRIM(codigo_componente) ORDER BY data DESC, id DESC) AS ordem
+            FROM programacao
+            WHERE preco IS NOT NULL AND preco > 0
+              AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+        ) t WHERE ordem = 1
+    ";
+    try {
+        // Antes de gravar: lista o que vai mudar (pra mostrar no resumo)
+        $resMudancas = mysqli_query($conn, "
+            SELECT x.comp, x.preco, x.moeda, x.data,
+                   MAX(b.net_price) AS net_antigo, MAX(COALESCE(b.moeda, '')) AS moeda_antiga
+            FROM bomnova b
+            JOIN ($origemPrecos) x ON TRIM(b.codigo_componente) = x.comp
+            WHERE b.net_price IS NULL
+               OR CAST(b.net_price AS DECIMAL(20,4)) <> x.preco
+               OR COALESCE(UPPER(TRIM(b.moeda)), '') <> x.moeda
+            GROUP BY x.comp, x.preco, x.moeda, x.data
+            ORDER BY x.comp
+        ");
+        $mudancas = [];
+        while ($m = mysqli_fetch_assoc($resMudancas)) { $mudancas[] = $m; }
+
+        $resTotalComp = mysqli_query($conn, "
+            SELECT COUNT(DISTINCT x.comp) AS total
+            FROM bomnova b JOIN ($origemPrecos) x ON TRIM(b.codigo_componente) = x.comp
+        ");
+        $totalComponentesComPreco = (int) (mysqli_fetch_assoc($resTotalComp)['total'] ?? 0);
+
+        mysqli_query($conn, "
+            UPDATE bomnova b
+            JOIN ($origemPrecos) x ON TRIM(b.codigo_componente) = x.comp
+            SET b.net_price = x.preco, b.moeda = x.moeda
+        ");
+        $linhasBomAtualizadas = mysqli_affected_rows($conn);
+        mysqli_commit($conn);
+
+        $resultadoSyncPreco = [
+            'ok' => true,
+            'componentes' => $totalComponentesComPreco,
+            'linhas' => $linhasBomAtualizadas,
+            'mudancas' => $mudancas,
+        ];
+    } catch (Throwable $erroSyncPreco) {
+        @mysqli_rollback($conn);
+        $resultadoSyncPreco = ['ok' => false, 'erro' => $erroSyncPreco->getMessage()];
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -909,6 +974,46 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </small>
                 </div>
             </details>
+        </div>
+
+        <div class="card p-3 mb-4">
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <form method="POST" class="m-0" onsubmit="return confirm('Puxar da Programação o preço do pedido mais futuro de cada componente e gravar no Net Price e na Moeda da BOM? Componentes sem preço na Programação não são alterados.');">
+                    <input type="hidden" name="acao" value="sincronizar_precos_programacao">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar preços da Programação</button>
+                </form>
+                <small class="text-muted">Net Price e Moeda = preço (net) do pedido com a <strong>data mais futura</strong> na Programação. Preço vazio ou 0 é ignorado.</small>
+            </div>
+            <?php if ($resultadoSyncPreco !== null): ?>
+                <?php if ($resultadoSyncPreco['ok']): ?>
+                    <div class="alert alert-success py-2 mt-3 mb-0">
+                        ✅ <?php echo (int) $resultadoSyncPreco['componentes']; ?> componente(s) com preço na Programação conferido(s) —
+                        <?php echo count($resultadoSyncPreco['mudancas']); ?> com valor novo
+                        (<?php echo (int) $resultadoSyncPreco['linhas']; ?> linha(s) da BOM alterada(s)).
+                        <?php if (!empty($resultadoSyncPreco['mudancas'])): ?>
+                            <details class="mt-2">
+                                <summary>Ver o que mudou</summary>
+                                <table class="table table-sm mt-2 mb-0">
+                                    <thead><tr><th>Componente</th><th class="text-end">Net Price antes</th><th class="text-end">Net Price agora</th><th>Moeda</th><th>Pedido de</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach ($resultadoSyncPreco['mudancas'] as $m): ?>
+                                            <tr>
+                                                <td><?php echo htmlspecialchars($m['comp']); ?></td>
+                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao($m['net_antigo'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']) ?: '—'); ?></td>
+                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao((string) $m['preco'], BOMNOVA_CASAS_DECIMAIS['net_price'])); ?></td>
+                                                <td><?php echo htmlspecialchars(($m['moeda_antiga'] !== '' && $m['moeda_antiga'] !== $m['moeda'] ? $m['moeda_antiga'] . ' → ' : '') . $m['moeda']); ?></td>
+                                                <td><?php echo $m['data'] ? htmlspecialchars((new DateTimeImmutable($m['data']))->format('d/m/Y')) : ''; ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </details>
+                        <?php endif; ?>
+                    </div>
+                <?php else: ?>
+                    <div class="alert alert-danger py-2 mt-3 mb-0">❌ Não foi possível sincronizar: <?php echo htmlspecialchars($resultadoSyncPreco['erro']); ?></div>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
 
         <div class="card p-3 mb-4">
