@@ -64,6 +64,17 @@ function parseNumeroBomnovaTax(string $valor): ?float
 // Impostos em branco contam como 0%. Se o denominador do gross-up zerar (ou ficar
 // negativo/zero), a divisão não faz sentido, então também retorna null nesse caso
 // extremo.
+// Identificador interno da linha no TiDB (_tidb_rowid). A BOM não tem coluna
+// id, e identificar a linha só pela combinação dos campos falha quando existem
+// linhas repetidas (mesmo componente, projeto, consumo...): o UPDATE/DELETE
+// "LIMIT 1" podia cair na linha errada — e, se ela já tinha o valor digitado,
+// dava "Não achei essa linha exata". Com o rowid, cada linha é única.
+// Vem do front como orig_rid (data-extra das células e inputs dos botões).
+function ridLinhaBomnova(): int
+{
+    return (int) ($_POST['orig_rid'] ?? 0);
+}
+
 // Nome de coluna do CSV "normalizado": minúsculo, sem acento e só letras/números.
 // Ex.: "Net Price" / "NET_PRICE" / "net-price" -> "netprice"; "IPI %" -> "ipi";
 // "Descrição" -> "descricao"; "U.M." -> "um".
@@ -235,11 +246,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     }
 
     $condicoes = array_map(fn($c) => "COALESCE($c, '') = ?", $camposCompostos);
+    $ridLinha = ridLinhaBomnova();
+    $valoresChave = $valoresOriginais;
+    if ($ridLinha > 0) {
+        $condicoes = ['_tidb_rowid = ?'];
+        $valoresChave = [(string) $ridLinha];
+    }
     $sqlEditar = "UPDATE bomnova SET $campo = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtEditar = mysqli_prepare($conn, $sqlEditar);
-    $tiposEditar = str_repeat('s', 1 + count($camposCompostos));
-    $parametrosEditar = array_merge([$valorParaGravar], $valoresOriginais);
+    $tiposEditar = str_repeat('s', 1 + count($valoresChave));
+    $parametrosEditar = array_merge([$valorParaGravar], $valoresChave);
     mysqli_stmt_bind_param($stmtEditar, $tiposEditar, ...$parametrosEditar);
     try {
         mysqli_stmt_execute($stmtEditar);
@@ -252,14 +269,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     mysqli_stmt_close($stmtEditar);
 
     if ($linhasAfetadas === 0) {
-        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
-        exit;
+        // 0 linhas alteradas também acontece quando o valor já era esse (ex.:
+        // digitou "18" num campo que já tinha 18). Só é erro se a linha não existir.
+        $stmtExiste = mysqli_prepare($conn, "SELECT 1 FROM bomnova WHERE " . implode(' AND ', $condicoes) . " LIMIT 1");
+        mysqli_stmt_bind_param($stmtExiste, str_repeat('s', count($valoresChave)), ...$valoresChave);
+        mysqli_stmt_execute($stmtExiste);
+        $linhaExiste = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtExiste)) !== null;
+        mysqli_stmt_close($stmtExiste);
+        if (!$linhaExiste) {
+            echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha exata (os dados podem ter mudado). Recarregue a página e tente de novo.']);
+            exit;
+        }
     }
 
     // Consumo faz parte da "chave" da linha: devolve o valor EXATAMENTE como o
     // banco guardou (ex.: 1.5 pode virar "1.5000" numa coluna decimal), pra tela
     // usar esse mesmo texto nas próximas edições/cliques da linha.
-    if ($campo === 'consumo' && $valorParaGravar !== null) {
+    if ($campo === 'consumo' && $valorParaGravar !== null && $ridLinha > 0) {
+        $stmtRelido = mysqli_prepare($conn, "SELECT consumo FROM bomnova WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtRelido, 'i', $ridLinha);
+        mysqli_stmt_execute($stmtRelido);
+        $consumoRelido = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtRelido))['consumo'] ?? null;
+        mysqli_stmt_close($stmtRelido);
+        if ($consumoRelido !== null) {
+            $valorParaExibir = (string) $consumoRelido;
+        }
+    } elseif ($campo === 'consumo' && $valorParaGravar !== null) {
         $condRelida = [];
         $valoresRelidos = [];
         foreach ($camposCompostos as $i => $c) {
@@ -307,11 +342,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     $novoMrp = ($mrpAtual === 'N') ? 'S' : 'N';
     $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
 
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
     $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
-    $tiposToggle = str_repeat('s', 2 + count($campos));
+    $tiposToggle = str_repeat('s', 2 + count($valoresOriginais));
     $parametrosToggle = array_merge([$novoMrp, $novoPlanejamento], $valoresOriginais);
     mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
     mysqli_stmt_execute($stmtToggle);
@@ -357,11 +392,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     }
 
     $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
     $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
-    $tiposToggle = str_repeat('s', 1 + count($campos));
+    $tiposToggle = str_repeat('s', 1 + count($valoresOriginais));
     $parametrosToggle = array_merge([$novoPlanejamentoToggle], $valoresOriginais);
     mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
     mysqli_stmt_execute($stmtToggle);
@@ -403,10 +438,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     }
 
     $condicoesExcluir = array_map(fn($campo) => "COALESCE($campo, '') = ?", $camposExcluir);
+    if (ridLinhaBomnova() > 0) {
+        $condicoesExcluir = ['_tidb_rowid = ?'];
+        $valoresOriginaisExcluir = [(string) ridLinhaBomnova()];
+    }
     $sqlExcluirLinha = "DELETE FROM bomnova WHERE " . implode(' AND ', $condicoesExcluir) . " LIMIT 1";
 
     $stmtExcluirLinha = mysqli_prepare($conn, $sqlExcluirLinha);
-    $tiposExcluirLinha = str_repeat('s', count($camposExcluir));
+    $tiposExcluirLinha = str_repeat('s', count($valoresOriginaisExcluir));
     mysqli_stmt_bind_param($stmtExcluirLinha, $tiposExcluirLinha, ...$valoresOriginaisExcluir);
     mysqli_stmt_execute($stmtExcluirLinha);
     $linhasAfetadasExcluir = mysqli_stmt_affected_rows($stmtExcluirLinha);
@@ -438,11 +477,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     // com o botão de Planejamento).
     $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
 
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
     $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
-    $tiposToggle = str_repeat('s', 2 + count($campos));
+    $tiposToggle = str_repeat('s', 2 + count($valoresOriginais));
     $parametrosToggle = array_merge([$novoMrp, $novoPlanejamento], $valoresOriginais);
     mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
     mysqli_stmt_execute($stmtToggle);
@@ -476,11 +515,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
         $flag = 'planejamento_bloqueado';
     } else {
         $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
-        $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos);
+        $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
         $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
 
         $stmtToggle = mysqli_prepare($conn, $sqlToggle);
-        $tiposToggle = str_repeat('s', 1 + count($campos));
+        $tiposToggle = str_repeat('s', 1 + count($valoresOriginais));
         $parametrosToggle = array_merge([$novoPlanejamentoToggle], $valoresOriginais);
         mysqli_stmt_bind_param($stmtToggle, $tiposToggle, ...$parametrosToggle);
         mysqli_stmt_execute($stmtToggle);
@@ -825,7 +864,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
+$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -1095,6 +1134,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 ?>
                                 <?php
                                     $contextoLinha = json_encode([
+                                        'rid' => (string) ($row['rid'] ?? ''),
                                         'planta' => (string) ($row['planta'] ?? ''),
                                         'projeto' => (string) ($row['projeto'] ?? ''),
                                         'material' => (string) ($row['material'] ?? ''),
@@ -1150,6 +1190,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
@@ -1183,6 +1224,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
@@ -1205,6 +1247,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
                                             <input type="hidden" name="orig_material" value="<?php echo htmlspecialchars($row['material'] ?? ''); ?>">
