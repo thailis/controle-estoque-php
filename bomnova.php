@@ -80,7 +80,9 @@ function ridLinhaBomnova(): int
 function lerEstadoMrpBomnova(mysqli $conn, array $condicoes, array $valores): ?array
 {
     $stmt = mysqli_prepare($conn, "SELECT mrp, planejamento FROM bomnova WHERE " . implode(' AND ', $condicoes) . " LIMIT 1");
-    mysqli_stmt_bind_param($stmt, str_repeat('s', count($valores)), ...$valores);
+    if (!empty($valores)) {
+        mysqli_stmt_bind_param($stmt, str_repeat('s', count($valores)), ...$valores);
+    }
     mysqli_stmt_execute($stmt);
     $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
@@ -268,8 +270,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $ridLinha = ridLinhaBomnova();
     $valoresChave = $valoresOriginais;
     if ($ridLinha > 0) {
-        $condicoes = ['_tidb_rowid = ?'];
-        $valoresChave = [(string) $ridLinha];
+        // id vai escrito direto no SQL (já é inteiro — seguro). Passado como
+        // parâmetro (?), o TiDB não achava a linha.
+        $condicoes = ['_tidb_rowid = ' . (int) $ridLinha];
+        $valoresChave = [];
     }
     $sqlEditar = "UPDATE bomnova SET $campo = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
@@ -291,7 +295,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         // 0 linhas alteradas também acontece quando o valor já era esse (ex.:
         // digitou "18" num campo que já tinha 18). Só é erro se a linha não existir.
         $stmtExiste = mysqli_prepare($conn, "SELECT 1 FROM bomnova WHERE " . implode(' AND ', $condicoes) . " LIMIT 1");
-        mysqli_stmt_bind_param($stmtExiste, str_repeat('s', count($valoresChave)), ...$valoresChave);
+        if (!empty($valoresChave)) {
+            mysqli_stmt_bind_param($stmtExiste, str_repeat('s', count($valoresChave)), ...$valoresChave);
+        }
         mysqli_stmt_execute($stmtExiste);
         $linhaExiste = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtExiste)) !== null;
         mysqli_stmt_close($stmtExiste);
@@ -305,8 +311,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     // banco guardou (ex.: 1.5 pode virar "1.5000" numa coluna decimal), pra tela
     // usar esse mesmo texto nas próximas edições/cliques da linha.
     if ($campo === 'consumo' && $valorParaGravar !== null && $ridLinha > 0) {
-        $stmtRelido = mysqli_prepare($conn, "SELECT consumo FROM bomnova WHERE _tidb_rowid = ?");
-        mysqli_stmt_bind_param($stmtRelido, 'i', $ridLinha);
+        $stmtRelido = mysqli_prepare($conn, "SELECT consumo FROM bomnova WHERE _tidb_rowid = " . (int) $ridLinha);
         mysqli_stmt_execute($stmtRelido);
         $consumoRelido = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtRelido))['consumo'] ?? null;
         mysqli_stmt_close($stmtRelido);
@@ -361,7 +366,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     $novoMrp = ($mrpAtual === 'N') ? 'S' : 'N';
     $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
 
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ' . ridLinhaBomnova()]; $valoresOriginais = []; }
     $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
@@ -416,7 +421,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_to
     }
 
     $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ' . ridLinhaBomnova()]; $valoresOriginais = []; }
     $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE UPPER(TRIM(COALESCE(mrp, 'S'))) <> 'N' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
@@ -464,14 +469,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
 
     $condicoesExcluir = array_map(fn($campo) => "COALESCE($campo, '') = ?", $camposExcluir);
     if (ridLinhaBomnova() > 0) {
-        $condicoesExcluir = ['_tidb_rowid = ?'];
-        $valoresOriginaisExcluir = [(string) ridLinhaBomnova()];
+        $condicoesExcluir = ['_tidb_rowid = ' . ridLinhaBomnova()];
+        $valoresOriginaisExcluir = [];
     }
     $sqlExcluirLinha = "DELETE FROM bomnova WHERE " . implode(' AND ', $condicoesExcluir) . " LIMIT 1";
 
     $stmtExcluirLinha = mysqli_prepare($conn, $sqlExcluirLinha);
     $tiposExcluirLinha = str_repeat('s', count($valoresOriginaisExcluir));
-    mysqli_stmt_bind_param($stmtExcluirLinha, $tiposExcluirLinha, ...$valoresOriginaisExcluir);
+    if (!empty($valoresOriginaisExcluir)) {
+        mysqli_stmt_bind_param($stmtExcluirLinha, $tiposExcluirLinha, ...$valoresOriginaisExcluir);
+    }
     mysqli_stmt_execute($stmtExcluirLinha);
     $linhasAfetadasExcluir = mysqli_stmt_affected_rows($stmtExcluirLinha);
     mysqli_stmt_close($stmtExcluirLinha);
@@ -502,7 +509,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     // com o botão de Planejamento).
     $novoPlanejamento = ($novoMrp === 'N') ? 'N' : 'S';
 
-    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
+    $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ' . ridLinhaBomnova()]; $valoresOriginais = []; }
     $sqlToggle = "UPDATE bomnova SET mrp = ?, planejamento = ? WHERE " . implode(' AND ', $condicoes) . " LIMIT 1";
 
     $stmtToggle = mysqli_prepare($conn, $sqlToggle);
@@ -540,7 +547,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
         $flag = 'planejamento_bloqueado';
     } else {
         $novoPlanejamentoToggle = ($planejamentoAtual === 'N') ? 'S' : 'N';
-        $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ?']; $valoresOriginais = [(string) ridLinhaBomnova()]; }
+        $condicoes = array_map(fn($campo) => "COALESCE($campo, '') = ?", $campos); if (ridLinhaBomnova() > 0) { $condicoes = ['_tidb_rowid = ' . ridLinhaBomnova()]; $valoresOriginais = []; }
         $sqlToggle = "UPDATE bomnova SET planejamento = ? WHERE mrp = 'S' AND " . implode(' AND ', $condicoes) . " LIMIT 1";
 
         $stmtToggle = mysqli_prepare($conn, $sqlToggle);
