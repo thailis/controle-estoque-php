@@ -633,6 +633,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     }
 }
 
+// ---------- Inclusão manual de uma linha na BOM (além do CSV) ----------
+// Preenche todas as colunas da BOM pela tela. Só o Componente é obrigatório.
+// Números aceitam "1,5" ou "1.5" (ponto sozinho = decimal). Moeda vazia = BRL.
+// MRP padrão S; MRP = N força Planejamento = N (mesma regra do resto da tela).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual_bomnova') {
+    exigirComprador();
+    $txt = function (string $campo): ?string {
+        $v = trim((string) ($_POST[$campo] ?? ''));
+        return $v !== '' ? $v : null;
+    };
+    $num = function (string $campo, ?bool &$invalido) {
+        $v = trim((string) ($_POST[$campo] ?? ''));
+        if ($v === '') { return null; }
+        $n = parseNumeroBomnovaTax($v);
+        if ($n === null) { $invalido = true; return null; }
+        return rtrim(rtrim(number_format($n, 6, '.', ''), '0'), '.');
+    };
+
+    $invalido = false;
+    $componenteNovo = $txt('m_codigo_componente');
+    $consumoNovo = $num('m_consumo', $invalido);
+    $netNovo = $num('m_net_price', $invalido);
+    $ipiNovo = $num('m_ipi', $invalido);
+    $pisNovo = $num('m_pis', $invalido);
+    $cofinsNovo = $num('m_cofins', $invalido);
+    $icmsNovo = $num('m_icms', $invalido);
+    $moedaNovo = strtoupper((string) ($txt('m_moeda') ?? 'BRL'));
+    $mrpNovo = strtoupper((string) ($_POST['m_mrp'] ?? 'S')) === 'N' ? 'N' : 'S';
+    $planNovo = $mrpNovo === 'N' ? 'N' : (strtoupper((string) ($_POST['m_planejamento'] ?? 'S')) === 'N' ? 'N' : 'S');
+
+    $flagInserir = 'inserir_erro=1';
+    if ($componenteNovo !== null && !$invalido) {
+        $stmtNovo = mysqli_prepare($conn, "
+            INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao,
+                                 consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $valoresNovo = [
+            $txt('m_planta'), $txt('m_projeto'), $txt('m_material'), $txt('m_tipo'), $txt('m_fornecedor'),
+            $componenteNovo, $txt('m_pn'), $txt('m_modelo'), $txt('m_descricao'),
+            $consumoNovo, $txt('m_um'), $netNovo, $ipiNovo, $pisNovo, $cofinsNovo, $icmsNovo,
+            $moedaNovo, $mrpNovo, $planNovo,
+        ];
+        mysqli_stmt_bind_param($stmtNovo, str_repeat('s', count($valoresNovo)), ...$valoresNovo);
+        try {
+            mysqli_stmt_execute($stmtNovo);
+            $flagInserir = 'inserido=1';
+        } catch (Throwable $erroNovo) {
+            error_log('Erro ao inserir linha manual na BOM: ' . $erroNovo->getMessage());
+        }
+        mysqli_stmt_close($stmtNovo);
+    }
+
+    // Volta filtrando pelo componente recém-incluído, pra conferir na hora
+    header('Location: bomnova.php?busca=' . urlencode((string) $componenteNovo) . '&' . $flagInserir);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
@@ -837,6 +895,32 @@ if ($resProjetosDisp) {
         $projetosDisponiveis[] = $linhaProjeto['projeto'];
     }
 }
+// Sugestões pra inclusão manual: plantas, materiais, tipos e U.M. já usados,
+// e um mapa material -> (planta, projeto, tipo, modelo) pra pré-preencher.
+$plantasDisponiveis = [];
+$tiposDisponiveis = [];
+$unidadesDisponiveis = [];
+$dadosPorMaterial = [];
+$resSugestoes = mysqli_query($conn, "
+    SELECT TRIM(material) AS material, MAX(TRIM(planta)) AS planta, MAX(TRIM(projeto)) AS projeto,
+           MAX(TRIM(tipo)) AS tipo, MAX(TRIM(modelo)) AS modelo
+    FROM bomnova
+    WHERE material IS NOT NULL AND TRIM(material) <> ''
+    GROUP BY TRIM(material)
+    ORDER BY TRIM(material)
+");
+if ($resSugestoes) {
+    while ($l = mysqli_fetch_assoc($resSugestoes)) {
+        $dadosPorMaterial[$l['material']] = ['planta' => $l['planta'] ?? '', 'projeto' => $l['projeto'] ?? '', 'tipo' => $l['tipo'] ?? '', 'modelo' => $l['modelo'] ?? ''];
+    }
+}
+foreach ([['planta', 'plantasDisponiveis'], ['tipo', 'tiposDisponiveis'], ['um', 'unidadesDisponiveis']] as [$col, $var]) {
+    $res = mysqli_query($conn, "SELECT DISTINCT TRIM($col) AS v FROM bomnova WHERE $col IS NOT NULL AND TRIM($col) <> '' ORDER BY v");
+    if ($res) {
+        while ($l = mysqli_fetch_assoc($res)) { ${$var}[] = $l['v']; }
+    }
+}
+
 $fornecedoresDisponiveis = [];
 $resFornecedoresDisp = mysqli_query($conn, "SELECT DISTINCT fornecedor FROM bomnova WHERE fornecedor IS NOT NULL AND fornecedor <> '' ORDER BY fornecedor");
 if ($resFornecedoresDisp) {
@@ -1015,12 +1099,82 @@ while ($row = mysqli_fetch_assoc($result)) {
                 ✅ Linha excluída do BOM.
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
             </div>
+        <?php elseif (isset($_GET['inserido'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ✅ Linha incluída na BOM (a lista abaixo já está filtrada por esse componente).
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['inserir_erro'])): ?>
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                ❌ Não foi possível incluir: o Componente é obrigatório e os campos numéricos (Consumo, Net Price, IPI, PIS, COFINS, ICMS) precisam ser números.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
         <?php elseif (isset($_GET['excluir_erro'])): ?>
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
                 ⚠️ Não encontrei essa linha exata pra excluir (os dados podem ter mudado desde que a página carregou — recarregue e tente de novo).
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
             </div>
         <?php endif; ?>
+
+        <div class="card p-3 mb-4">
+            <details <?php echo isset($_GET['inserir_erro']) ? 'open' : ''; ?>>
+                <summary>➕ Nova linha (inclusão manual)</summary>
+                <form method="POST" class="row g-2 align-items-end mt-3" id="form-inclusao-bom">
+                    <input type="hidden" name="acao" value="inserir_manual_bomnova">
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Material</label><input type="text" name="m_material" id="m_material" list="lista_bom_materiais" class="form-control form-control-sm" autocomplete="off"></div>
+                    <div class="col-6 col-md-1"><label class="form-label small mb-1">Planta</label><input type="text" name="m_planta" id="m_planta" list="lista_bom_plantas" class="form-control form-control-sm" autocomplete="off"></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Projeto</label><input type="text" name="m_projeto" id="m_projeto" list="lista_bom_projetos" class="form-control form-control-sm" autocomplete="off"></div>
+                    <div class="col-6 col-md-3"><label class="form-label small mb-1">Tipo</label><input type="text" name="m_tipo" id="m_tipo" list="lista_bom_tipos" class="form-control form-control-sm" autocomplete="off"></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Modelo</label><input type="text" name="m_modelo" id="m_modelo" class="form-control form-control-sm"></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Fornecedor</label><input type="text" name="m_fornecedor" list="lista_bom_fornecedores" class="form-control form-control-sm" autocomplete="off"></div>
+
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Componente *</label><input type="text" name="m_codigo_componente" class="form-control form-control-sm" required></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">PN</label><input type="text" name="m_pn" class="form-control form-control-sm"></div>
+                    <div class="col-12 col-md-4"><label class="form-label small mb-1">Descrição</label><input type="text" name="m_descricao" class="form-control form-control-sm"></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">Consumo</label><input type="text" name="m_consumo" class="form-control form-control-sm text-end" placeholder="1"></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">U.M.</label><input type="text" name="m_um" list="lista_bom_unidades" class="form-control form-control-sm" placeholder="PC"></div>
+                    <div class="col-4 col-md-2"><label class="form-label small mb-1">Net Price</label><input type="text" name="m_net_price" class="form-control form-control-sm text-end" placeholder="0,0000"></div>
+
+                    <div class="col-3 col-md-1"><label class="form-label small mb-1">IPI %</label><input type="text" name="m_ipi" class="form-control form-control-sm text-end"></div>
+                    <div class="col-3 col-md-1"><label class="form-label small mb-1">PIS %</label><input type="text" name="m_pis" class="form-control form-control-sm text-end" placeholder="1,65"></div>
+                    <div class="col-3 col-md-1"><label class="form-label small mb-1">COFINS %</label><input type="text" name="m_cofins" class="form-control form-control-sm text-end" placeholder="7,60"></div>
+                    <div class="col-3 col-md-1"><label class="form-label small mb-1">ICMS %</label><input type="text" name="m_icms" class="form-control form-control-sm text-end"></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">Moeda</label><input type="text" name="m_moeda" class="form-control form-control-sm" placeholder="BRL" maxlength="10" style="text-transform: uppercase;"></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">MRP</label><select name="m_mrp" id="m_mrp" class="form-select form-select-sm"><option value="S">S</option><option value="N">N</option></select></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">Plan</label><select name="m_planejamento" id="m_planejamento" class="form-select form-select-sm"><option value="S">S</option><option value="N">N</option></select></div>
+                    <div class="col-12 col-md-2"><button type="submit" class="btn btn-primary btn-sm w-100">Incluir na BOM</button></div>
+                </form>
+                <small class="text-muted d-block mt-2">Só o Componente é obrigatório. Ao escolher um Material já existente, Planta, Projeto, Tipo e Modelo são sugeridos (dá pra trocar). Moeda vazia = BRL; PIS/COFINS vazios seguem o padrão da tela. MRP = N força Plan = N.</small>
+                <datalist id="lista_bom_materiais"><?php foreach (array_keys($dadosPorMaterial) as $v): ?><option value="<?php echo htmlspecialchars((string) $v); ?>"><?php endforeach; ?></datalist>
+                <datalist id="lista_bom_plantas"><?php foreach ($plantasDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
+                <datalist id="lista_bom_projetos"><?php foreach ($projetosDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
+                <datalist id="lista_bom_tipos"><?php foreach ($tiposDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
+                <datalist id="lista_bom_fornecedores"><?php foreach ($fornecedoresDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
+                <datalist id="lista_bom_unidades"><?php foreach ($unidadesDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
+                <script>
+                    (function () {
+                        const dados = <?php echo json_encode($dadosPorMaterial, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+                        const material = document.getElementById('m_material');
+                        // Pré-preenche só campos vazios — nunca sobrescreve o que foi digitado
+                        material.addEventListener('change', function () {
+                            const d = dados[material.value.trim()];
+                            if (!d) return;
+                            [['m_planta', 'planta'], ['m_projeto', 'projeto'], ['m_tipo', 'tipo'], ['m_modelo', 'modelo']].forEach(function ([id, chave]) {
+                                const campo = document.getElementById(id);
+                                if (campo && campo.value.trim() === '' && d[chave]) campo.value = d[chave];
+                            });
+                        });
+                        const mrp = document.getElementById('m_mrp');
+                        const plan = document.getElementById('m_planejamento');
+                        mrp.addEventListener('change', function () {
+                            if (mrp.value === 'N') { plan.value = 'N'; plan.disabled = true; } else { plan.disabled = false; }
+                        });
+                        // select desabilitado não é enviado — reabilita antes de enviar (o servidor força N mesmo assim)
+                        document.getElementById('form-inclusao-bom').addEventListener('submit', function () { plan.disabled = false; });
+                    })();
+                </script>
+            </details>
+        </div>
 
         <div class="card p-3 mb-4">
             <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
