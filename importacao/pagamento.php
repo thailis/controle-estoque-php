@@ -39,8 +39,11 @@ function parseDataPagamento(string $valor): ?string
 
 function parseNumeroBrPagamento(string $valor): ?float
 {
-    $valor = trim($valor);
-    if ($valor === '') {
+    // Aceita valor com símbolo de moeda e espaços: "R$ 19.300,03", "US$ 1.234,56",
+    // "$ 99,90", "€ 10,00" — tira tudo que não for dígito, vírgula, ponto ou sinal.
+    $valor = preg_replace('/[^0-9,.\-]/u', '', $valor);
+    $valor = trim((string) $valor);
+    if ($valor === '' || $valor === '-') {
         return null;
     }
     if (str_contains($valor, ',')) {
