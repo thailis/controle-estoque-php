@@ -362,6 +362,12 @@ if ($filtroMes !== '') {
 
 $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 
+// Ordem: da data mais antiga (no topo) pra mais recente (no fim). Usa a data
+// escolhida no filtro "Data" (Prevista por padrão); se o embarque não tiver
+// essa data, usa a primeira que tiver (Prevista, ETA, ETD, Efetiva, Pickup).
+// Embarques sem nenhuma data vão pro final.
+$ordemData = "COALESCE(f.`$filtroMesBase`, f.prevista, f.eta, f.etd, f.efetiva, f.pickup)";
+
 // Total pra paginação
 $sqlTotal = "SELECT COUNT(*) AS total FROM follow f $where";
 $stmtTotal = mysqli_prepare($conn, $sqlTotal);
@@ -388,7 +394,7 @@ $sql = "
         (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo
     FROM follow f
     $where
-    ORDER BY f.criado_em DESC
+    ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
     LIMIT ? OFFSET ?
 ";
 $stmt = mysqli_prepare($conn, $sql);
