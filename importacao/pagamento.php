@@ -105,6 +105,153 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     }
 }
 
+// ---------- Importação CSV ----------
+// Uma linha do CSV = um pagamento. Só "processo" é obrigatório e precisa já
+// existir em Processos — Status, PO, Fornecedor, Moeda e Total vêm sempre do
+// processo (igual ao cadastro manual), nunca do CSV. Colunas aceitas (qualquer
+// ordem, com ou sem acento/maiúscula; o próprio "Exportar CSV" desta tela serve
+// de modelo): processo, cod_twin (Cod. Twin.), data_twin (Data),
+// numerario_inicial (Vencimento), valor_inicial (Valor), rb, oa e, opcional,
+// liquidacao_na / situacao (aberto | fechado/finalizado).
+// Linha idêntica já existente (mesmo processo + Cod. Twin + Vencimento + Valor)
+// é pulada, pra reimportar o mesmo arquivo não duplicar.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagamento'])) {
+    $arquivoCsv = $_FILES['arquivo_csv_pagamento'];
+    if ($arquivoCsv['error'] !== UPLOAD_ERR_OK) {
+        $mensagens[] = '❌ Erro no upload do arquivo.';
+    } elseif (($handle = fopen($arquivoCsv['tmp_name'], 'r')) === false) {
+        $mensagens[] = '❌ Não foi possível abrir o arquivo.';
+    } else {
+        $primeiraLinha = (string) fgets($handle);
+        rewind($handle);
+        $separador = substr_count($primeiraLinha, ';') > substr_count($primeiraLinha, ',') ? ';' : ',';
+        $cabecalho = fgetcsv($handle, 0, $separador, '"', '\\');
+        if ($cabecalho === false) {
+            $mensagens[] = '❌ Arquivo vazio ou inválido.';
+        } else {
+            $cabecalho[0] = preg_replace('/^\xEF\xBB\xBF/', '', (string) $cabecalho[0]);
+            // normaliza: minúsculo, sem acento, espaço/hífen -> "_", tira o resto
+            $cabecalhoNorm = array_map(function ($c) {
+                $n = normalizarTextoPagamento((string) $c);
+                $n = preg_replace('/[^a-z0-9_]/', '', $n);
+                return trim(preg_replace('/_+/', '_', $n), '_');
+            }, $cabecalho);
+            $apelidos = [
+                'processo' => ['processo'],
+                'cod_twin' => ['cod_twin', 'codtwin', 'cod_twin_', 'codigo_twin'],
+                'data_twin' => ['data_twin', 'data'],
+                'numerario_inicial' => ['numerario_inicial', 'vencimento'],
+                'valor_inicial' => ['valor_inicial', 'valor'],
+                'rb' => ['rb'],
+                'oa' => ['oa', 'oa_link'],
+                'liquidacao_na' => ['liquidacao_na', 'situacao', 'status_pagamento'],
+            ];
+            $idx = [];
+            foreach ($apelidos as $campo => $nomes) {
+                $idx[$campo] = null;
+                foreach ($nomes as $nome) {
+                    $pos = array_search($nome, $cabecalhoNorm, true);
+                    if ($pos !== false) { $idx[$campo] = $pos; break; }
+                }
+            }
+
+            if ($idx['processo'] === null) {
+                $mensagens[] = "❌ Não encontrei a coluna 'processo' no cabeçalho.";
+            } else {
+                $stmtProcCsv = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM processos WHERE processo = ? LIMIT 1");
+                $stmtDupCsv = mysqli_prepare($conn, "
+                    SELECT id FROM pagamento
+                    WHERE processo = ? AND COALESCE(cod_twin, '') = ? AND COALESCE(numerario_inicial, '') = ?
+                      AND COALESCE(valor_inicial, -999999999) = COALESCE(?, -999999999)
+                    LIMIT 1
+                ");
+                $stmtInsCsv = mysqli_prepare($conn, "
+                    INSERT INTO pagamento (processo, status, po, fornecedor, cod_twin, data_twin, moeda, total,
+                                           liquidacao_or, numerario_inicial, valor_inicial, liquidacao_na, rb, oa)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $pulados = 0;
+                $linhaNum = 1;
+                while (($linha = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
+                    $linhaNum++;
+                    if (count(array_filter($linha, fn($v) => trim((string) $v) !== '')) === 0) {
+                        continue;
+                    }
+                    $pegar = fn($campo) => $idx[$campo] !== null ? trim((string) ($linha[$idx[$campo]] ?? '')) : '';
+
+                    $processoCsv = $pegar('processo');
+                    if ($processoCsv === '') {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: processo vazio.";
+                        continue;
+                    }
+                    mysqli_stmt_bind_param($stmtProcCsv, 's', $processoCsv);
+                    mysqli_stmt_execute($stmtProcCsv);
+                    $proc = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProcCsv));
+                    if (!$proc) {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: processo \"$processoCsv\" não existe em Processos.";
+                        continue;
+                    }
+
+                    $dataTwinBruta = $pegar('data_twin');
+                    $vencBruto = $pegar('numerario_inicial');
+                    $valorBruto = $pegar('valor_inicial');
+                    $dataTwinCsv = $dataTwinBruta !== '' ? parseDataPagamento($dataTwinBruta) : null;
+                    $vencCsv = $vencBruto !== '' ? parseDataPagamento($vencBruto) : null;
+                    $valorCsv = $valorBruto !== '' ? parseNumeroBrPagamento($valorBruto) : null;
+                    if (($dataTwinBruta !== '' && $dataTwinCsv === null) || ($vencBruto !== '' && $vencCsv === null)) {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: data inválida (use dd/mm/aaaa).";
+                        continue;
+                    }
+                    if ($valorBruto !== '' && $valorCsv === null) {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: valor '$valorBruto' inválido.";
+                        continue;
+                    }
+                    $codTwinCsv = $pegar('cod_twin');
+
+                    // Já existe igual? pula (não duplica ao reimportar)
+                    $vencChave = (string) ($vencCsv ?? '');
+                    mysqli_stmt_bind_param($stmtDupCsv, 'sssd', $processoCsv, $codTwinCsv, $vencChave, $valorCsv);
+                    mysqli_stmt_execute($stmtDupCsv);
+                    if (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDupCsv))) {
+                        $pulados++;
+                        continue;
+                    }
+
+                    $situacao = normalizarTextoPagamento($pegar('liquidacao_na'));
+                    $liquidacao = in_array($situacao, ['fechado', 'finalizado', 'pago'], true) ? 'fechado' : 'aberto';
+                    $codTwinGravar = $codTwinCsv !== '' ? $codTwinCsv : null;
+                    $rbCsv = $pegar('rb') !== '' ? $pegar('rb') : null;
+                    $oaCsv = $pegar('oa') !== '' ? $pegar('oa') : null;
+                    $totalProc = $proc['total'] !== null ? (float) $proc['total'] : null;
+
+                    mysqli_stmt_bind_param(
+                        $stmtInsCsv, 'sssssssdssdsss',
+                        $processoCsv, $proc['status'], $proc['po'], $proc['fornecedor'], $codTwinGravar, $dataTwinCsv,
+                        $proc['moeda'], $totalProc, $liquidacao, $vencCsv, $valorCsv, $liquidacao, $rbCsv, $oaCsv
+                    );
+                    if (mysqli_stmt_execute($stmtInsCsv)) {
+                        $importados++;
+                    } else {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum: " . mysqli_stmt_error($stmtInsCsv);
+                    }
+                }
+                mysqli_stmt_close($stmtProcCsv);
+                mysqli_stmt_close($stmtDupCsv);
+                mysqli_stmt_close($stmtInsCsv);
+                $mensagens[] = "✅ Importação concluída: $importados pagamento(s) incluído(s)"
+                    . ($pulados > 0 ? ", $pulados já existente(s) pulado(s)" : '')
+                    . ", $erros erro(s).";
+            }
+        }
+        fclose($handle);
+    }
+}
+
 // ---------- Exclusão ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_pagamento') {
     $idExcluir = (int) ($_POST['id'] ?? 0);
@@ -478,6 +625,28 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                         <button type="submit" class="btn btn-primary w-100">Salvar</button>
                     </div>
                 </form>
+            </details>
+        </section>
+
+        <section class="filter-panel mb-4">
+            <details <?php echo isset($_FILES['arquivo_csv_pagamento']) ? 'open' : ''; ?>>
+                <summary class="fw-bold" style="cursor:pointer;">📥 Importar pagamentos (.csv)</summary>
+                <form method="POST" enctype="multipart/form-data" class="row g-3 mt-2 align-items-end">
+                    <div class="col-md-6">
+                        <label class="form-label">Arquivo CSV</label>
+                        <input type="file" name="arquivo_csv_pagamento" accept=".csv" class="form-control" required>
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-primary w-100">Importar</button>
+                    </div>
+                </form>
+                <small class="text-muted d-block mt-2">
+                    Colunas (qualquer ordem): <code>processo, cod_twin, data_twin, numerario_inicial, valor_inicial, rb, oa</code> —
+                    também aceita os nomes da tela: <code>Cod. Twin., Data, Vencimento, Valor, RB, OA</code>. Só <code>processo</code> é obrigatório
+                    e ele precisa existir em Processos (Status, PO, Fornecedor, Moeda e Total vêm de lá). Opcional: <code>situacao</code> (aberto ou finalizado).
+                    Datas em dd/mm/aaaa; valores como 1.234,56. Linha igual a uma já cadastrada (mesmo processo, Cod. Twin, Vencimento e Valor) é pulada.
+                    Separador vírgula ou ponto e vírgula. O "Exportar CSV" desta tela serve de modelo.
+                </small>
             </details>
         </section>
 

@@ -199,7 +199,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'todos');
     $condicaoFiltroVolta = (string) ($_POST['condicao_atual'] ?? 'todos');
-    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&excluido=1');
+    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&mes_base=' . urlencode((string) ($_POST['mes_base_atual'] ?? '')) . '&mes=' . urlencode((string) ($_POST['mes_atual'] ?? '')) . '&excluido=1');
     exit;
 }
 
@@ -313,6 +313,20 @@ $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'todos'; // todos | pendente | integrado
 $filtroCondicao = isset($_GET['condicao']) ? trim($_GET['condicao']) : 'todos'; // todos | em_tempo | atencao | atrasado
+// Filtro de Mês: escolhe qual data do embarque vale (Prevista por padrão) e o
+// mês (aaaa-mm). Só aceita as colunas da lista — nunca vem texto livre pro SQL.
+$datasParaMes = ['prevista' => 'Prevista', 'eta' => 'ETA', 'etd' => 'ETD', 'efetiva' => 'Efetiva', 'pickup' => 'Pickup'];
+$filtroMesBase = isset($_GET['mes_base']) && isset($datasParaMes[$_GET['mes_base']]) ? $_GET['mes_base'] : 'prevista';
+$filtroMes = isset($_GET['mes']) && preg_match('/^\d{4}-\d{2}$/', (string) $_GET['mes']) ? (string) $_GET['mes'] : '';
+
+// Meses que existem de verdade na data escolhida (mais recente primeiro)
+$mesesDisponiveis = [];
+$resMeses = mysqli_query($conn, "SELECT DISTINCT DATE_FORMAT(`$filtroMesBase`, '%Y-%m') AS mes FROM follow WHERE `$filtroMesBase` IS NOT NULL ORDER BY mes DESC");
+if ($resMeses) {
+    while ($l = mysqli_fetch_assoc($resMeses)) { $mesesDisponiveis[] = $l['mes']; }
+}
+$nomesMeses = ['01' => 'Jan', '02' => 'Fev', '03' => 'Mar', '04' => 'Abr', '05' => 'Mai', '06' => 'Jun', '07' => 'Jul', '08' => 'Ago', '09' => 'Set', '10' => 'Out', '11' => 'Nov', '12' => 'Dez'];
+$rotuloMes = fn(string $m) => ($nomesMeses[substr($m, 5, 2)] ?? substr($m, 5, 2)) . '/' . substr($m, 0, 4);
 
 $condicoes = [];
 $params = [];
@@ -338,6 +352,12 @@ if ($filtroCondicao === 'em_tempo') {
     $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) BETWEEN 1 AND 7";
 } elseif ($filtroCondicao === 'atrasado') {
     $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) > 7";
+}
+
+if ($filtroMes !== '') {
+    $condicoes[] = "DATE_FORMAT(f.`$filtroMesBase`, '%Y-%m') = ?";
+    $params[] = $filtroMes;
+    $tipos .= 's';
 }
 
 $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
@@ -558,11 +578,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <form method="GET" class="row g-3 align-items-end">
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <label class="form-label">Processo, rastreio, armador ou requerente</label>
                     <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Ex.: yp0000 ou MSC">
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <label class="form-label">Status</label>
                     <select name="status" class="form-select">
                         <option value="todos" <?php echo $filtroStatus === 'todos' ? 'selected' : ''; ?>>Todos</option>
@@ -570,13 +590,30 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <option value="integrado" <?php echo $filtroStatus === 'integrado' ? 'selected' : ''; ?>>Já integrados ao MRP</option>
                     </select>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <label class="form-label">Condição</label>
                     <select name="condicao" class="form-select">
                         <option value="todos" <?php echo $filtroCondicao === 'todos' ? 'selected' : ''; ?>>Todas</option>
                         <option value="em_tempo" <?php echo $filtroCondicao === 'em_tempo' ? 'selected' : ''; ?>>Em tempo</option>
                         <option value="atencao" <?php echo $filtroCondicao === 'atencao' ? 'selected' : ''; ?>>Atenção</option>
                         <option value="atrasado" <?php echo $filtroCondicao === 'atrasado' ? 'selected' : ''; ?>>Atrasado</option>
+                    </select>
+                </div>
+                <div class="col-md-1">
+                    <label class="form-label">Data</label>
+                    <select name="mes_base" class="form-select" title="Qual data do embarque usar no filtro de mês" onchange="this.form.mes.value=''; this.form.submit();">
+                        <?php foreach ($datasParaMes as $col => $rot): ?>
+                            <option value="<?php echo h($col); ?>" <?php echo $filtroMesBase === $col ? 'selected' : ''; ?>><?php echo h($rot); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Mês</label>
+                    <select name="mes" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os meses</option>
+                        <?php foreach ($mesesDisponiveis as $m): ?>
+                            <option value="<?php echo h($m); ?>" <?php echo $filtroMes === $m ? 'selected' : ''; ?>><?php echo h($rotuloMes($m)); ?></option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="col-md-2 d-flex gap-2">
@@ -685,6 +722,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                             <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                             <input type="hidden" name="condicao_atual" value="<?php echo h($filtroCondicao); ?>">
+                                            <input type="hidden" name="mes_base_atual" value="<?php echo h($filtroMesBase); ?>">
+                                            <input type="hidden" name="mes_atual" value="<?php echo h($filtroMes); ?>">
                                             <button type="submit" class="btn btn-outline-danger btn-sm" title="Excluir do Follow">✕</button>
                                         </form>
                                     </td>
@@ -702,7 +741,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>&mes_base=<?php echo urlencode($filtroMesBase); ?>&mes=<?php echo urlencode($filtroMes); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>
