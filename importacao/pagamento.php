@@ -161,6 +161,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
             if ($idx['processo'] === null) {
                 $mensagens[] = "❌ Não encontrei a coluna 'processo' no cabeçalho.";
             } else {
+                // "Limpar antes de importar": apaga TODO o histórico de pagamento e
+                // substitui pelo conteúdo do CSV. Roda numa transação — se nenhuma
+                // linha do arquivo for importada, desfaz a limpeza (não deixa a
+                // tabela vazia por causa de um arquivo errado).
+                $limparAntes = isset($_POST['limpar_pagamento']);
+                if ($limparAntes) {
+                    mysqli_begin_transaction($conn);
+                    mysqli_query($conn, "DELETE FROM pagamento");
+                }
                 $stmtProcCsv = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM processos WHERE processo = ? LIMIT 1");
                 $stmtDupCsv = mysqli_prepare($conn, "
                     SELECT id FROM pagamento
@@ -246,6 +255,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                 mysqli_stmt_close($stmtProcCsv);
                 mysqli_stmt_close($stmtDupCsv);
                 mysqli_stmt_close($stmtInsCsv);
+                if ($limparAntes) {
+                    if ($importados > 0) {
+                        mysqli_commit($conn);
+                        $mensagens[] = '🗑️ Histórico de pagamento apagado e substituído pelo conteúdo do arquivo.';
+                    } else {
+                        mysqli_rollback($conn);
+                        $mensagens[] = '↩️ Nenhuma linha do arquivo pôde ser importada — a limpeza foi DESFEITA e o histórico de pagamento continua como estava.';
+                    }
+                }
                 $mensagens[] = "✅ Importação concluída: $importados pagamento(s) incluído(s)"
                     . ($pulados > 0 ? ", $pulados já existente(s) pulado(s)" : '')
                     . ", $erros erro(s).";
@@ -634,10 +652,17 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
         <section class="filter-panel mb-4">
             <details <?php echo isset($_FILES['arquivo_csv_pagamento']) ? 'open' : ''; ?>>
                 <summary class="fw-bold" style="cursor:pointer;">📥 Importar pagamentos (.csv)</summary>
-                <form method="POST" enctype="multipart/form-data" class="row g-3 mt-2 align-items-end">
+                <form method="POST" enctype="multipart/form-data" class="row g-3 mt-2 align-items-end"
+                      onsubmit="return !this.limpar_pagamento.checked || confirm('ATENÇÃO: isso vai APAGAR todo o histórico de pagamento e substituir pelo conteúdo do arquivo. Continuar?');">
                     <div class="col-md-6">
                         <label class="form-label">Arquivo CSV</label>
                         <input type="file" name="arquivo_csv_pagamento" accept=".csv" class="form-control" required>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="limpar_pagamento" id="limpar_pagamento">
+                            <label class="form-check-label" for="limpar_pagamento">Limpar tabela antes de importar</label>
+                        </div>
                     </div>
                     <div class="col-md-2">
                         <button type="submit" class="btn btn-primary w-100">Importar</button>
@@ -648,6 +673,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     também aceita os nomes da tela: <code>Cod. Twin., Data, Vencimento, Valor, RB, OA</code>. Só <code>processo</code> é obrigatório
                     e ele precisa existir em Processos (Status, PO, Fornecedor, Moeda e Total vêm de lá). Opcional: <code>situacao</code> (aberto ou finalizado).
                     Datas em dd/mm/aaaa; valores como 1.234,56. Linha igual a uma já cadastrada (mesmo processo, Cod. Twin, Vencimento e Valor) é pulada.
+                    <strong>Limpar tabela</strong>: apaga todos os pagamentos e substitui pelo arquivo (se nenhuma linha for importada, a limpeza é desfeita).
                     Separador vírgula ou ponto e vírgula. O "Exportar CSV" desta tela serve de modelo.
                 </small>
             </details>
