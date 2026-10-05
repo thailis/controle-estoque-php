@@ -327,6 +327,9 @@ if ($resProcessosProgramacao) {
             .po-sheet { box-shadow: none; border: none; margin: 0; max-width: 100%; }
             table.po-tabela .col-acao { display: none; }
             table.po-tabela .col-acao-largura { display: none; }
+            /* menos respiro nas células no PDF pra data (dd/mm/aaaa) caber inteira */
+            table.po-tabela td { padding: 4px 4px; }
+            table.po-tabela input { padding: 2px 0; }
             input { color: #000 !important; }
             .rodape-textarea { color: #000 !important; }
             .po-header input, .po-header select { color: var(--destaque) !important; }
@@ -433,8 +436,8 @@ if ($resProcessosProgramacao) {
         <div class="po-material-titulo">Material Detail</div>
         <table class="po-tabela" id="tabela-itens">
             <colgroup>
-                <col style="width:4%"><col style="width:12%"><col style="width:26%">
-                <col style="width:10%"><col style="width:6%"><col style="width:10%">
+                <col style="width:4%"><col style="width:12%"><col style="width:23%">
+                <col style="width:13%"><col style="width:6%"><col style="width:10%">
                 <col style="width:12%"><col style="width:12%"><col class="col-acao-largura" style="width:8%">
             </colgroup>
             <thead>
