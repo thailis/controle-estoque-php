@@ -221,6 +221,13 @@ if ($resProcessosProgramacao) {
             padding: 6px;
             font-size: .9rem;
         }
+        .po-material-titulo { position: relative; }
+        .po-formato-intl {
+            position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+            font-weight: 600; font-size: .75rem; color: #3c4c5c;
+            display: flex; align-items: center; gap: 5px; cursor: pointer; margin: 0;
+        }
+        .po-formato-intl input { cursor: pointer; }
         table.po-tabela { width: 100%; border-collapse: collapse; font-size: .8rem; table-layout: fixed; }
         table.po-tabela th {
             background: var(--cinza-label);
@@ -433,7 +440,13 @@ if ($resProcessosProgramacao) {
             </table>
         </div>
 
-        <div class="po-material-titulo">Material Detail</div>
+        <div class="po-material-titulo">
+            Material Detail
+            <label class="po-formato-intl no-print" title="Desmarcado: 1.000,00 e 05/10/2026 — Marcado: 1,000.00 e 10/05/2026">
+                <input type="checkbox" id="formato_internacional" onchange="alternarFormatoInternacional()">
+                Formato internacional
+            </label>
+        </div>
         <table class="po-tabela" id="tabela-itens">
             <colgroup>
                 <col style="width:4%"><col style="width:12%"><col style="width:23%">
@@ -587,18 +600,95 @@ if ($resProcessosProgramacao) {
             leitor.readAsDataURL(arquivo);
         }
 
-        function parseNumeroBrPo(texto) {
-            if (!texto) return 0;
-            texto = String(texto).trim();
-            if (texto.includes(',')) {
-                texto = texto.replace(/\./g, '').replace(',', '.');
+        // Formato dos números/datas da tela:
+        //   nacional (padrão)      → 1.000,00  e  05/10/2026 (dd/mm/aaaa)
+        //   internacional (check)  → 1,000.00  e  10/05/2026 (mm/dd/aaaa)
+        // Todos os cálculos leem o texto conforme o formato ATUAL da tela.
+        let formatoInternacional = false;
+
+        function limparNumeroTexto(texto) {
+            return String(texto ?? '').trim().replace(/\s/g, '').replace('%', '');
+        }
+
+        function parseNumeroPo(texto, internacional) {
+            let t = limparNumeroTexto(texto);
+            if (!t) return 0;
+            if (internacional) {
+                t = t.replace(/,/g, '');
+            } else if (t.includes(',')) {
+                t = t.replace(/\./g, '').replace(',', '.');
+            } else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) {
+                t = t.replace(/\./g, ''); // "1.000" nacional = mil
             }
-            const n = parseFloat(texto);
+            const n = parseFloat(t);
             return isNaN(n) ? 0 : n;
         }
 
+        function contarDecimaisPo(texto, internacional) {
+            const t = limparNumeroTexto(texto);
+            let i = t.lastIndexOf(internacional ? '.' : ',');
+            if (i < 0 && !internacional && /^-?\d+\.\d+$/.test(t) && !/^-?\d{1,3}(\.\d{3})+$/.test(t)) {
+                i = t.lastIndexOf('.');
+            }
+            return i < 0 ? 0 : Math.min(t.length - i - 1, 6);
+        }
+
+        function formatarNumeroPo(n, decimais, internacional) {
+            return n.toLocaleString(internacional ? 'en-US' : 'pt-BR', { minimumFractionDigits: decimais, maximumFractionDigits: decimais });
+        }
+
+        // Converte um texto numérico de um formato pro outro, mantendo as casas
+        // decimais que ele já tinha (ex.: 0,0200 → 0.0200) e o "%" se houver.
+        function converterNumeroPo(texto, deInternacional, paraInternacional) {
+            if (String(texto ?? '').trim() === '') return '';
+            const temPct = String(texto).includes('%');
+            const n = parseNumeroPo(texto, deInternacional);
+            const dec = contarDecimaisPo(texto, deInternacional);
+            return formatarNumeroPo(n, dec, paraInternacional) + (temPct ? '%' : '');
+        }
+
+        // dd/mm/aaaa ⇄ mm/dd/aaaa (é só trocar as duas primeiras partes)
+        function trocarDiaMesPo(texto) {
+            const m = String(texto ?? '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+            return m ? `${m[2]}/${m[1]}/${m[3]}` : texto;
+        }
+
+        function parseNumeroBrPo(texto) {
+            return parseNumeroPo(texto, formatoInternacional);
+        }
+
         function formatarNumeroBrPo(n) {
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return formatarNumeroPo(n, 2, formatoInternacional);
+        }
+
+        function alternarFormatoInternacional() {
+            const novo = document.getElementById('formato_internacional').checked;
+            const antigo = formatoInternacional;
+            if (novo === antigo) return;
+
+            document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
+                const celQtd = linha.querySelector('.f-qtd');
+                if (celQtd && !celQtd.querySelector('input')) {
+                    definirValorPull(celQtd, converterNumeroPo(celQtd.dataset.valor, antigo, novo));
+                }
+                const preco = linha.querySelector('.f-preco');
+                if (preco) preco.value = converterNumeroPo(preco.value, antigo, novo);
+                const eta = linha.querySelector('.f-eta');
+                if (eta) eta.value = trocarDiaMesPo(eta.value);
+            });
+            ['tax_icms', 'tax_pis', 'tax_cofins', 'tax_ipi', 'valor_adiantamento', 'valor_frete'].forEach((id) => {
+                const campo = document.getElementById(id);
+                if (campo) campo.value = converterNumeroPo(campo.value, antigo, novo);
+            });
+            document.querySelectorAll('.f-eta').forEach((campo) => {
+                campo.placeholder = novo ? 'mm/dd/yyyy' : 'dd/mm/aaaa';
+            });
+
+            formatoInternacional = novo;
+            document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
+                recalcularLinha(Number(linha.id.replace('linha-', '')));
+            });
+            recalcularNet();
         }
 
         // Transforma uma célula em "editável por duplo clique" — mostra texto
@@ -648,7 +738,7 @@ if ($resProcessosProgramacao) {
                 <td class="col-idx">${idx}</td>
                 <td class="f-part"></td>
                 <td class="f-desc"></td>
-                <td class="center"><input type="text" class="f-eta" placeholder="dd/mm/aaaa"></td>
+                <td class="center"><input type="text" class="f-eta" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}"></td>
                 <td class="center"><input type="text" class="f-unm" placeholder="UN"></td>
                 <td class="num f-qtd"></td>
                 <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
@@ -663,17 +753,17 @@ if ($resProcessosProgramacao) {
 
             definirValorPull(celPart, dados && dados.part ? dados.part : '');
             definirValorPull(celDesc, dados && dados.desc ? dados.desc : '');
-            definirValorPull(celQtd, dados && dados.qtd ? dados.qtd : '');
+            definirValorPull(celQtd, dados && dados.qtd ? converterNumeroPo(dados.qtd, false, formatoInternacional) : '');
 
             tornarPull(celPart, () => buscarDescricaoBom(idx));
             tornarPull(celDesc);
             tornarPull(celQtd, () => recalcularLinha(idx));
 
             if (dados && dados.preco) {
-                tr.querySelector('.f-preco').value = dados.preco;
+                tr.querySelector('.f-preco').value = converterNumeroPo(dados.preco, false, formatoInternacional);
             }
             if (dados && dados.eta) {
-                tr.querySelector('.f-eta').value = dados.eta;
+                tr.querySelector('.f-eta').value = formatoInternacional ? trocarDiaMesPo(dados.eta) : dados.eta;
             }
 
             if (dados) { recalcularLinha(idx); }
