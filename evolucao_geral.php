@@ -403,6 +403,10 @@ try {
             margin-right: 3px;
             vertical-align: middle;
         }
+        /* Clique no componente: marca o FUNDO da célula em laranja (a fonte não
+           muda). !important porque a coluna é fixa (sticky) e tem fundo branco. */
+        .evolucao-table td.cel-componente { cursor: pointer; user-select: none; }
+        .evolucao-table td.cel-componente.marcado { background: #ffb366 !important; }
         .scroll-wrapper { max-height: 75vh; overflow: auto; border: 1px solid #dce4ec; border-radius: 12px; }
     </style>
 </head>
@@ -527,7 +531,7 @@ try {
                             <?php endforeach; ?>
                         </tr>
                         <tr>
-                            <th>Código</th>
+                            <th>Componente</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
                             <th>Projeto</th>
@@ -561,7 +565,7 @@ try {
                         <?php else: ?>
                             <?php foreach ($componentesPagina as $componente): ?>
                                 <tr>
-                                    <td><strong class="component-code"><?php echo h($componente['codigo_componente']); ?></strong></td>
+                                    <td class="cel-componente" data-componente="<?php echo h($componente['codigo_componente']); ?>" title="Clique para marcar/desmarcar"><strong class="component-code"><?php echo h($componente['codigo_componente']); ?></strong></td>
                                     <td title="<?php echo h($componente['descricao']); ?>"><?php echo h($componente['descricao']); ?></td>
                                     <td title="<?php echo h($componente['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($componente['projetos'] ?: '—'); ?>"><?php echo h($componente['projetos'] ?: '—'); ?></td>
@@ -606,5 +610,28 @@ try {
 
         <?php endif; ?>
     </main>
+    <script>
+        // Marca/desmarca o componente clicado. A marcação fica guardada neste
+        // navegador, então continua lá ao trocar de página, filtrar ou recarregar.
+        (function () {
+            const CHAVE = 'evolucao_componentes_marcados';
+            let marcados = [];
+            try { marcados = JSON.parse(localStorage.getItem(CHAVE) || '[]'); } catch (e) { marcados = []; }
+            const salvar = () => { try { localStorage.setItem(CHAVE, JSON.stringify(marcados)); } catch (e) {} };
+
+            document.querySelectorAll('td.cel-componente').forEach(function (celula) {
+                if (marcados.includes(celula.dataset.componente)) {
+                    celula.classList.add('marcado');
+                }
+                celula.addEventListener('click', function () {
+                    const codigo = celula.dataset.componente;
+                    const ficouMarcado = celula.classList.toggle('marcado');
+                    marcados = marcados.filter((c) => c !== codigo);
+                    if (ficouMarcado) { marcados.push(codigo); }
+                    salvar();
+                });
+            });
+        })();
+    </script>
 </body>
 </html>
