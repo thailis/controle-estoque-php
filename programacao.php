@@ -107,6 +107,20 @@ function localizarColunaComponente(array $cabecalhoNormalizado): ?int
 // largo da planilha (Programação 1, Quantidade, Programação 2, Quantidade 2, ...).
 function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 {
+    // Formato simples (uma única coluna de quantidade): procura a coluna de data
+    // PELO NOME, em qualquer posição — antes exigia que a data viesse logo antes
+    // da quantidade, e um arquivo "componente, quantidade, preco, processo, data"
+    // tentava ler o código do componente como data.
+    $colunasQtd = array_keys(array_filter($cabecalhoNormalizado, fn($n) => str_contains($n, 'quantidade')));
+    if (count($colunasQtd) === 1) {
+        foreach (['data', 'data programacao', 'data_programacao', 'programacao', 'data entrega', 'data_entrega', 'entrega'] as $nomeData) {
+            $indiceData = array_search($nomeData, $cabecalhoNormalizado, true);
+            if ($indiceData !== false) {
+                return [[$indiceData, $colunasQtd[0]]];
+            }
+        }
+    }
+
     $pares = [];
     foreach ($cabecalhoNormalizado as $indice => $nome) {
         if ($indice > 0 && str_contains($nome, 'quantidade')) {
@@ -125,6 +139,12 @@ function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 // depois direto na tela (duplo clique) ou puxar no Pedido de Compra.
 function detectarColunaPreco(array $cabecalhoNormalizado, int $indiceQtd): ?int
 {
+    // Formato simples (só uma coluna "preco"): aceita em qualquer posição.
+    $colunasPreco = array_keys(array_filter($cabecalhoNormalizado, fn($n) => str_contains($n, 'preco')));
+    $colunasQtd = array_keys(array_filter($cabecalhoNormalizado, fn($n) => str_contains($n, 'quantidade')));
+    if (count($colunasPreco) === 1 && count($colunasQtd) === 1) {
+        return $colunasPreco[0];
+    }
     $proximo = $indiceQtd + 1;
     if (isset($cabecalhoNormalizado[$proximo]) && str_contains($cabecalhoNormalizado[$proximo], 'preco')) {
         return $proximo;
