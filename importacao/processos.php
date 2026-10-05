@@ -67,6 +67,11 @@ function parseNumeroBrProcessos(string $valor): ?float
 
 function normalizarTextoProcessos(string $texto): string
 {
+    // O Excel ("CSV UTF-8") grava um BOM invisível no início do arquivo, que
+    // gruda na 1ª coluna ("\xEF\xBB\xBFprocesso") e impedia de achar "processo".
+    // Remove BOM, espaço não-quebrável e caracteres de largura zero.
+    $texto = preg_replace('/^\xEF\xBB\xBF/', '', $texto);
+    $texto = str_replace(["\xC2\xA0", "\xE2\x80\x8B", "\xE2\x80\x8C", "\xE2\x80\x8D", "\xEF\xBB\xBF"], ['', '', '', '', ''], $texto);
     $texto = mb_strtolower(trim($texto), 'UTF-8');
     $mapa = [
         'á' => 'a', 'à' => 'a', 'ã' => 'a', 'â' => 'a', 'ä' => 'a',
@@ -466,10 +471,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
         $caminho = $_FILES['arquivo_csv']['tmp_name'];
         $handle = fopen($caminho, 'r');
         if ($handle) {
-            if (!empty($_POST['limpar_tabela'])) {
-                mysqli_query($conn, 'TRUNCATE TABLE processos');
-            }
-
             $primeiraLinha = fgets($handle);
             $separador = substr_count($primeiraLinha, ';') >= substr_count($primeiraLinha, ',') ? ';' : ',';
             rewind($handle);
@@ -516,6 +517,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 if ($indices['processo'] === null) {
                     $mensagens[] = "❌ Não encontrei a coluna do processo. Use 'processo' no cabeçalho.";
                 } else {
+                    // Só limpa a tabela DEPOIS de confirmar que o arquivo tem a coluna
+                    // "processo" — antes limpava primeiro e, se o cabeçalho falhasse,
+                    // a tabela ficava vazia sem importar nada.
+                    if (!empty($_POST['limpar_tabela'])) {
+                        mysqli_query($conn, 'TRUNCATE TABLE processos');
+                    }
                     $lote = [];
                     $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
                         if (empty($lote)) return;
