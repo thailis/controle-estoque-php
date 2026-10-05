@@ -70,7 +70,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
                       AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
                 ) AS descricao
             FROM programacao p
-            WHERE p.processo = ?
+            WHERE TRIM(p.po) = ?
             ORDER BY p.id
         ");
         mysqli_stmt_bind_param($stmt, 's', $processo);
@@ -98,7 +98,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
 // ou NULL) — um processo com todos os itens já atendidos (já virou estoque
 // físico) não faz mais sentido aparecer aqui pra montar um novo Pedido de Compra.
 $processosProgramacao = [];
-$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(processo) AS processo FROM programacao WHERE processo IS NOT NULL AND TRIM(processo) <> '' AND (atendido = 0 OR atendido IS NULL) ORDER BY processo");
+// Agora o dropdown lista as POs (coluna "po" da Programação), não mais o Processo.
+$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(po) AS processo FROM programacao WHERE po IS NOT NULL AND TRIM(po) <> '' AND (atendido = 0 OR atendido IS NULL) ORDER BY TRIM(po)");
 if ($resProcessosProgramacao) {
     while ($linhaProc = mysqli_fetch_assoc($resProcessosProgramacao)) {
         $processosProgramacao[] = $linhaProc['processo'];
@@ -350,7 +351,7 @@ if ($resProcessosProgramacao) {
         <div class="po-header">
             Purchase Order:
             <select id="select_processo" onchange="carregarProcessoProgramacao()">
-                <option value="">Selecione um processo...</option>
+                <option value="">Selecione uma PO...</option>
                 <?php foreach ($processosProgramacao as $p): ?>
                     <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
                 <?php endforeach; ?>
@@ -714,10 +715,10 @@ if ($resProcessosProgramacao) {
                         dados.itens.forEach(item => adicionarLinha(item));
                     } else {
                         adicionarLinha();
-                        alert('Esse processo não tem componentes lançados na Programação ainda.');
+                        alert('Essa PO não tem componentes lançados na Programação ainda.');
                     }
                 })
-                .catch(() => alert('Erro de conexão ao buscar os componentes desse processo.'));
+                .catch(() => alert('Erro de conexão ao buscar os componentes dessa PO.'));
         }
 
         function recalcularNet() {
