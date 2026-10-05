@@ -71,6 +71,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
                 ) AS descricao
             FROM programacao p
             WHERE TRIM(p.po) = ?
+              AND COALESCE(p.atendido, 0) = 0
             ORDER BY p.id
         ");
         mysqli_stmt_bind_param($stmt, 's', $processo);
@@ -99,7 +100,16 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
 // físico) não faz mais sentido aparecer aqui pra montar um novo Pedido de Compra.
 $processosProgramacao = [];
 // Agora o dropdown lista as POs (coluna "po" da Programação), não mais o Processo.
-$resProcessosProgramacao = mysqli_query($conn, "SELECT DISTINCT TRIM(po) AS processo FROM programacao WHERE po IS NOT NULL AND TRIM(po) <> '' AND (atendido = 0 OR atendido IS NULL) ORDER BY TRIM(po)");
+// "Em aberto" = PO em que NENHUMA linha foi atendida ainda. Se qualquer linha
+// da PO já estiver como Atendido, ela sai da lista.
+$resProcessosProgramacao = mysqli_query($conn, "
+    SELECT TRIM(po) AS processo
+    FROM programacao
+    WHERE po IS NOT NULL AND TRIM(po) <> ''
+    GROUP BY TRIM(po)
+    HAVING SUM(COALESCE(atendido, 0)) = 0
+    ORDER BY TRIM(po)
+");
 if ($resProcessosProgramacao) {
     while ($linhaProc = mysqli_fetch_assoc($resProcessosProgramacao)) {
         $processosProgramacao[] = $linhaProc['processo'];
@@ -321,6 +331,8 @@ if ($resProcessosProgramacao) {
             .rodape-textarea { color: #000 !important; }
             .po-header input, .po-header select { color: var(--destaque) !important; }
             .po-invoice-texto textarea { color: var(--destaque) !important; }
+            /* Texto de exemplo (placeholder) nunca sai no PDF: campo vazio = em branco */
+            input::placeholder, textarea::placeholder { color: transparent !important; opacity: 0 !important; }
         }
     </style>
 </head>
