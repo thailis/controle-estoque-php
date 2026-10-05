@@ -508,6 +508,22 @@ if ($resProcessosProgramacao) {
         // ficaram em branco (sem Part Number nem Description preenchidos) —
         // linhas adicionadas mas não usadas não devem aparecer no documento
         // final. Depois de imprimir, volta tudo ao normal pra continuar editando.
+        // Reforço pro PDF: além do CSS de impressão, tira o texto de exemplo
+        // (placeholder) de TODOS os campos antes de imprimir e devolve depois.
+        // Assim campo vazio sai em branco mesmo em navegador que ignore o CSS.
+        window.addEventListener('beforeprint', () => {
+            document.querySelectorAll('input[placeholder], textarea[placeholder]').forEach((campo) => {
+                campo.dataset.placeholderOriginal = campo.getAttribute('placeholder');
+                campo.setAttribute('placeholder', '');
+            });
+        });
+        window.addEventListener('afterprint', () => {
+            document.querySelectorAll('[data-placeholder-original]').forEach((campo) => {
+                campo.setAttribute('placeholder', campo.dataset.placeholderOriginal);
+                delete campo.dataset.placeholderOriginal;
+            });
+        });
+
         window.addEventListener('beforeprint', () => {
             let numeroVisivel = 0;
             document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
