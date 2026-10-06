@@ -407,6 +407,8 @@ try {
            muda). !important porque a coluna é fixa (sticky) e tem fundo branco. */
         .evolucao-table td.cel-componente { cursor: pointer; user-select: none; }
         .evolucao-table td.cel-componente.marcado { background: #ffb366 !important; }
+        /* Tela larga, igual à Programação (98% da largura da janela) */
+        .dashboard-container { max-width: 98vw !important; }
         .scroll-wrapper { max-height: 75vh; overflow: auto; border: 1px solid #dce4ec; border-radius: 12px; }
     </style>
 </head>
