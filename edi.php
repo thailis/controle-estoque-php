@@ -262,7 +262,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $cacheDadosBom = [];
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = ?, quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
+                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = COALESCE(NULLIF(TRIM(modelo), ''), ?), quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
 
                 mysqli_autocommit($conn, false);
 
@@ -788,7 +788,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $dadosBomTodos = buscarDadosBom($conn, $materiaisEdi);
     $linhasSync = 0;
     $semBom = 0;
-    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto), modelo = COALESCE(?, modelo) WHERE TRIM(material) = ?");
+    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto), modelo = COALESCE(NULLIF(TRIM(modelo), ''), ?) WHERE TRIM(material) = ?");
     foreach ($dadosBomTodos as $mat => $d) {
         if ($d['pn'] === null && $d['tipo'] === null && $d['projeto'] === null && $d['modelo'] === null) {
             $semBom++;
@@ -860,7 +860,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade'], true)) {
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo'], true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
@@ -877,6 +877,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_close($stmt);
         sincronizarQuantidadeEdiNoEstoque($conn, $id);
         echo json_encode(['ok' => true, 'exibido' => (string) $quantidadeEditada]);
+        exit;
+    }
+
+    if ($campo === 'modelo') {
+        // Modelo editado direto no EDI (duplo clique) vale só pra ESSA linha e
+        // tem prioridade sobre a BOM. Se apagar (deixar vazio), volta a mostrar
+        // o Modelo da BOM.
+        $modeloEditado = $valor === '' ? null : mb_substr($valor, 0, 50);
+        $stmt = mysqli_prepare($conn, "UPDATE edi SET modelo = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $modeloEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+
+        $exibidoModelo = $modeloEditado ?? '';
+        if ($modeloEditado === null) {
+            $stmtMat = mysqli_prepare($conn, "SELECT TRIM(material) AS material FROM edi WHERE _tidb_rowid = ?");
+            mysqli_stmt_bind_param($stmtMat, 'i', $id);
+            mysqli_stmt_execute($stmtMat);
+            $matLinha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtMat))['material'] ?? '';
+            mysqli_stmt_close($stmtMat);
+            if ($matLinha !== '') {
+                $exibidoModelo = buscarDadosBom($conn, [$matLinha])[$matLinha]['modelo'] ?? '';
+            }
+        }
+        echo json_encode(['ok' => true, 'exibido' => (string) $exibidoModelo]);
         exit;
     }
 
@@ -1064,7 +1089,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $pnExport = $dExp['pn'] ?? $linhaExport['pn2'];
         $linhaExport['marca'] = $dExp['tipo'] ?? $linhaExport['marca'];
         $linhaExport['projeto'] = $dExp['projeto'] ?? $linhaExport['projeto'];
-        $linhaExport['modelo'] = $dExp['modelo'] ?? $linhaExport['modelo'];
+        $linhaExport['modelo'] = trim((string) ($linhaExport['modelo'] ?? '')) !== '' ? $linhaExport['modelo'] : ($dExp['modelo'] ?? $linhaExport['modelo']);
         fputcsv($saida, [
             $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
@@ -1107,7 +1132,9 @@ foreach ($rows as &$r) {
         $r['pn2'] = $d['pn'] ?? $r['pn2'];
         $r['marca'] = $d['tipo'] ?? $r['marca'];
         $r['projeto'] = $d['projeto'] ?? $r['projeto'];
-        $r['modelo'] = $d['modelo'] ?? $r['modelo'];
+        // Modelo: o que está gravado no EDI (pode ter sido editado à mão) tem
+        // prioridade; se estiver vazio, mostra o da BOM.
+        $r['modelo'] = trim((string) ($r['modelo'] ?? '')) !== '' ? $r['modelo'] : ($d['modelo'] ?? $r['modelo']);
     }
 }
 unset($r);
@@ -1481,7 +1508,7 @@ unset($r);
                                     <td><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
-                                    <td title="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></span></td>
+                                    <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" title="Duplo clique para editar — <?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
                                     <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
 
