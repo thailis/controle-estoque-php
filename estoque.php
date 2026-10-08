@@ -382,6 +382,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
     }
 }
 
+// ---------- Entrada manual (novo componente ou nova quantidade) ----------
+// Grava UMA linha nova no livro-razão do estoque, com origem 'entrada_manual'.
+// Se o componente já existir, a quantidade é SOMADA ao que já tem naquela
+// planta (não substitui). Descrição em branco = puxa da BOM.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual_estoque') {
+    exigirComprador();
+    $codigoNovo = trim((string) ($_POST['codigo_componente'] ?? ''));
+    $descricaoNova = trim((string) ($_POST['descricao'] ?? ''));
+    $plantaNova = trim((string) ($_POST['planta'] ?? ''));
+    $quantidadeNova = parseNumeroBr((string) ($_POST['quantidade'] ?? ''));
+
+    if ($codigoNovo === '' || $quantidadeNova === null) {
+        header('Location: estoque.php?erro_manual=1');
+        exit;
+    }
+
+    if ($descricaoNova === '') {
+        $stmtDescBom = mysqli_prepare($conn, "
+            SELECT COALESCE(
+                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM estoque WHERE TRIM(codigo_componente) = ?),
+                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM bomnova WHERE TRIM(codigo_componente) = ?)
+            ) AS descricao
+        ");
+        mysqli_stmt_bind_param($stmtDescBom, 'ss', $codigoNovo, $codigoNovo);
+        mysqli_stmt_execute($stmtDescBom);
+        $descricaoNova = (string) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescBom))['descricao'] ?? '');
+        mysqli_stmt_close($stmtDescBom);
+    }
+
+    $plantaReal = ($plantaNova === '' || $plantaNova === 'SEM_PLANTA') ? null : $plantaNova;
+    $stmtNovo = mysqli_prepare($conn, "
+        INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem)
+        VALUES (?, ?, ?, ?, 'entrada_manual')
+    ");
+    mysqli_stmt_bind_param($stmtNovo, 'ssds', $codigoNovo, $descricaoNova, $quantidadeNova, $plantaReal);
+    mysqli_stmt_execute($stmtNovo);
+    mysqli_stmt_close($stmtNovo);
+
+    header('Location: estoque.php?busca=' . urlencode($codigoNovo) . '&inserido=1#linha-' . urlencode($codigoNovo));
+    exit;
+}
+
 $porPagina = 50;
 $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
@@ -407,6 +449,15 @@ $plantas = [];
 $resPlantas = mysqli_query($conn, "SELECT DISTINCT planta FROM estoque WHERE planta IS NOT NULL AND TRIM(planta) <> '' ORDER BY planta");
 while ($linhaPlanta = mysqli_fetch_assoc($resPlantas)) {
     $plantas[] = $linhaPlanta['planta'];
+}
+
+// Componentes da BOM, pra sugerir no campo da entrada manual
+$componentesBom = [];
+$resCompBom = mysqli_query($conn, "SELECT TRIM(codigo_componente) AS codigo, MAX(NULLIF(TRIM(descricao), '')) AS descricao FROM bomnova WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> '' GROUP BY TRIM(codigo_componente) ORDER BY codigo");
+if ($resCompBom) {
+    while ($linhaCompBom = mysqli_fetch_assoc($resCompBom)) {
+        $componentesBom[$linhaCompBom['codigo']] = (string) ($linhaCompBom['descricao'] ?? '');
+    }
 }
 
 // Existe alguma linha sem planta definida? (formato simples antigo, sem quebra por planta)
@@ -698,6 +749,10 @@ if (!empty($componentes)) {
             <div class="alert alert-secondary">Nada foi alterado (os valores digitados já eram os mesmos).</div>
         <?php elseif (isset($_GET['excluido'])): ?>
             <div class="alert alert-success">✅ Componente excluído do estoque.</div>
+        <?php elseif (isset($_GET['inserido'])): ?>
+            <div class="alert alert-success">✅ Entrada manual gravada no estoque.</div>
+        <?php elseif (isset($_GET['erro_manual'])): ?>
+            <div class="alert alert-danger">❌ Informe o componente e uma quantidade válida.</div>
         <?php endif; ?>
 
         <div class="card p-3 mb-4">
@@ -741,6 +796,43 @@ if (!empty($componentes)) {
                     </small>
                 </div>
             </details>
+        </div>
+
+        <div class="card p-3 mb-4">
+            <h2 class="h6 mb-3">➕ Entrada manual (novo componente)</h2>
+            <form method="POST" class="row g-2 align-items-end">
+                <input type="hidden" name="acao" value="inserir_manual_estoque">
+                <div class="col-12 col-md-2">
+                    <label class="form-label small mb-1">Componente</label>
+                    <input type="text" name="codigo_componente" id="manual_componente" class="form-control form-control-sm" list="lista-componentes-bom" autocomplete="off" placeholder="Ex.: 12000586" required>
+                    <datalist id="lista-componentes-bom">
+                        <?php foreach ($componentesBom as $codBom => $descBom): ?>
+                            <option value="<?php echo h($codBom); ?>"><?php echo h($descBom); ?></option>
+                        <?php endforeach; ?>
+                    </datalist>
+                </div>
+                <div class="col-12 col-md-4">
+                    <label class="form-label small mb-1">Descrição</label>
+                    <input type="text" name="descricao" id="manual_descricao" class="form-control form-control-sm" placeholder="Em branco = puxa da BOM">
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="form-label small mb-1">Planta</label>
+                    <select name="planta" class="form-select form-select-sm">
+                        <?php foreach ($plantas as $p): ?>
+                            <option value="<?php echo h($p); ?>"><?php echo h($p); ?></option>
+                        <?php endforeach; ?>
+                        <option value="SEM_PLANTA" <?php echo empty($plantas) ? 'selected' : ''; ?>>Sem planta (Ajustes)</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="form-label small mb-1">Quantidade</label>
+                    <input type="text" name="quantidade" class="form-control form-control-sm text-end" placeholder="Ex.: 1.500" required>
+                </div>
+                <div class="col-12 col-md-2">
+                    <button type="submit" class="btn btn-primary btn-sm w-100">Adicionar</button>
+                </div>
+            </form>
+            <small class="text-muted mt-2">Se o componente já estiver no estoque, a quantidade é <strong>somada</strong> ao que já existe naquela planta.</small>
         </div>
 
         <div class="card p-3 mb-4">
@@ -845,6 +937,20 @@ if (!empty($componentes)) {
             <a href="index.php" class="btn btn-outline-secondary">Voltar ao Dashboard</a>
         </div>
     </div>
+    <script>
+        // Entrada manual: ao escolher um componente da BOM, já preenche a
+        // descrição (se o campo estiver vazio) pra conferir antes de salvar.
+        (function () {
+            const descricoesBom = <?php echo json_encode($componentesBom, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+            const campoComp = document.getElementById('manual_componente');
+            const campoDesc = document.getElementById('manual_descricao');
+            if (!campoComp || !campoDesc) return;
+            campoComp.addEventListener('change', function () {
+                const desc = descricoesBom[campoComp.value.trim()];
+                if (desc && campoDesc.value.trim() === '') campoDesc.value = desc;
+            });
+        })();
+    </script>
     <script>
         window.INLINE_EDIT_ENDPOINT = 'estoque.php';
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
