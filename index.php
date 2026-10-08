@@ -660,6 +660,10 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
     <title>Dashboard MRP | Controle de Estoque</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        /* Tela larga, igual ao Estoque (98% da largura da janela) */
+        .dashboard-container { max-width: 98vw !important; }
+    </style>
 </head>
 <body>
     <header class="topbar">
