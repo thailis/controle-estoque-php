@@ -664,6 +664,8 @@ try {
         .evolucao-table .col-transito { background: #f3f7ff; color: #1d3f72; min-width: 70px; }
         .evolucao-table .col-eta { background: #f3f7ff; color: #1d3f72; min-width: 84px; border-right: 2px solid #dce4ec; }
         .evolucao-table .eta-atrasada { color: #c53535; font-weight: 750; }
+        .evolucao-table thead th.col-transito,
+        .evolucao-table thead th.col-eta { text-align: center; }
         /* Cabeçalho (títulos + semana e linha das datas) em azul-escuro com fonte
            branca, igual à planilha. !important pra vencer o amarelo de "hoje", o
            azul-claro de Trânsito/ETA e o fundo das colunas fixas. */
