@@ -391,6 +391,36 @@ $flashMap = [
     'excluido'   => ['success', '✅ Parâmetro excluído.'],
 ];
 
+// Fornecedores do filtro: só os que têm pelo menos 1 componente cadastrado
+// aqui em Parâmetros (respeitando a busca por componente, se houver). Assim o
+// dropdown nunca oferece fornecedor que não tem nada na tela.
+$fornecedoresDisponiveis = [];
+$sqlForn = "
+    SELECT DISTINCT TRIM(b.fornecedor) AS fornecedor
+    FROM parametros_compra p
+    JOIN bomnova b ON TRIM(b.codigo_componente) = TRIM(p.codigo_componente)
+    WHERE b.fornecedor IS NOT NULL AND TRIM(b.fornecedor) <> ''"
+    . ($busca !== '' ? " AND p.codigo_componente LIKE ?" : '') . "
+    ORDER BY fornecedor
+";
+$stmtForn = mysqli_prepare($conn, $sqlForn);
+if ($busca !== '') {
+    $buscaLikeForn = "%$busca%";
+    mysqli_stmt_bind_param($stmtForn, 's', $buscaLikeForn);
+}
+mysqli_stmt_execute($stmtForn);
+$resForn = mysqli_stmt_get_result($stmtForn);
+while ($linhaForn = mysqli_fetch_assoc($resForn)) {
+    $fornecedoresDisponiveis[] = $linhaForn['fornecedor'];
+}
+mysqli_stmt_close($stmtForn);
+
+// Se o fornecedor filtrado não tem mais nenhum componente (ex.: acabou de
+// excluir o último parâmetro dele), tira o filtro em vez de mostrar a tela vazia.
+if ($fornecedorFiltro !== '' && !in_array($fornecedorFiltro, $fornecedoresDisponiveis, true)) {
+    $fornecedorFiltro = '';
+}
+
 $condicoes = [];
 $params = [];
 $tipos = '';
@@ -419,13 +449,6 @@ if ($resComp) {
     }
 }
 
-$fornecedoresDisponiveis = [];
-$resForn = mysqli_query($conn, "SELECT DISTINCT TRIM(fornecedor) AS fornecedor FROM bomnova WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
-if ($resForn) {
-    while ($linhaForn = mysqli_fetch_assoc($resForn)) {
-        $fornecedoresDisponiveis[] = $linhaForn['fornecedor'];
-    }
-}
 
 $sqlTotal = "SELECT COUNT(*) AS total FROM parametros_compra p $where";
 if (!empty($params)) {
