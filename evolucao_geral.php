@@ -417,7 +417,7 @@ try {
             'cab' => 1, 'texto' => 2, 'num' => 3, 'num_evento' => 4, 'num_hoje' => 5,
             'num_neg' => 6, 'num_alerta' => 7, 'num_hoje_neg' => 8, 'num_hoje_alerta' => 9,
             'transito' => 10, 'eta' => 11, 'eta_atrasada' => 12, 'cab_hoje' => 13, 'cab_transito' => 14,
-            'componente' => 15, 'cab_evento' => 16, 'texto_num' => 17,
+            'componente' => 15, 'cab_evento' => 16, 'texto_num' => 17, 'cab_escuro' => 18,
         ];
         $hojeChaveX = $hoje->format('Y-m-d');
         $linhasXml = [];
@@ -438,16 +438,17 @@ try {
             $cels = [];
             $titulos = ['Componente', 'Descrição', 'Fornecedor', 'Projeto', 'Consumo', 'Estoque hoje'];
             for ($c = 1; $c <= 6; $c++) {
-                $cels[] = $celula($c, $lin, $lin === 3 ? $titulos[$c - 1] : '', $E['cab']);
+                $cels[] = $celula($c, $lin, $lin === 3 ? $titulos[$c - 1] : '', $lin >= 3 ? $E['cab_escuro'] : $E['cab']);
             }
             for ($i = 1; $i <= $maxEntregas; $i++) {
                 $col = 6 + ($i - 1) * 2 + 1;
-                $cels[] = $celula($col, $lin, $lin === 3 ? 'Trânsito ' . $i : '', $E['cab_transito']);
-                $cels[] = $celula($col + 1, $lin, $lin === 3 ? 'ETA ' . $i : '', $E['cab_transito']);
+                $estTr = $lin >= 3 ? $E['cab_escuro'] : $E['cab_transito'];
+                $cels[] = $celula($col, $lin, $lin === 3 ? 'Trânsito ' . $i : '', $estTr);
+                $cels[] = $celula($col + 1, $lin, $lin === 3 ? 'ETA ' . $i : '', $estTr);
             }
             foreach ($dias as $k => $dia) {
                 $chave = $dia->format('Y-m-d');
-                $estiloCab = $chave === $hojeChaveX ? $E['cab_hoje'] : ($temEdiPorDia[$chave] ? $E['cab_evento'] : $E['cab']);
+                $estiloCab = $lin >= 3 ? $E['cab_escuro'] : ($chave === $hojeChaveX ? $E['cab_hoje'] : ($temEdiPorDia[$chave] ? $E['cab_evento'] : $E['cab']));
                 if ($lin === 1) { $v = $projetosPorDia[$chave] ?? ''; }
                 elseif ($lin === 2) { $v = $temEdiPorDia[$chave] ? '● ' . numeroBr($demandaEdiBrutaPorDia[$chave] ?? 0, 0) : ''; }
                 elseif ($lin === 3) { $v = $dia->format('W'); }
@@ -519,6 +520,7 @@ try {
             'FFFFF0F5', // 6 alerta 1-50
             'FFF3F7FF', // 7 trânsito/ETA
             'FFFFB366', // 8 (reserva)
+            'FF002060', // 9 cabeçalho azul-escuro
         ];
         $fillsXml = '<fills count="' . (2 + count($fills)) . '"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>';
         foreach ($fills as $cor) {
@@ -526,12 +528,13 @@ try {
         }
         $fillsXml .= '</fills>';
         // fonts: 0 normal, 1 negrito, 2 vermelho negrito, 3 alerta negrito, 4 azul trânsito
-        $fontsXml = '<fonts count="5">'
+        $fontsXml = '<fonts count="6">'
             . '<font><sz val="10"/><name val="Calibri"/></font>'
             . '<font><b/><sz val="10"/><name val="Calibri"/></font>'
             . '<font><b/><sz val="10"/><color rgb="FFC53535"/><name val="Calibri"/></font>'
             . '<font><b/><sz val="10"/><color rgb="FF8C7355"/><name val="Calibri"/></font>'
             . '<font><sz val="10"/><color rgb="FF1D3F72"/><name val="Calibri"/></font>'
+            . '<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>'
             . '</fonts>';
         $bordersXml = '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
             . '<border><left/><right style="thin"><color rgb="FFE9EEF3"/></right><top/><bottom style="thin"><color rgb="FFE9EEF3"/></bottom><diagonal/></border></borders>';
@@ -558,6 +561,7 @@ try {
             $xf(0, 1, 0, 'left'),     // 15 componente (negrito)
             $xf(0, 1, 4, 'center'),   // 16 cab dia com EDI
             $xf(0, 0, 0, 'right'),    // 17 texto alinhado à direita (consumo)
+            $xf(0, 5, 9, 'center'),   // 18 cabeçalho azul-escuro, fonte branca
         ];
         $styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -660,6 +664,17 @@ try {
         .evolucao-table .col-transito { background: #f3f7ff; color: #1d3f72; min-width: 70px; }
         .evolucao-table .col-eta { background: #f3f7ff; color: #1d3f72; min-width: 84px; border-right: 2px solid #dce4ec; }
         .evolucao-table .eta-atrasada { color: #c53535; font-weight: 750; }
+        /* Cabeçalho (títulos + semana e linha das datas) em azul-escuro com fonte
+           branca, igual à planilha. !important pra vencer o amarelo de "hoje", o
+           azul-claro de Trânsito/ETA e o fundo das colunas fixas. */
+        .evolucao-table thead tr:nth-child(3) th,
+        .evolucao-table thead tr:nth-child(4) th {
+            background: #002060 !important;
+            color: #fff !important;
+            font-weight: 700;
+            border-right-color: #1b3a7a;
+            border-bottom-color: #1b3a7a;
+        }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
         .saldo-negativo { background: #ffd6e0; color: #c53535; font-weight: 750; }
