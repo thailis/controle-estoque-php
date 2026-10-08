@@ -332,6 +332,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
     exit;
 }
 
+// Exclui o parâmetro de um componente (a linha inteira em parametros_compra).
+// Só apaga o parâmetro — BOM, estoque, EDI e programação não são tocados.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_parametro') {
+    exigirComprador();
+    $codigoExcluir = trim((string) ($_POST['codigo'] ?? ''));
+    $flash = 'erro_dados';
+    if ($codigoExcluir !== '') {
+        $stmtExcluir = mysqli_prepare($conn, "DELETE FROM parametros_compra WHERE codigo_componente = ?");
+        mysqli_stmt_bind_param($stmtExcluir, 's', $codigoExcluir);
+        mysqli_stmt_execute($stmtExcluir);
+        mysqli_stmt_close($stmtExcluir);
+        $flash = 'excluido';
+    }
+    header('Location: parametros_compra.php?' . http_build_query([
+        'pagina'     => $_POST['pagina_atual'] ?? 1,
+        'busca'      => $_POST['busca_atual'] ?? '',
+        'fornecedor' => $_POST['fornecedor_atual'] ?? '',
+        'flash'      => $flash,
+    ]));
+    exit;
+}
+
 function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
@@ -366,6 +388,7 @@ $flashMap = [
     'inserido'   => ['success', '✅ Componente cadastrado/atualizado com sucesso.'],
     'editado'    => ['success', '✅ Parâmetros atualizados.'],
     'erro_dados' => ['danger', '❌ Informe ao menos o código do componente.'],
+    'excluido'   => ['success', '✅ Parâmetro excluído.'],
 ];
 
 $condicoes = [];
@@ -584,6 +607,8 @@ if (!empty($rows)) {
         .table th:nth-child(9) { max-width: 115px; }
         .table td { white-space: nowrap; text-align: center; }
         .table td.text-end { text-align: center !important; }
+        .btn-remover-linha { border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; line-height: 1; }
+        .btn-remover-linha:hover { color: #a12727; }
         .badge-completo { background: #eaf8f0; color: #247a4d; }
         .badge-incompleto { background: #fff7df; color: #a96600; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
@@ -759,11 +784,12 @@ if (!empty($rows)) {
                             <th class="text-end">Estoque Max (dias)</th>
                             <th class="text-end">Setup (%)</th>
                             <th class="text-end">Estoque Segurança (un)</th>
+                            <th>Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="9" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -784,6 +810,16 @@ if (!empty($rows)) {
                                     <?php $celSeg = celulaEstoqueSeguranca($row); ?>
                                     <td class="text-end" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?>"<?php endif; ?>>
                                         <?php echo h($celSeg[0]); ?>
+                                    </td>
+                                    <td>
+                                        <form method="POST" class="m-0" onsubmit="return confirm('Excluir o parâmetro do componente <?php echo h($codigoLinha); ?>? Essa ação não pode ser desfeita.');">
+                                            <input type="hidden" name="acao" value="excluir_parametro">
+                                            <input type="hidden" name="codigo" value="<?php echo h($codigoLinha); ?>">
+                                            <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                                            <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
+                                            <button type="submit" class="btn-remover-linha" title="Excluir parâmetro">✕</button>
+                                        </form>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
