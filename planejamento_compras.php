@@ -228,6 +228,8 @@ try {
                     // quando fazer o pedido, já vê o Lead Time/Transit Time em Parâmetros
                     // de Compra e pode subtrair — aqui o foco passa a ser "quando falta".
                     'data' => $p['data_necessidade'],
+                    'recalculada' => $p['recalculada'] ?? false,
+                    'data_original' => $p['data_necessidade_original'] ?? null,
                     'quantidade' => $p['quantidade'],
                     'quantidade_base' => $p['quantidade_base'],
                     'setup' => $p['setup'],
@@ -251,13 +253,14 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        fputcsv($saida, ['Data de necessidade', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Data de necessidade', 'Data original (se recalculada)', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             // Mostra a data de necessidade sempre, mesmo quando o status é "urgente" —
             // a coluna Status já indica a urgência, então não faz sentido esconder a data.
             $dataTexto = $r['data']->format('d/m/Y');
             fputcsv($saida, [
                 $dataTexto,
+                ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
                 $r['codigo_componente'],
                 $r['descricao'],
                 $r['fornecedores'],
@@ -428,7 +431,13 @@ try {
                                 <tr>
                                     <?php /* Sempre mostra a data de necessidade, mesmo quando "urgente" — o badge de Status já
                                              diferencia a urgência; esconder a data aqui só tirava informação de quem olha a tela. */ ?>
-                                    <td><?php echo h($r['data']->format('d/m/Y')); ?></td>
+                                    <td>
+                                        <?php echo h($r['data']->format('d/m/Y')); ?>
+                                        <?php if ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface): ?>
+                                            <span class="badge bg-light text-danger border ms-1" title="Era para chegar em <?php echo h($r['data_original']->format('d/m/Y')); ?>, mas não há pedido programado. Nova data = hoje + Lead Time + Transit Time.">recalculada</span>
+                                            <small class="d-block text-muted">era <?php echo h($r['data_original']->format('d/m/Y')); ?></small>
+                                        <?php endif; ?>
+                                    </td>
                                     <td>
                                         <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
                                         <?php if ($r['total_parcelas'] > 1): ?>

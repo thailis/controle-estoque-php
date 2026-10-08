@@ -255,11 +255,43 @@ function calcularParcelasCompraPlanejamento(
         // (o material já estaria fisicamente disponível, mas a simulação não "sabia" disso).
         $iDisponibilidade = max(0, $iEvento - 30);
 
+        // DATA RETROATIVA: se a data sugerida de pedido já passou (ex.: era pra pedir
+        // em agosto com chegada em 18/09 e nada foi programado), não adianta mostrar
+        // uma chegada no passado. Recalcula a situação REAL de hoje: pedido colocado
+        // hoje → chega em hoje + Lead Time + Transit Time. A quantidade passa a cobrir
+        // tudo o que falta até essa nova chegada (o saldo negativo acumulado) MAIS a
+        // demanda futura da janela do Estoque Mínimo a partir da nova chegada.
+        $recalculadaRetroativa = false;
+        $dataNecessidadeOriginal = $dataNecessidade;
+        if ($dataSugerida < $hoje) {
+            $recalculadaRetroativa = true;
+            $dataSugerida = $hoje;
+            $dataNecessidade = $hoje->modify("+{$leadDias} days");
+            $iDisponibilidade = min($n - 1, $leadDias);
+        }
+
+        // QUANTIDADE A PARTIR DA CHEGADA: o pior déficit usado pra dimensionar a compra
+        // é procurado SÓ do dia em que o material chega ($iDisponibilidade) em diante —
+        // até o fim da janela da revisão (ou, no mínimo, a janela do Estoque Mínimo
+        // depois da chegada). Antes, a busca começava na data da revisão e podia
+        // dimensionar a compra por um furo que acontece ANTES da chegada (que esse pedido
+        // não resolve fisicamente). Como o saldo é acumulado, o saldo do dia da chegada
+        // já carrega tudo o que faltou antes dela — então nada fica sem cobrir.
+        $fimQuantidade = min($n - 1, max($iFimUrgencia, $iDisponibilidade + max($minDias, 1)));
+        $piorDeficit = null;
+        for ($k = $iDisponibilidade; $k <= $fimQuantidade; $k++) {
+            $deficitK = $pisoNoDia($k) - $saldoPorDia[$k];
+            if ($piorDeficit === null || $deficitK > $piorDeficit) {
+                $piorDeficit = $deficitK;
+                $iPior = $k;
+            }
+        }
+
         // Quantidade: cobre o pior déficit dentro da PRÓPRIA janela de urgência (mês da
         // revisão + Lead Time) — o lote fica proporcional ao problema real desse mês, sem
         // olhar mais além (é isso que faz o lote ficar pequeno/mensal em vez de somar tudo
         // de uma janela larga).
-        $quantidadeAlvo = $piorDeficit;
+        $quantidadeAlvo = (float) ($piorDeficit ?? 0.0);
         if ($quantidadeAlvo <= 0) {
             continue;
         }
@@ -299,6 +331,10 @@ function calcularParcelasCompraPlanejamento(
             'data' => $status === 'urgente' ? $hoje : $dataSugerida,
             'data_necessidade' => $dataNecessidade,
             'data_disponibilidade' => $dias[$iDisponibilidade],
+            // true = a data original já tinha passado sem pedido; a data acima foi
+            // recalculada como hoje + Lead Time + Transit Time.
+            'recalculada' => $recalculadaRetroativa,
+            'data_necessidade_original' => $dataNecessidadeOriginal,
             'quantidade' => $quantidadeFinal,
             'quantidade_base' => $quantidadeBase,
             'setup' => $setupPercentual,
