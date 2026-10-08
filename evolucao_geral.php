@@ -438,7 +438,7 @@ try {
             $cels = [];
             $titulos = ['Componente', 'Descrição', 'Fornecedor', 'Projeto', 'Consumo', 'Estoque hoje'];
             for ($c = 1; $c <= 6; $c++) {
-                $cels[] = $celula($c, $lin, $lin === 4 ? $titulos[$c - 1] : '', ($lin >= 3 || $c === 6) ? $E['cab_escuro'] : $E['cab']);
+                $cels[] = $celula($c, $lin, $lin === 4 ? $titulos[$c - 1] : '', $lin >= 3 ? $E['cab_escuro'] : $E['cab']);
             }
             for ($i = 1; $i <= $maxEntregas; $i++) {
                 $col = 6 + ($i - 1) * 2 + 1;
@@ -680,8 +680,8 @@ try {
         }
         /* Coluna "Estoque hoje" inteira em azul-escuro com fonte branca (mesmo azul
            do cabeçalho), pra destacar o ponto de partida do saldo. */
-        .evolucao-table th:nth-child(6),
-        .evolucao-table td:nth-child(6) {
+        .evolucao-table thead tr:nth-child(n+3) th:nth-child(6),
+        .evolucao-table tbody td:nth-child(6) {
             background: #002060 !important;
             color: #fff !important;
             font-weight: 700;
