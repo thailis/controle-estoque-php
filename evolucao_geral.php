@@ -32,6 +32,50 @@ function opcoesDistintasGeral(mysqli $conn, string $coluna): array
     return $opcoes;
 }
 
+// ---------- Exportação .xlsx colorida (sem bibliotecas externas) ----------
+// Monta o .xlsx "na mão": um .xlsx é só um ZIP com alguns XMLs dentro. O ZIP é
+// gerado aqui mesmo (zipSimplesEvolucao), sem depender da extensão ZipArchive do
+// servidor — só usa gzdeflate/crc32, que já vêm no PHP padrão.
+function colunaExcelEvolucao(int $indice): string
+{
+    // 1 => A, 27 => AA ...
+    $letras = '';
+    while ($indice > 0) {
+        $resto = ($indice - 1) % 26;
+        $letras = chr(65 + $resto) . $letras;
+        $indice = intdiv($indice - 1, 26);
+    }
+    return $letras;
+}
+
+function xmlEscEvolucao(string $texto): string
+{
+    // Remove caracteres de controle inválidos em XML e escapa o resto.
+    $texto = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/u', '', $texto) ?? '';
+    return htmlspecialchars($texto, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+function zipSimplesEvolucao(array $arquivos): string
+{
+    $dados = '';
+    $central = '';
+    $offset = 0;
+    $hora = 0; $dia = (1 << 5) | 1 | ((2020 - 1980) << 9); // data fixa qualquer (01/01/2020)
+    foreach ($arquivos as $nome => $conteudo) {
+        $crc = crc32($conteudo);
+        $comprimido = function_exists('gzdeflate') ? gzdeflate($conteudo, 6) : $conteudo;
+        $metodo = function_exists('gzdeflate') ? 8 : 0;
+        $tamOrig = strlen($conteudo);
+        $tamComp = strlen($comprimido);
+        $local = pack('VvvvvvVVVvv', 0x04034b50, 20, 0, $metodo, $hora, $dia, $crc, $tamComp, $tamOrig, strlen($nome), 0) . $nome;
+        $dados .= $local . $comprimido;
+        $central .= pack('VvvvvvvVVVvvvvvVV', 0x02014b50, 20, 20, 0, $metodo, $hora, $dia, $crc, $tamComp, $tamOrig, strlen($nome), 0, 0, 0, 0, 0, $offset) . $nome;
+        $offset += strlen($local) + $tamComp;
+    }
+    $fim = pack('VvvvvVVv', 0x06054b50, 0, 0, count($arquivos), count($arquivos), strlen($central), $offset, 0);
+    return $dados . $central . $fim;
+}
+
 function urlComGeral(array $alteracoes = []): string
 {
     $parametros = $_GET;
@@ -67,6 +111,7 @@ $dias = [];
 $temEdiPorDia = [];
 $demandaEdiBrutaPorDia = [];
 $projetosPorDia = [];
+$maxEntregas = 0;
 
 try {
     $fornecedores = opcoesDistintasGeral($conn, 'fornecedor');
@@ -128,7 +173,8 @@ try {
     $pagina = min($pagina, $totalPaginas);
     $componentesPagina = array_slice($componentes, ($pagina - 1) * $porPagina, $porPagina);
 
-    $exportando = ($_GET['exportar'] ?? '') === 'csv';
+    $tipoExportacao = $_GET['exportar'] ?? '';
+    $exportando = in_array($tipoExportacao, ['csv', 'xlsx'], true);
     // Na exportação, considera TODOS os componentes filtrados (ignora a paginação da tela).
     $componentesParaCalcular = $exportando ? $componentes : $componentesPagina;
 
@@ -265,6 +311,23 @@ try {
     }
     unset($componente);
 
+    // Programação pendente de cada componente em pares "Trânsito N / ETA N" (igual à
+    // planilha), em ordem de data. O nº de pares exibido é o maior entre os
+    // componentes considerados (página atual, ou todos na exportação).
+    $maxEntregas = 0;
+    foreach ($componentesParaCalcular as &$componenteProg) {
+        $entregas = $programacaoPorComponente[$componenteProg['codigo_componente']] ?? [];
+        ksort($entregas);
+        $lista = [];
+        foreach ($entregas as $dataEntrega => $qtdEntrega) {
+            if ((float) $qtdEntrega == 0.0) { continue; }
+            $lista[] = ['data' => $dataEntrega, 'quantidade' => (float) $qtdEntrega];
+        }
+        $componenteProg['entregas'] = $lista;
+        $maxEntregas = max($maxEntregas, count($lista));
+    }
+    unset($componenteProg);
+
     // Marca os dias em que pelo menos um componente do conjunto calculado tem demanda EDI
     // (calculado antes da exportação para poder usar tanto no CSV quanto na tela)
     $temEdiPorDia = [];
@@ -280,14 +343,15 @@ try {
     }
 
     // Exportação CSV: gera o arquivo e encerra antes de renderizar HTML
-    if ($exportando && $erroGeral === null) {
+    if ($tipoExportacao === 'csv' && $erroGeral === null) {
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="evolucao-estoque-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
 
         // Linha 1: projetos com demanda EDI naquele dia (mesma linha nova da tela)
-        $linhaProjetos = ['', '', '', '', '', ''];
+        $vaziosEntregas = array_fill(0, $maxEntregas * 2, '');
+        $linhaProjetos = array_merge(['', '', '', '', '', ''], $vaziosEntregas);
         foreach ($dias as $dia) {
             $chave = $dia->format('Y-m-d');
             $linhaProjetos[] = $projetosPorDia[$chave] ?? '';
@@ -295,7 +359,7 @@ try {
         fputcsv($saida, $linhaProjetos, ';', '"', '');
 
         // Linha 2: marcador (●) nos dias com demanda EDI
-        $linhaMarcador = ['', '', '', '', '', ''];
+        $linhaMarcador = array_merge(['', '', '', '', '', ''], $vaziosEntregas);
         foreach ($dias as $dia) {
             $chave = $dia->format('Y-m-d');
             $linhaMarcador[] = $temEdiPorDia[$chave] ? '●' : '';
@@ -303,7 +367,7 @@ try {
         fputcsv($saida, $linhaMarcador, ';', '"', '');
 
         // Linha 3: número da semana
-        $linhaSemana = ['', '', '', '', '', ''];
+        $linhaSemana = array_merge(['', '', '', '', '', ''], $vaziosEntregas);
         foreach ($dias as $dia) {
             $linhaSemana[] = $dia->format('W');
         }
@@ -311,6 +375,10 @@ try {
 
         // Linha 4: cabeçalho com as datas
         $cabecalhoCsv = ['codigo_componente', 'descricao', 'fornecedores', 'projetos', 'consumo', 'estoque_hoje'];
+        for ($i = 1; $i <= $maxEntregas; $i++) {
+            $cabecalhoCsv[] = 'Transito_' . $i;
+            $cabecalhoCsv[] = 'ETA_' . $i;
+        }
         foreach ($dias as $dia) {
             $cabecalhoCsv[] = $dia->format('d/m/Y');
         }
@@ -325,6 +393,11 @@ try {
                 $componente['consumos'],
                 numeroBr($componente['estoque_atual']),
             ];
+            for ($i = 0; $i < $maxEntregas; $i++) {
+                $ent = $componente['entregas'][$i] ?? null;
+                $linhaCsv[] = $ent ? numeroBr($ent['quantidade']) : '';
+                $linhaCsv[] = $ent ? date('d/m/Y', strtotime($ent['data'])) : '';
+            }
             foreach ($dias as $dia) {
                 $linhaCsv[] = numeroBr($componente['saldos'][$dia->format('Y-m-d')] ?? 0);
             }
@@ -332,6 +405,198 @@ try {
         }
 
         fclose($saida);
+        exit;
+    }
+
+    // Exportação .xlsx COLORIDA: mesmas cores da tela (hoje amarelo, dia com EDI
+    // verde, saldo ≤ 0 rosa/vermelho, saldo 1–50 alerta, Trânsito/ETA azul-claro,
+    // ETA atrasada em vermelho) e com Componente…Estoque hoje + cabeçalho congelados.
+    if ($tipoExportacao === 'xlsx' && $erroGeral === null) {
+        // Índices de estilo (cellXfs) definidos em styles.xml mais abaixo
+        $E = [
+            'cab' => 1, 'texto' => 2, 'num' => 3, 'num_evento' => 4, 'num_hoje' => 5,
+            'num_neg' => 6, 'num_alerta' => 7, 'num_hoje_neg' => 8, 'num_hoje_alerta' => 9,
+            'transito' => 10, 'eta' => 11, 'eta_atrasada' => 12, 'cab_hoje' => 13, 'cab_transito' => 14,
+            'componente' => 15, 'cab_evento' => 16, 'texto_num' => 17,
+        ];
+        $hojeChaveX = $hoje->format('Y-m-d');
+        $linhasXml = [];
+        $celula = function (int $col, int $lin, $valor, int $estilo, bool $numero = false): string {
+            $ref = colunaExcelEvolucao($col) . $lin;
+            if ($valor === null || $valor === '') {
+                return '<c r="' . $ref . '" s="' . $estilo . '"/>';
+            }
+            if ($numero) {
+                return '<c r="' . $ref . '" s="' . $estilo . '"><v>' . (0 + $valor) . '</v></c>';
+            }
+            return '<c r="' . $ref . '" s="' . $estilo . '" t="inlineStr"><is><t xml:space="preserve">' . xmlEscEvolucao((string) $valor) . '</t></is></c>';
+        };
+        $colInicioDias = 7 + $maxEntregas * 2;
+
+        // Linhas 1 a 4: projetos do dia, marcador EDI, semana (+ títulos), data
+        for ($lin = 1; $lin <= 4; $lin++) {
+            $cels = [];
+            $titulos = ['Componente', 'Descrição', 'Fornecedor', 'Projeto', 'Consumo', 'Estoque hoje'];
+            for ($c = 1; $c <= 6; $c++) {
+                $cels[] = $celula($c, $lin, $lin === 3 ? $titulos[$c - 1] : '', $E['cab']);
+            }
+            for ($i = 1; $i <= $maxEntregas; $i++) {
+                $col = 6 + ($i - 1) * 2 + 1;
+                $cels[] = $celula($col, $lin, $lin === 3 ? 'Trânsito ' . $i : '', $E['cab_transito']);
+                $cels[] = $celula($col + 1, $lin, $lin === 3 ? 'ETA ' . $i : '', $E['cab_transito']);
+            }
+            foreach ($dias as $k => $dia) {
+                $chave = $dia->format('Y-m-d');
+                $estiloCab = $chave === $hojeChaveX ? $E['cab_hoje'] : ($temEdiPorDia[$chave] ? $E['cab_evento'] : $E['cab']);
+                if ($lin === 1) { $v = $projetosPorDia[$chave] ?? ''; }
+                elseif ($lin === 2) { $v = $temEdiPorDia[$chave] ? '● ' . numeroBr($demandaEdiBrutaPorDia[$chave] ?? 0, 0) : ''; }
+                elseif ($lin === 3) { $v = $dia->format('W'); }
+                else { $v = $dia->format('d/m/Y'); }
+                $cels[] = $celula($colInicioDias + $k, $lin, $v, $estiloCab);
+            }
+            $linhasXml[] = '<row r="' . $lin . '">' . implode('', $cels) . '</row>';
+        }
+
+        $lin = 5;
+        foreach ($componentesParaCalcular as $componente) {
+            $cels = [];
+            $cels[] = $celula(1, $lin, $componente['codigo_componente'], $E['componente']);
+            $cels[] = $celula(2, $lin, $componente['descricao'], $E['texto']);
+            $cels[] = $celula(3, $lin, $componente['fornecedores'] ?: 'Não informado', $E['texto']);
+            $cels[] = $celula(4, $lin, $componente['projetos'] ?: '—', $E['texto']);
+            $cels[] = $celula(5, $lin, $componente['consumos'] ?: '—', $E['texto_num']);
+            $cels[] = $celula(6, $lin, round((float) $componente['estoque_atual']), $E['num'], true);
+            for ($i = 0; $i < $maxEntregas; $i++) {
+                $ent = $componente['entregas'][$i] ?? null;
+                $col = 7 + $i * 2;
+                $cels[] = $celula($col, $lin, $ent ? round($ent['quantidade']) : '', $E['transito'], true);
+                $atrasada = $ent && $ent['data'] < $hojeChaveX;
+                $cels[] = $celula($col + 1, $lin, $ent ? date('d/m/Y', strtotime($ent['data'])) : '', $atrasada ? $E['eta_atrasada'] : $E['eta']);
+            }
+            foreach ($dias as $k => $dia) {
+                $chave = $dia->format('Y-m-d');
+                $saldo = (float) ($componente['saldos'][$chave] ?? 0);
+                $ehHoje = $chave === $hojeChaveX;
+                if ($saldo <= 0) { $est = $ehHoje ? $E['num_hoje_neg'] : $E['num_neg']; }
+                elseif ($saldo >= 1 && $saldo <= 50) { $est = $ehHoje ? $E['num_hoje_alerta'] : $E['num_alerta']; }
+                elseif ($ehHoje) { $est = $E['num_hoje']; }
+                elseif ($temEdiPorDia[$chave]) { $est = $E['num_evento']; }
+                else { $est = $E['num']; }
+                $cels[] = $celula($colInicioDias + $k, $lin, round($saldo), $est, true);
+            }
+            $linhasXml[] = '<row r="' . $lin . '">' . implode('', $cels) . '</row>';
+            $lin++;
+        }
+
+        // Larguras das colunas
+        $cols = '<cols>'
+            . '<col min="1" max="1" width="13" customWidth="1"/>'
+            . '<col min="2" max="2" width="34" customWidth="1"/>'
+            . '<col min="3" max="3" width="18" customWidth="1"/>'
+            . '<col min="4" max="4" width="24" customWidth="1"/>'
+            . '<col min="5" max="5" width="9" customWidth="1"/>'
+            . '<col min="6" max="6" width="12" customWidth="1"/>';
+        if ($maxEntregas > 0) {
+            $cols .= '<col min="7" max="' . (6 + $maxEntregas * 2) . '" width="11" customWidth="1"/>';
+        }
+        $cols .= '<col min="' . $colInicioDias . '" max="' . ($colInicioDias + max(0, count($dias) - 1)) . '" width="11" customWidth="1"/></cols>';
+
+        $sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            . '<sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="4" topLeftCell="G5" activePane="bottomRight" state="frozen"/>'
+            . '<selection pane="topRight"/><selection pane="bottomLeft"/><selection pane="bottomRight" activeCell="G5" sqref="G5"/></sheetView></sheetViews>'
+            . '<sheetFormatPr defaultRowHeight="15"/>'
+            . $cols
+            . '<sheetData>' . implode('', $linhasXml) . '</sheetData>'
+            . '</worksheet>';
+
+        // Cores: mesmas da tela (CSS da evolucao-table)
+        $fills = [
+            'FFF5F8FB', // 2 cabeçalho
+            'FFFFF7C4', // 3 hoje
+            'FFEAF8EE', // 4 evento EDI
+            'FFFFD6E0', // 5 saldo negativo
+            'FFFFF0F5', // 6 alerta 1-50
+            'FFF3F7FF', // 7 trânsito/ETA
+            'FFFFB366', // 8 (reserva)
+        ];
+        $fillsXml = '<fills count="' . (2 + count($fills)) . '"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>';
+        foreach ($fills as $cor) {
+            $fillsXml .= '<fill><patternFill patternType="solid"><fgColor rgb="' . $cor . '"/><bgColor indexed="64"/></patternFill></fill>';
+        }
+        $fillsXml .= '</fills>';
+        // fonts: 0 normal, 1 negrito, 2 vermelho negrito, 3 alerta negrito, 4 azul trânsito
+        $fontsXml = '<fonts count="5">'
+            . '<font><sz val="10"/><name val="Calibri"/></font>'
+            . '<font><b/><sz val="10"/><name val="Calibri"/></font>'
+            . '<font><b/><sz val="10"/><color rgb="FFC53535"/><name val="Calibri"/></font>'
+            . '<font><b/><sz val="10"/><color rgb="FF8C7355"/><name val="Calibri"/></font>'
+            . '<font><sz val="10"/><color rgb="FF1D3F72"/><name val="Calibri"/></font>'
+            . '</fonts>';
+        $bordersXml = '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
+            . '<border><left/><right style="thin"><color rgb="FFE9EEF3"/></right><top/><bottom style="thin"><color rgb="FFE9EEF3"/></bottom><diagonal/></border></borders>';
+        // xf: numFmtId 3 = "#,##0"
+        $xf = function (int $num, int $font, int $fill, string $alinh = 'right') {
+            return '<xf numFmtId="' . $num . '" fontId="' . $font . '" fillId="' . $fill . '" borderId="1" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="' . $alinh . '" vertical="center"/></xf>';
+        };
+        $xfs = [
+            '<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>', // 0
+            $xf(0, 1, 2, 'center'),   // 1 cab
+            $xf(0, 0, 0, 'left'),     // 2 texto
+            $xf(3, 0, 0),             // 3 num
+            $xf(3, 0, 4),             // 4 num evento
+            $xf(3, 0, 3),             // 5 num hoje
+            $xf(3, 2, 5),             // 6 num negativo
+            $xf(3, 3, 6),             // 7 num alerta
+            $xf(3, 2, 3),             // 8 hoje + negativo
+            $xf(3, 3, 3),             // 9 hoje + alerta
+            $xf(3, 4, 7),             // 10 trânsito
+            $xf(0, 4, 7, 'center'),   // 11 ETA
+            $xf(0, 2, 7, 'center'),   // 12 ETA atrasada
+            $xf(0, 1, 3, 'center'),   // 13 cab hoje
+            $xf(0, 1, 7, 'center'),   // 14 cab trânsito
+            $xf(0, 1, 0, 'left'),     // 15 componente (negrito)
+            $xf(0, 1, 4, 'center'),   // 16 cab dia com EDI
+            $xf(0, 0, 0, 'right'),    // 17 texto alinhado à direita (consumo)
+        ];
+        $styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            . $fontsXml . $fillsXml . $bordersXml
+            . '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            . '<cellXfs count="' . count($xfs) . '">' . implode('', $xfs) . '</cellXfs>'
+            . '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+            . '</styleSheet>';
+
+        $arquivos = [
+            '[Content_Types].xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                . '<Default Extension="xml" ContentType="application/xml"/>'
+                . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                . '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+                . '</Types>',
+            '_rels/.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                . '</Relationships>',
+            'xl/workbook.xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                . '<sheets><sheet name="Evolução geral" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            'xl/_rels/workbook.xml.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                . '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+                . '</Relationships>',
+            'xl/styles.xml' => $styles,
+            'xl/worksheets/sheet1.xml' => $sheet,
+        ];
+
+        $conteudoXlsx = zipSimplesEvolucao($arquivos);
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="evolucao-estoque-' . date('Y-m-d-His') . '.xlsx"');
+        header('Content-Length: ' . strlen($conteudoXlsx));
+        echo $conteudoXlsx;
         exit;
     }
 
@@ -390,6 +655,11 @@ try {
         .evolucao-table th:nth-child(4), .evolucao-table td:nth-child(4) { left: 470px; width: 150px; min-width: 150px; max-width: 150px; z-index: 3; }
         .evolucao-table th:nth-child(5), .evolucao-table td:nth-child(5) { left: 620px; width: 100px; min-width: 100px; max-width: 100px; z-index: 3; text-align: right; }
         .evolucao-table th:nth-child(6), .evolucao-table td:nth-child(6) { left: 720px; width: 100px; min-width: 100px; max-width: 100px; z-index: 3; text-align: right; box-shadow: 2px 0 0 #dce4ec; }
+        /* Colunas Trânsito/ETA (programação): ficam ENTRE "Estoque hoje" e os dias e
+           NÃO são fixas — rolam junto com os dias, igual à planilha. */
+        .evolucao-table .col-transito { background: #f3f7ff; color: #1d3f72; min-width: 70px; }
+        .evolucao-table .col-eta { background: #f3f7ff; color: #1d3f72; min-width: 84px; border-right: 2px solid #dce4ec; }
+        .evolucao-table .eta-atrasada { color: #c53535; font-weight: 750; }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
         .saldo-negativo { background: #ffd6e0; color: #c53535; font-weight: 750; }
@@ -489,7 +759,7 @@ try {
                             <input type="hidden" name="<?php echo h($chave); ?>" value="<?php echo h($valor); ?>">
                         <?php endif; ?>
                     <?php endforeach; ?>
-                    <a class="btn btn-outline-primary btn-sm" href="<?php echo h(urlComGeral(['exportar' => 'csv', 'pagina' => null])); ?>">Exportar CSV</a>
+                    <a class="btn btn-outline-success btn-sm" href="<?php echo h(urlComGeral(['exportar' => 'xlsx', 'pagina' => null])); ?>">📊 Exportar Excel</a>
                     <label class="small text-muted text-nowrap" for="por_pagina">Componentes por página</label>
                     <select class="form-select form-select-sm" id="por_pagina" name="por_pagina" onchange="this.form.submit()">
                         <?php foreach ([10, 20, 50] as $quantidade): ?>
@@ -509,6 +779,7 @@ try {
                             <th></th>
                             <th></th>
                             <th></th>
+                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="linha-projeto <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>" title="<?php echo h($projetosPorDia[$chave] ?? ''); ?>">
@@ -523,6 +794,7 @@ try {
                             <th></th>
                             <th></th>
                             <th></th>
+                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="linha-marcador <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
@@ -539,6 +811,10 @@ try {
                             <th>Projeto</th>
                             <th>Consumo</th>
                             <th>Estoque hoje</th>
+                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?>
+                                <th class="col-transito" title="Quantidade da <?php echo $i; ?>ª entrega programada (Programação pendente)">Trânsito <?php echo $i; ?></th>
+                                <th class="col-eta" title="Data da <?php echo $i; ?>ª entrega programada">ETA <?php echo $i; ?></th>
+                            <?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="<?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
@@ -553,6 +829,7 @@ try {
                             <th></th>
                             <th></th>
                             <th></th>
+                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="<?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
@@ -563,7 +840,7 @@ try {
                     </thead>
                     <tbody>
                         <?php if (empty($componentesPagina)): ?>
-                            <tr><td colspan="<?php echo 6 + count($dias); ?>" class="empty-state">Nenhum componente encontrado para os filtros selecionados.</td></tr>
+                            <tr><td colspan="<?php echo 6 + $maxEntregas * 2 + count($dias); ?>" class="empty-state">Nenhum componente encontrado para os filtros selecionados.</td></tr>
                         <?php else: ?>
                             <?php foreach ($componentesPagina as $componente): ?>
                                 <tr>
@@ -573,6 +850,11 @@ try {
                                     <td title="<?php echo h($componente['projetos'] ?: '—'); ?>"><?php echo h($componente['projetos'] ?: '—'); ?></td>
                                     <td class="text-end"><?php echo h($componente['consumos'] ?: '—'); ?></td>
                                     <td><?php echo numeroBr($componente['estoque_atual']); ?></td>
+                                    <?php for ($i = 0; $i < $maxEntregas; $i++): ?>
+                                        <?php $ent = $componente['entregas'][$i] ?? null; ?>
+                                        <td class="col-transito"><?php echo $ent ? numeroBr($ent['quantidade']) : ''; ?></td>
+                                        <td class="col-eta <?php echo ($ent && $ent['data'] < $hoje->format('Y-m-d')) ? 'eta-atrasada' : ''; ?>" <?php if ($ent && $ent['data'] < $hoje->format('Y-m-d')): ?>title="Entrega atrasada (data já passou e ainda não foi marcada como atendida)"<?php endif; ?>><?php echo $ent ? h(date('d/m/Y', strtotime($ent['data']))) : ''; ?></td>
+                                    <?php endfor; ?>
                                     <?php foreach ($dias as $dia): ?>
                                         <?php
                                             $chave = $dia->format('Y-m-d');
