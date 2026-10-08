@@ -206,6 +206,11 @@ function calcularParcelasCompraPlanejamento(
         // já está a caminho.
         $fimRecuperacao = min($n - 1, $iPrimeiroDeficit + $minDias);
         $recuperaSozinho = false;
+        // Só conta como "recupera sozinho" se o SALDO subir (entrou programação) — não
+        // quando é o PISO que cai. Logo depois de um dia de demanda, a janela do Mínimo
+        // pode ficar vazia por alguns dias e o piso despenca pro Estoque de Segurança;
+        // antes, isso era confundido com recuperação e a revisão pulava a compra,
+        // empurrando a necessidade pra revisão seguinte (já atrasada).
         for ($k = $iPrimeiroDeficit; $k <= $fimRecuperacao; $k++) {
             if ($saldoPorDia[$k] >= $pisoNoDia($k)) {
                 $recuperaSozinho = true;
@@ -261,13 +266,18 @@ function calcularParcelasCompraPlanejamento(
         // hoje → chega em hoje + Lead Time + Transit Time. A quantidade passa a cobrir
         // tudo o que falta até essa nova chegada (o saldo negativo acumulado) MAIS a
         // demanda futura da janela do Estoque Mínimo a partir da nova chegada.
+        // O pedido não pode ser colocado antes da própria revisão: na revisão de hoje,
+        // o mais cedo é hoje; numa revisão futura (simulada), o mais cedo é a data dela.
+        // Antes, revisões futuras comparavam só com "hoje" e podiam sugerir uma chegada
+        // ANTERIOR à própria revisão (ex.: revisão de 08/11 com chegada em 22/10), o que
+        // gerava parcelas fantasmas (só o MOQ) e deixava a falta real sem cobertura.
         $recalculadaRetroativa = false;
         $dataNecessidadeOriginal = $dataNecessidade;
-        if ($dataSugerida < $hoje) {
-            $recalculadaRetroativa = true;
-            $dataSugerida = $hoje;
-            $dataNecessidade = $hoje->modify("+{$leadDias} days");
-            $iDisponibilidade = min($n - 1, $leadDias);
+        if ($dataSugerida < $checkpoint) {
+            $recalculadaRetroativa = $dataSugerida < $hoje;
+            $dataSugerida = $checkpoint;
+            $dataNecessidade = $checkpoint->modify("+{$leadDias} days");
+            $iDisponibilidade = min($n - 1, $iCheckpoint + $leadDias);
         }
 
         // QUANTIDADE A PARTIR DA CHEGADA: o pior déficit usado pra dimensionar a compra
@@ -305,6 +315,21 @@ function calcularParcelasCompraPlanejamento(
             ? ($prefixoDemanda[min($n, $iDisponibilidade + $maxDias)] - $prefixoDemanda[$iDisponibilidade])
             : 0.0;
         $tetoCompra = max(0.0, $maxQtdNoDia - $saldoPorDia[$iDisponibilidade]);
+
+        // O Estoque Máximo nunca pode CAUSAR falta: a compra tem que ser no mínimo o
+        // suficiente pra o saldo não ficar negativo até a próxima compra poder chegar
+        // (próxima revisão mensal + Lead Time + Transit Time). Sem isso, como a chegada
+        // é 30 dias antes da demanda, um Máximo curto (ex.: 45 dias) deixava de fora uma
+        // demanda grande logo depois da janela — e a revisão seguinte já não conseguia
+        // mais cobri-la a tempo (ex.: furo de 01/01 com a compra chegando só em 02/01).
+        $iProximaChegada = min($n - 1, ($indicePorData[$checkpoint->modify('+1 month')->format('Y-m-d')] ?? ($n - 1)) + $leadDias);
+        $coberturaMinima = 0.0;
+        for ($k = $iDisponibilidade; $k <= $iProximaChegada; $k++) {
+            if (-$saldoPorDia[$k] > $coberturaMinima) {
+                $coberturaMinima = -$saldoPorDia[$k];
+            }
+        }
+        $tetoCompra = max($tetoCompra, $coberturaMinima);
 
         // MOQ como PISO mínimo, não como múltiplo/lote fechado: compra o déficit sem passar
         // do teto do Máximo, exceto quando o MOQ sozinho já exige mais que isso (aí compra
