@@ -646,6 +646,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
         'filtro'     => '',
         'processo'   => $chaveLote,
         'fornecedor' => '',
+        'mes'        => '', // mostra a PO/processo inteira, sem limitar ao mês
         'flash'      => $flashLote,
         'lote_qtd'   => $qtdLote,
     ]));
@@ -938,11 +939,16 @@ $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
+// Ao ENTRAR na tela (sem o parâmetro na URL), já abre filtrando só as Pendentes.
+// Se o usuário escolher "Todas as situações" ou "Atendido", o parâmetro vem na URL
+// (mesmo vazio) e a escolha dele é respeitada.
+$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : 'pendente'; // '', 'pendente', 'atendido'
 $processoFiltro = isset($_GET['processo']) ? trim($_GET['processo']) : '';
 $fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
 // Filtro de mês pela coluna Data (formato AAAA-MM, vindo do <input type="month">)
-$mesFiltro = isset($_GET['mes']) ? trim($_GET['mes']) : '';
+// Mesmo esquema pro mês: ao entrar, já filtra o mês atual (pela coluna Data).
+// Apagar o mês no campo manda "mes=" vazio e mostra todos os meses.
+$mesFiltro = isset($_GET['mes']) ? trim($_GET['mes']) : date('Y-m');
 if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $mesFiltro)) {
     $mesFiltro = '';
 }
@@ -1027,10 +1033,18 @@ if ($fornecedorFiltro !== '') {
 if ($mesFiltro !== '') {
     $inicioMes = $mesFiltro . '-01';
     $inicioProximoMes = date('Y-m-d', strtotime($inicioMes . ' +1 month'));
-    $condicoes[] = "p.data >= ? AND p.data < ?";
-    $params[] = $inicioMes;
-    $params[] = $inicioProximoMes;
-    $tipos .= 'ss';
+    if ($filtro === 'pendente') {
+        // Pendentes: mostra o mês escolhido E tudo o que ficou pendente de meses
+        // anteriores (atrasados, ainda não recebidos) — é o que precisa cobrar.
+        $condicoes[] = "p.data < ?";
+        $params[] = $inicioProximoMes;
+        $tipos .= 's';
+    } else {
+        $condicoes[] = "p.data >= ? AND p.data < ?";
+        $params[] = $inicioMes;
+        $params[] = $inicioProximoMes;
+        $tipos .= 'ss';
+    }
 }
 
 $where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
@@ -1407,7 +1421,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </select>
                 </div>
                 <div class="col-auto">
-                    <input type="month" name="mes" class="form-control form-control-sm" title="Mês (pela coluna Data)" value="<?php echo h($mesFiltro); ?>" onchange="this.form.submit()">
+                    <input type="month" name="mes" class="form-control form-control-sm" title="Mês (pela coluna Data). Com situação Pendente, inclui também os pendentes atrasados de meses anteriores." value="<?php echo h($mesFiltro); ?>" onchange="this.form.submit()">
                 </div>
                 <div class="col-auto">
                     <select name="filtro" class="form-select form-select-sm" onchange="this.form.submit()" title="Situação">
@@ -1418,7 +1432,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
-                    <a href="programacao.php" class="btn btn-outline-secondary">Limpar</a>
+                    <a href="programacao.php?filtro=&mes=" class="btn btn-outline-secondary" title="Tira todos os filtros (todas as situações e todos os meses)">Limpar</a>
                     <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
