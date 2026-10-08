@@ -714,6 +714,19 @@ if (!empty($componentes)) {
         .badge-mrp-n { background: #fff0f0; color: #c53535; }
         .badge-mrp-none { background: #eef2f5; color: #637485; }
         .col-total { font-weight: 750; background: #f8f9fa; }
+
+        /* Espaçamento da tabela: números com largura mínima e respiro dos
+           lados; descrição com largura limitada (texto longo vira "..." e
+           aparece inteiro ao passar o mouse). */
+        .tabela-estoque th, .tabela-estoque td { padding: 7px 14px; vertical-align: middle; }
+        .tabela-estoque th.text-end, .tabela-estoque td.text-end { min-width: 95px; }
+        .tabela-estoque .col-descricao {
+            max-width: 380px; min-width: 220px;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .tabela-estoque .col-mrp { padding-left: 22px; min-width: 120px; }
+        .tabela-estoque .col-excluir { text-align: center; width: 70px; }
+        .tabela-estoque tbody tr:nth-child(even) { background: #fbfcfd; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
 
         .btn-remover-linha {
@@ -855,11 +868,11 @@ if (!empty($componentes)) {
 
         <div class="card">
             <div class="card-body table-responsive">
-                <table class="table table-hover table-sm">
+                <table class="table table-hover table-sm tabela-estoque">
                     <thead>
                         <tr>
                             <th>Componente</th>
-                            <th>Descrição</th>
+                            <th class="col-descricao">Descrição</th>
                             <?php foreach ($plantas as $p): ?>
                                 <th class="text-end" title="Estoque da planta <?php echo h($p); ?> — duplo clique na célula para editar"><?php echo h($p); ?></th>
                             <?php endforeach; ?>
@@ -869,8 +882,8 @@ if (!empty($componentes)) {
                             <th class="text-end" title="Consumo dos EDIs CONFIRMADOS (Atendido): quantidade do EDI × consumo da BOM. Reabrir um EDI tira o valor dele daqui. É subtraído do Total.">Atendidos</th>
                             <th class="text-end col-total" title="Estoque das plantas (inclui Recebido) + Ajustes − Atendidos">Total</th>
                             <th class="text-end" title="Previsão: EDIs ainda NÃO confirmados × consumo da BOM. Só pra visualizar — NÃO é descontada do Total.">Demanda</th>
-                            <th>MRP</th>
-                            <th title="Excluir">Excluir</th>
+                            <th class="col-mrp">MRP</th>
+                            <th class="col-excluir" title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -892,7 +905,7 @@ if (!empty($componentes)) {
                                 ?>
                                 <tr id="linha-<?php echo h($codigo); ?>">
                                     <td><strong><?php echo h($codigo); ?></strong></td>
-                                    <td><?php echo h($linha['descricao'] ?? ''); ?></td>
+                                    <td class="col-descricao" title="<?php echo h($linha['descricao'] ?? ''); ?>"><?php echo h($linha['descricao'] ?? ''); ?></td>
 
                                     <?php foreach ($plantas as $p): ?>
                                         <?php $valorPlanta = $porPlanta[$codigo][$p] ?? 0.0; ?>
@@ -906,8 +919,8 @@ if (!empty($componentes)) {
                                     <td class="text-end js-atendidos" data-atendidos="<?php echo h((string) $atendidosLinha); ?>" title="Consumo dos EDIs confirmados (Atendido)"><?php echo abs($atendidosLinha) > 0.0001 ? number_format($atendidosLinha, 2, ',', '.') : '—'; ?></td>
                                     <td class="text-end col-total"><?php echo number_format((float) $linha['total'], 2, ',', '.'); ?></td>
                                     <td class="text-end text-muted js-demanda" title="Previsão — não é descontada do Total"><?php echo $demandaLinha > 0 ? number_format($demandaLinha, 2, ',', '.') : '—'; ?></td>
-                                    <td><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
-                                    <td>
+                                    <td class="col-mrp"><span class="badge <?php echo $badgeClasse; ?>"><?php echo h($badgeTexto); ?></span></td>
+                                    <td class="col-excluir">
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir este componente do estoque? Remove TODAS as linhas dele (todas as plantas). Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_componente_estoque">
                                             <input type="hidden" name="codigo" value="<?php echo h($codigo); ?>">
