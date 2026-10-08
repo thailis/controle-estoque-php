@@ -417,7 +417,7 @@ try {
             'cab' => 1, 'texto' => 2, 'num' => 3, 'num_evento' => 4, 'num_hoje' => 5,
             'num_neg' => 6, 'num_alerta' => 7, 'num_hoje_neg' => 8, 'num_hoje_alerta' => 9,
             'transito' => 10, 'eta' => 11, 'eta_atrasada' => 12, 'cab_hoje' => 13, 'cab_transito' => 14,
-            'componente' => 15, 'cab_evento' => 16, 'texto_num' => 17, 'cab_escuro' => 18,
+            'componente' => 15, 'cab_evento' => 16, 'texto_num' => 17, 'cab_escuro' => 18, 'num_escuro' => 19,
         ];
         $hojeChaveX = $hoje->format('Y-m-d');
         $linhasXml = [];
@@ -438,7 +438,7 @@ try {
             $cels = [];
             $titulos = ['Componente', 'Descrição', 'Fornecedor', 'Projeto', 'Consumo', 'Estoque hoje'];
             for ($c = 1; $c <= 6; $c++) {
-                $cels[] = $celula($c, $lin, $lin === 4 ? $titulos[$c - 1] : '', $lin >= 3 ? $E['cab_escuro'] : $E['cab']);
+                $cels[] = $celula($c, $lin, $lin === 4 ? $titulos[$c - 1] : '', ($lin >= 3 || $c === 6) ? $E['cab_escuro'] : $E['cab']);
             }
             for ($i = 1; $i <= $maxEntregas; $i++) {
                 $col = 6 + ($i - 1) * 2 + 1;
@@ -466,7 +466,7 @@ try {
             $cels[] = $celula(3, $lin, $componente['fornecedores'] ?: 'Não informado', $E['texto']);
             $cels[] = $celula(4, $lin, $componente['projetos'] ?: '—', $E['texto']);
             $cels[] = $celula(5, $lin, $componente['consumos'] ?: '—', $E['texto_num']);
-            $cels[] = $celula(6, $lin, round((float) $componente['estoque_atual']), $E['num'], true);
+            $cels[] = $celula(6, $lin, round((float) $componente['estoque_atual']), $E['num_escuro'], true);
             for ($i = 0; $i < $maxEntregas; $i++) {
                 $ent = $componente['entregas'][$i] ?? null;
                 $col = 7 + $i * 2;
@@ -562,6 +562,7 @@ try {
             $xf(0, 1, 4, 'center'),   // 16 cab dia com EDI
             $xf(0, 0, 0, 'right'),    // 17 texto alinhado à direita (consumo)
             $xf(0, 5, 9, 'center'),   // 18 cabeçalho azul-escuro, fonte branca
+            $xf(3, 5, 9),             // 19 número azul-escuro, fonte branca (Estoque hoje)
         ];
         $styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -676,6 +677,14 @@ try {
             font-weight: 700;
             border-right-color: #1b3a7a;
             border-bottom-color: #1b3a7a;
+        }
+        /* Coluna "Estoque hoje" inteira em azul-escuro com fonte branca (mesmo azul
+           do cabeçalho), pra destacar o ponto de partida do saldo. */
+        .evolucao-table th:nth-child(6),
+        .evolucao-table td:nth-child(6) {
+            background: #002060 !important;
+            color: #fff !important;
+            font-weight: 700;
         }
         .col-evento { background: #eaf8ee; }
         .col-hoje { background: #fff7c4 !important; }
