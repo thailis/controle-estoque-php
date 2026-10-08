@@ -438,13 +438,13 @@ try {
             $cels = [];
             $titulos = ['Componente', 'Descrição', 'Fornecedor', 'Projeto', 'Consumo', 'Estoque hoje'];
             for ($c = 1; $c <= 6; $c++) {
-                $cels[] = $celula($c, $lin, $lin === 3 ? $titulos[$c - 1] : '', $lin >= 3 ? $E['cab_escuro'] : $E['cab']);
+                $cels[] = $celula($c, $lin, $lin === 4 ? $titulos[$c - 1] : '', $lin >= 3 ? $E['cab_escuro'] : $E['cab']);
             }
             for ($i = 1; $i <= $maxEntregas; $i++) {
                 $col = 6 + ($i - 1) * 2 + 1;
                 $estTr = $lin >= 3 ? $E['cab_escuro'] : $E['cab_transito'];
-                $cels[] = $celula($col, $lin, $lin === 3 ? 'Trânsito ' . $i : '', $estTr);
-                $cels[] = $celula($col + 1, $lin, $lin === 3 ? 'ETA ' . $i : '', $estTr);
+                $cels[] = $celula($col, $lin, $lin === 4 ? 'Trânsito ' . $i : '', $estTr);
+                $cels[] = $celula($col + 1, $lin, $lin === 4 ? 'ETA ' . $i : '', $estTr);
             }
             foreach ($dias as $k => $dia) {
                 $chave = $dia->format('Y-m-d');
@@ -820,6 +820,21 @@ try {
                             <?php endforeach; ?>
                         </tr>
                         <tr>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <th></th>
+                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
+                            <?php foreach ($dias as $dia): ?>
+                                <?php $chave = $dia->format('Y-m-d'); ?>
+                                <th class="<?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
+                                    <?php echo $dia->format('W'); ?>
+                                </th>
+                            <?php endforeach; ?>
+                        </tr>
+                        <tr>
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
@@ -830,21 +845,6 @@ try {
                                 <th class="col-transito" title="Quantidade da <?php echo $i; ?>ª entrega programada (Programação pendente)">Trânsito <?php echo $i; ?></th>
                                 <th class="col-eta" title="Data da <?php echo $i; ?>ª entrega programada">ETA <?php echo $i; ?></th>
                             <?php endfor; ?>
-                            <?php foreach ($dias as $dia): ?>
-                                <?php $chave = $dia->format('Y-m-d'); ?>
-                                <th class="<?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
-                                    <?php echo $dia->format('W'); ?>
-                                </th>
-                            <?php endforeach; ?>
-                        </tr>
-                        <tr>
-                            <th></th>
-                            <th></th>
-                            <th></th>
-                            <th></th>
-                            <th></th>
-                            <th></th>
-                            <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
                                 <th class="<?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
