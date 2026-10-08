@@ -450,6 +450,11 @@ $resPlantas = mysqli_query($conn, "SELECT DISTINCT planta FROM estoque WHERE pla
 while ($linhaPlanta = mysqli_fetch_assoc($resPlantas)) {
     $plantas[] = $linhaPlanta['planta'];
 }
+// Plantas que aparecem SEMPRE como coluna (mesmo sem nenhum valor ainda),
+// pra poder lançar estoque nelas direto com duplo clique.
+$plantasFixas = ['2403', '2404'];
+$plantas = array_values(array_unique(array_merge(array_map('trim', $plantas), $plantasFixas)));
+sort($plantas, SORT_NATURAL);
 
 // Componentes da BOM, pra sugerir no campo da entrada manual
 $componentesBom = [];
@@ -723,7 +728,7 @@ if (!empty($componentes)) {
     </style>
 </head>
 <body>
-    <div class="container-fluid" style="max-width: 1400px;">
+    <div class="container-fluid" style="max-width: 98vw;">
         <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Navegação do sistema">
                 <a class="btn btn-outline-secondary btn-sm" href="index.php">🏠 Dashboard</a>
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
@@ -856,7 +861,7 @@ if (!empty($componentes)) {
                             <th>Componente</th>
                             <th>Descrição</th>
                             <?php foreach ($plantas as $p): ?>
-                                <th class="text-end">Estoque <?php echo h($p); ?></th>
+                                <th class="text-end" title="Estoque da planta <?php echo h($p); ?> — duplo clique na célula para editar"><?php echo h($p); ?></th>
                             <?php endforeach; ?>
                             <?php if ($temSemPlanta): ?>
                                 <th class="text-end" title="Ajustes manuais e estoque importado sem planta (não inclui EDIs).">Ajustes</th>
