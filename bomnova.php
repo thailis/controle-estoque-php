@@ -340,7 +340,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         }
     }
 
-    echo json_encode(['ok' => true, 'exibido' => $valorParaExibir]);
+    // Modelo é do MATERIAL (ex.: 10000710 = 2GX 201021J): editar em uma linha
+    // aplica em TODAS as linhas do mesmo material de uma vez, em vez de ter que
+    // editar (e esperar salvar) linha por linha.
+    $linhasMesmoMaterial = 0;
+    $materialOriginal = trim((string) ($_POST['orig_material'] ?? ''));
+    if ($campo === 'modelo' && $materialOriginal !== '') {
+        $stmtModeloMaterial = mysqli_prepare($conn, "UPDATE bomnova SET modelo = ? WHERE TRIM(material) = ?");
+        mysqli_stmt_bind_param($stmtModeloMaterial, 'ss', $valorParaGravar, $materialOriginal);
+        mysqli_stmt_execute($stmtModeloMaterial);
+        $linhasMesmoMaterial = max(0, mysqli_stmt_affected_rows($stmtModeloMaterial));
+        mysqli_stmt_close($stmtModeloMaterial);
+    }
+
+    echo json_encode(['ok' => true, 'exibido' => $valorParaExibir, 'linhas_material' => $linhasMesmoMaterial]);
     exit;
 }
 
@@ -1569,6 +1582,28 @@ while ($row = mysqli_fetch_assoc($result)) {
         // (data-extra) das outras células e os campos orig_* dos botões (MRP,
         // Planejamento, Excluir). Sem isso, a 2ª edição/clique na mesma linha
         // dava "Não achei essa linha exata" até recarregar a página.
+        // Modelo salvo numa linha → o servidor já aplicou em todas as linhas do
+        // mesmo material; aqui só atualiza essas células na tela, sem recarregar.
+        document.addEventListener('inline-edit:salvo', function (evento) {
+            if (!evento.detail || evento.detail.campo !== 'modelo') return;
+            const linha = evento.target.closest('tr');
+            const celulaEditada = linha && linha.querySelector('td[data-campo="modelo"]');
+            if (!celulaEditada) return;
+            let material = '';
+            try { material = String(JSON.parse(celulaEditada.dataset.extra || '{}').material || '').trim(); } catch (e) { return; }
+            if (!material) return;
+            const novoModelo = String(evento.detail.exibido ?? celulaEditada.textContent).trim();
+            document.querySelectorAll('td[data-campo="modelo"]').forEach(function (celula) {
+                if (celula === celulaEditada) return;
+                try {
+                    if (String(JSON.parse(celula.dataset.extra || '{}').material || '').trim() === material) {
+                        celula.textContent = novoModelo;
+                        celula.dataset.valorBruto = novoModelo;
+                    }
+                } catch (e) { /* ignora */ }
+            });
+        });
+
         document.addEventListener('inline-edit:salvo', function (evento) {
             const campo = evento.detail && evento.detail.campo;
             const camposChave = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
