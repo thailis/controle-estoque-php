@@ -438,10 +438,12 @@ $tipos = '';
 if ($busca !== '') {
     // Filtra o COMPONENTE inteiro (todas as linhas dele), não só as linhas cuja
     // descrição bate — senão o Total ficava parcial ao buscar por descrição.
-    $where = "WHERE e.codigo_componente IN (SELECT codigo_componente FROM estoque WHERE codigo_componente LIKE ? OR descricao LIKE ?)";
+    // Busca pela descrição também olha a da BOM (pra achar quem não tem descrição no estoque)
+    $where = "WHERE e.codigo_componente IN (SELECT codigo_componente FROM estoque WHERE codigo_componente LIKE ? OR descricao LIKE ?)
+              OR TRIM(e.codigo_componente) IN (SELECT TRIM(codigo_componente) FROM bomnova WHERE descricao LIKE ?)";
     $buscaLike = "%$busca%";
-    $params = [$buscaLike, $buscaLike];
-    $tipos = 'ss';
+    $params = [$buscaLike, $buscaLike, $buscaLike];
+    $tipos = 'sss';
 }
 
 // Lista de plantas existentes na base (vira uma coluna por planta na tabela)
@@ -499,8 +501,10 @@ $somaEstoque = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 // Monta uma linha por componente, com descrição, total (soma de todas as plantas) e status MRP
 function montarSqlComponentes(string $where): string
 {
+    // Descrição: a gravada no estoque; se estiver vazia (ex.: componente que só
+    // tem baixas de EDI), usa a da BOM.
     return "SELECT e.codigo_componente,
-                   MAX(e.descricao) AS descricao,
+                   COALESCE(MAX(NULLIF(TRIM(e.descricao), '')), MAX(bom.descricao)) AS descricao,
                    SUM(COALESCE(CAST(e.estoque AS DECIMAL(18,4)), 0)) AS total,
                    MAX(bom.tem_ativo) AS tem_ativo,
                    MAX(bom.total_linhas) AS total_linhas
@@ -508,7 +512,8 @@ function montarSqlComponentes(string $where): string
             LEFT JOIN (
                 SELECT TRIM(codigo_componente) AS codigo_componente,
                        MAX(CASE WHEN mrp IS NULL OR TRIM(mrp) = '' OR UPPER(TRIM(mrp)) <> 'N' THEN 1 ELSE 0 END) AS tem_ativo,
-                       COUNT(*) AS total_linhas
+                       COUNT(*) AS total_linhas,
+                       MAX(NULLIF(TRIM(descricao), '')) AS descricao
                 FROM bomnova
                 GROUP BY TRIM(codigo_componente)
             ) bom ON bom.codigo_componente = TRIM(e.codigo_componente)
