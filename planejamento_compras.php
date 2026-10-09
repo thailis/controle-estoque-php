@@ -253,24 +253,39 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        fputcsv($saida, ['Data de necessidade', 'Data original (se recalculada)', 'Código', 'Descrição', 'Fornecedor', 'Projeto', 'Parcela', 'Estoque hoje', 'Quantidade sugerida', 'Setup (%)', 'Status'], ';', '"', '');
+        // Cabeçalho em inglês e nesta ordem (padrão usado pra mandar ao time/fornecedor):
+        // Sap | Description | Supplier | Project name | Parcel | Current Stock |
+        // Suggested QTY | Setup (%) | Original date | Suggested date | Status
+        fputcsv($saida, ['Sap', 'Description', 'Supplier', 'Project name', 'Parcel', 'Current Stock', 'Suggested QTY', 'Setup (%)', 'Original date', 'Suggested date', 'Status'], ';', '"', '');
+        // Monta a linha "na mão" (em vez de fputcsv) só pra a Parcela sair como
+        // ="1/2" SEM aspas em volta — assim o Excel mostra 1/2 como texto, em vez de
+        // converter pra data (01/fev). Os outros campos são escapados normalmente.
+        $campoCsv = function ($valor): string {
+            $valor = (string) $valor;
+            if ($valor === '' || strpbrk($valor, ";\"\r\n") === false) {
+                return $valor;
+            }
+            return '"' . str_replace('"', '""', $valor) . '"';
+        };
         foreach ($resultados as $r) {
-            // Mostra a data de necessidade sempre, mesmo quando o status é "urgente" —
-            // a coluna Status já indica a urgência, então não faz sentido esconder a data.
-            $dataTexto = $r['data']->format('d/m/Y');
-            fputcsv($saida, [
-                $dataTexto,
-                ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
+            $parcelaCsv = '="' . $r['parcela'] . '/' . $r['total_parcelas'] . '"';
+            $linhaCsv = [
                 $r['codigo_componente'],
                 $r['descricao'],
                 $r['fornecedores'],
                 $r['projetos'],
-                $r['parcela'] . '/' . $r['total_parcelas'],
+                '@@PARCELA@@',
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
+                // Original date: só preenchida quando a data foi recalculada (a original já tinha passado)
+                ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
+                $r['data']->format('d/m/Y'),
                 $r['status'] === 'urgente' ? 'Urgente' : 'Planejar',
-            ], ';', '"', '');
+            ];
+            $partes = array_map($campoCsv, $linhaCsv);
+            $partes[4] = $parcelaCsv;
+            fwrite($saida, implode(';', $partes) . "\r\n");
         }
         fclose($saida);
         exit;
