@@ -217,9 +217,14 @@ function calcularParcelasCompraPlanejamento(
                 break;
             }
         }
-        if ($recuperaSozinho) {
-            continue;
-        }
+        // A checagem "recupera sozinho" acima ficou só como referência e NÃO pula
+        // mais a revisão: ela se enganava (uma entrada que sobe o saldo por poucos
+        // dias, ou o piso caindo logo depois de uma demanda, contavam como
+        // "resolvido") e fazia revisões inteiras serem puladas — em item de lead
+        // time longo isso gerava furo (ex.: 12051184). Agora quem decide é a regra
+        // "precisa agora?" mais abaixo, que já considera a programação colocada,
+        // porque o déficit é medido a partir da chegada.
+        unset($recuperaSozinho);
 
         // O evento de demanda real que gera a necessidade: caminha a partir do PRIMEIRO
         // furo ($iPrimeiroDeficit) — não do pior — até achar o primeiro dia com demanda
@@ -330,6 +335,27 @@ function calcularParcelasCompraPlanejamento(
             }
         }
         $tetoCompra = max($tetoCompra, $coberturaMinima);
+
+        // PRECISA AGORA? Só cria a parcela nesta revisão se o saldo furar o piso
+        // ANTES da próxima compra poder chegar (próxima revisão + Lead Time +
+        // Transit Time). Se o furo só acontece depois disso, a próxima revisão
+        // ainda resolve a tempo — evita antecipar compra sem necessidade.
+        $precisaAgora = false;
+        for ($k = $iDisponibilidade; $k < $iProximaChegada; $k++) {
+            if ($pisoNoDia($k) - $saldoPorDia[$k] > 0.0001) {
+                $precisaAgora = true;
+                break;
+            }
+        }
+        if (!$precisaAgora) {
+            continue;
+        }
+
+        // Estoque já no teto do Máximo e sem risco de ficar negativo: não há o que
+        // comprar. Sem isso, o MOQ forçava compras "picadas" (só o MOQ, ex.: 100 un).
+        if ($tetoCompra <= 0.0001 && $coberturaMinima <= 0.0001) {
+            continue;
+        }
 
         // MOQ como PISO mínimo, não como múltiplo/lote fechado: compra o déficit sem passar
         // do teto do Máximo, exceto quando o MOQ sozinho já exige mais que isso (aí compra
