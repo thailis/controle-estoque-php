@@ -262,7 +262,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $cacheDadosBom = [];
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = COALESCE(NULLIF(TRIM(modelo), ''), ?), quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
+                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = COALESCE(?, modelo), quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
 
                 mysqli_autocommit($conn, false);
 
@@ -788,7 +788,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $dadosBomTodos = buscarDadosBom($conn, $materiaisEdi);
     $linhasSync = 0;
     $semBom = 0;
-    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto), modelo = COALESCE(NULLIF(TRIM(modelo), ''), ?) WHERE TRIM(material) = ?");
+    $stmtSync = mysqli_prepare($conn, "UPDATE edi SET pn2 = COALESCE(?, pn2), marca = COALESCE(?, marca), projeto = COALESCE(?, projeto), modelo = COALESCE(?, modelo) WHERE TRIM(material) = ?");
     foreach ($dadosBomTodos as $mat => $d) {
         if ($d['pn'] === null && $d['tipo'] === null && $d['projeto'] === null && $d['modelo'] === null) {
             $semBom++;
