@@ -1209,7 +1209,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, mrp</code><br>
+                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, mrp</code><br>
+                        A coluna <code>modelo</code> é opcional — se vier no CSV, é importada junto; se não vier (ou estiver vazia), fica em branco e dá pra preencher depois com duplo clique.<br>
                         A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
                         A coluna <code>moeda</code> é opcional — sem ela, entra <strong>BRL</strong> (dá pra trocar depois com duplo clique).<br>
                         As colunas <code>net_price</code> (ou <code>Net Price</code>), <code>ipi, pis, cofins, icms</code> (aceita também <code>IPI %</code> etc.) também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
