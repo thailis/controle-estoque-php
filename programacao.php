@@ -574,6 +574,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
     $flashLote = 'lote_erro';
     $qtdLote = 0;
 
+    // Alterar a DATA de todas as linhas PENDENTES do Processo/PO de uma vez.
+    // Linhas já atendidas não mudam (a data delas fica travada, igual na edição
+    // individual) — reabra antes se precisar.
+    if ($chaveLote !== '' && $situacaoLote === 'data') {
+        $novaDataLote = parseDataProgramacao(trim((string) ($_POST['data_lote'] ?? '')));
+        if ($novaDataLote === null) {
+            $flashLote = 'lote_data_invalida';
+        } else {
+            $stmtDataLote = mysqli_prepare($conn, "
+                UPDATE programacao SET data = ?
+                WHERE (TRIM(COALESCE(processo, '')) = ? OR TRIM(COALESCE(po, '')) = ?)
+                  AND COALESCE(atendido, 0) = 0
+            ");
+            mysqli_stmt_bind_param($stmtDataLote, 'sss', $novaDataLote, $chaveLote, $chaveLote);
+            mysqli_stmt_execute($stmtDataLote);
+            $qtdLote = max(0, mysqli_stmt_affected_rows($stmtDataLote));
+            mysqli_stmt_close($stmtDataLote);
+            $flashLote = $qtdLote > 0 ? 'lote_data' : 'lote_nada';
+        }
+    }
+
     if ($chaveLote !== '' && in_array($situacaoLote, ['atendido', 'pendente'], true)) {
         $marcarAtendido = $situacaoLote === 'atendido';
         $atendidoAtual = $marcarAtendido ? 0 : 1; // só mexe em quem está na situação oposta
@@ -962,6 +983,8 @@ $flashMap = [
     'erro_atendido' => ['warning', '⚠️ Esse item já está atendido — reabra antes de editar.'],
     'lote_atendido' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) marcada(s) como Atendido (somadas no estoque pela Quantidade Recebida).'],
     'lote_pendente' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) reaberta(s) como Pendente (entradas de estoque removidas).'],
+    'lote_data'     => ['success', '✅ Data alterada em ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) pendente(s).'],
+    'lote_data_invalida' => ['danger', '❌ Data inválida. Use dd/mm/aaaa.'],
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
     'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
 ];
@@ -1378,25 +1401,30 @@ while ($row = mysqli_fetch_assoc($result)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <h2 class="h6 mb-3">✔️ Situação em lote (todos os itens de um Processo ou PO)</h2>
-            <form method="POST" class="row g-2 align-items-end" onsubmit="return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
+            <h2 class="h6 mb-3">✔️ Situação / Data em lote (todos os itens de um Processo ou PO)</h2>
+            <form method="POST" class="row g-2 align-items-end" onsubmit="if (this.situacao_lote.value === 'data') { if (!this.data_lote.value.trim()) { alert('Informe a nova data (dd/mm/aaaa).'); return false; } return confirm('Alterar a DATA de todas as linhas PENDENTES de \'' + this.chave_lote.value.trim() + '\' para ' + this.data_lote.value.trim() + '?'); } return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
                 <input type="hidden" name="acao" value="situacao_em_lote">
                 <div class="col-auto">
                     <label class="form-label small mb-1">Processo ou PO</label>
                     <input type="text" name="chave_lote" list="lista-processos" autocomplete="off" class="form-control form-control-sm" placeholder="Ex.: Y26A3P0011 ou 5500157663" required>
                 </div>
                 <div class="col-auto">
-                    <label class="form-label small mb-1">Nova situação</label>
-                    <select name="situacao_lote" class="form-select form-select-sm">
-                        <option value="atendido">Atendido</option>
-                        <option value="pendente">Pendente (reabrir)</option>
+                    <label class="form-label small mb-1">O que alterar</label>
+                    <select name="situacao_lote" class="form-select form-select-sm" onchange="document.getElementById('campo_data_lote').style.display = this.value === 'data' ? '' : 'none';">
+                        <option value="atendido">Situação → Atendido</option>
+                        <option value="pendente">Situação → Pendente (reabrir)</option>
+                        <option value="data">Data (pendentes)</option>
                     </select>
+                </div>
+                <div class="col-auto" id="campo_data_lote" style="display:none;">
+                    <label class="form-label small mb-1">Nova data</label>
+                    <input type="text" name="data_lote" class="form-control form-control-sm" placeholder="dd/mm/aaaa" autocomplete="off">
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
                 </div>
             </form>
-            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual.</small>
+            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam).</small>
         </div>
 
         <div class="card p-3 mb-4">
