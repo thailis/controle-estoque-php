@@ -595,6 +595,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
         }
     }
 
+    // Excluir TODAS as linhas do Processo/PO (pendentes e atendidas). Para as
+    // atendidas, apaga antes a entrada de estoque que elas geraram — mesma
+    // limpeza da exclusão individual, pra não sobrar estoque órfão.
+    if ($chaveLote !== '' && $situacaoLote === 'excluir') {
+        $stmtIdsExcluir = mysqli_prepare($conn, "
+            SELECT id FROM programacao
+            WHERE (TRIM(COALESCE(processo, '')) = ? OR TRIM(COALESCE(po, '')) = ?)
+        ");
+        mysqli_stmt_bind_param($stmtIdsExcluir, 'ss', $chaveLote, $chaveLote);
+        mysqli_stmt_execute($stmtIdsExcluir);
+        $idsExcluir = array_map(fn($l) => (int) $l['id'], mysqli_fetch_all(mysqli_stmt_get_result($stmtIdsExcluir), MYSQLI_ASSOC));
+        mysqli_stmt_close($stmtIdsExcluir);
+
+        if (empty($idsExcluir)) {
+            $flashLote = 'lote_nada';
+        } else {
+            mysqli_begin_transaction($conn);
+            try {
+                foreach (array_chunk($idsExcluir, 500) as $blocoExcluir) {
+                    $phExcluir = implode(',', array_fill(0, count($blocoExcluir), '?'));
+                    $tiposExcluir = str_repeat('i', count($blocoExcluir));
+
+                    $stmtDelEstLote = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_programacao_id IN ($phExcluir)");
+                    mysqli_stmt_bind_param($stmtDelEstLote, $tiposExcluir, ...$blocoExcluir);
+                    mysqli_stmt_execute($stmtDelEstLote);
+                    mysqli_stmt_close($stmtDelEstLote);
+
+                    $stmtDelProgLote = mysqli_prepare($conn, "DELETE FROM programacao WHERE id IN ($phExcluir)");
+                    mysqli_stmt_bind_param($stmtDelProgLote, $tiposExcluir, ...$blocoExcluir);
+                    mysqli_stmt_execute($stmtDelProgLote);
+                    mysqli_stmt_close($stmtDelProgLote);
+                }
+                mysqli_commit($conn);
+                $flashLote = 'lote_excluido';
+                $qtdLote = count($idsExcluir);
+            } catch (Throwable $erroExcluirLote) {
+                mysqli_rollback($conn);
+                error_log('Erro ao excluir em lote na programação: ' . $erroExcluirLote->getMessage());
+                $flashLote = 'lote_erro';
+            }
+        }
+    }
+
     if ($chaveLote !== '' && in_array($situacaoLote, ['atendido', 'pendente'], true)) {
         $marcarAtendido = $situacaoLote === 'atendido';
         $atendidoAtual = $marcarAtendido ? 0 : 1; // só mexe em quem está na situação oposta
@@ -665,7 +708,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
     header('Location: programacao.php?' . http_build_query([
         'busca'      => '',
         'filtro'     => '',
-        'processo'   => $chaveLote,
+        'processo'   => $flashLote === 'lote_excluido' ? '' : $chaveLote,
         'fornecedor' => '',
         'mes'        => '', // mostra a PO/processo inteira, sem limitar ao mês
         'flash'      => $flashLote,
@@ -984,6 +1027,7 @@ $flashMap = [
     'lote_atendido' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) marcada(s) como Atendido (somadas no estoque pela Quantidade Recebida).'],
     'lote_pendente' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) reaberta(s) como Pendente (entradas de estoque removidas).'],
     'lote_data'     => ['success', '✅ Data alterada em ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) pendente(s).'],
+    'lote_excluido' => ['success', '🗑️ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) excluída(s) (e as entradas de estoque geradas por elas removidas).'],
     'lote_data_invalida' => ['danger', '❌ Data inválida. Use dd/mm/aaaa.'],
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
     'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
@@ -1402,7 +1446,7 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <div class="card p-3 mb-4">
             <h2 class="h6 mb-3">✔️ Situação / Data em lote (todos os itens de um Processo ou PO)</h2>
-            <form method="POST" class="row g-2 align-items-end" onsubmit="if (this.situacao_lote.value === 'data') { if (!this.data_lote.value.trim()) { alert('Informe a nova data (dd/mm/aaaa).'); return false; } return confirm('Alterar a DATA de todas as linhas PENDENTES de \'' + this.chave_lote.value.trim() + '\' para ' + this.data_lote.value.trim() + '?'); } return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
+            <form method="POST" class="row g-2 align-items-end" onsubmit="if (this.situacao_lote.value === 'excluir') { return confirm('EXCLUIR TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' (pendentes e atendidas)?\n\nAs entradas de estoque geradas pelas linhas atendidas também serão removidas. Essa ação não pode ser desfeita.'); } if (this.situacao_lote.value === 'data') { if (!this.data_lote.value.trim()) { alert('Informe a nova data (dd/mm/aaaa).'); return false; } return confirm('Alterar a DATA de todas as linhas PENDENTES de \'' + this.chave_lote.value.trim() + '\' para ' + this.data_lote.value.trim() + '?'); } return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
                 <input type="hidden" name="acao" value="situacao_em_lote">
                 <div class="col-auto">
                     <label class="form-label small mb-1">Processo ou PO</label>
@@ -1414,6 +1458,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <option value="atendido">Situação → Atendido</option>
                         <option value="pendente">Situação → Pendente (reabrir)</option>
                         <option value="data">Data (pendentes)</option>
+                        <option value="excluir">🗑️ Excluir todas as linhas</option>
                     </select>
                 </div>
                 <div class="col-auto" id="campo_data_lote" style="display:none;">
@@ -1424,7 +1469,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
                 </div>
             </form>
-            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam).</small>
+            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam). "Excluir" apaga todas as linhas do Processo/PO e as entradas de estoque que elas geraram.</small>
         </div>
 
         <div class="card p-3 mb-4">
