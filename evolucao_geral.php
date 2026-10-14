@@ -448,7 +448,7 @@ try {
             }
             foreach ($dias as $k => $dia) {
                 $chave = $dia->format('Y-m-d');
-                $estiloCab = $lin >= 3 ? $E['cab_escuro'] : ($chave === $hojeChaveX ? $E['cab_hoje'] : ($temEdiPorDia[$chave] ? $E['cab_evento'] : $E['cab']));
+                $estiloCab = $lin >= 3 ? $E['cab_escuro'] : ($temEdiPorDia[$chave] ? $E['cab_evento'] : $E['cab']);
                 if ($lin === 1) { $v = $projetosPorDia[$chave] ?? ''; }
                 elseif ($lin === 2) { $v = $temEdiPorDia[$chave] ? '● ' . numeroBr($demandaEdiBrutaPorDia[$chave] ?? 0, 0) : ''; }
                 elseif ($lin === 3) { $v = $dia->format('W'); }
@@ -808,7 +808,7 @@ try {
                             <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
-                                <th class="linha-projeto <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>" title="<?php echo h($projetosPorDia[$chave] ?? ''); ?>">
+                                <th class="linha-projeto" title="<?php echo h($projetosPorDia[$chave] ?? ''); ?>">
                                     <?php echo h($projetosPorDia[$chave] ?? ''); ?>
                                 </th>
                             <?php endforeach; ?>
@@ -823,7 +823,7 @@ try {
                             <?php for ($i = 1; $i <= $maxEntregas; $i++): ?><th class="col-transito"></th><th class="col-eta"></th><?php endfor; ?>
                             <?php foreach ($dias as $dia): ?>
                                 <?php $chave = $dia->format('Y-m-d'); ?>
-                                <th class="linha-marcador <?php echo $chave === $hoje->format('Y-m-d') ? 'col-hoje' : ''; ?>">
+                                <th class="linha-marcador">
                                     <?php if ($temEdiPorDia[$chave]): ?>
                                         <span class="dot-edi" title="Demanda EDI nesta data"></span><?php echo numeroBr($demandaEdiBrutaPorDia[$chave] ?? 0, 0); ?>
                                     <?php endif; ?>
