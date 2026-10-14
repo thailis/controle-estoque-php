@@ -719,6 +719,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
         'ano'      => $_POST['ano_atual'] ?? '',
         'projeto'  => $_POST['projeto_atual'] ?? '',
         'modelo'   => $_POST['modelo_atual'] ?? '',
+        'evento'  => $_POST['evento_atual'] ?? '',
         'filtro'   => $_POST['filtro_atual'] ?? '',
         'excluido' => 1,
     ]));
@@ -767,6 +768,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
         'ano'     => $_POST['ano_atual'] ?? '',
         'projeto' => $_POST['projeto_atual'] ?? '',
         'modelo'  => $_POST['modelo_atual'] ?? '',
+        'evento'  => $_POST['evento_atual'] ?? '',
         'filtro'  => $_POST['filtro_atual'] ?? '',
     ]) . '#linha-' . $idAlternar);
     exit;
@@ -838,6 +840,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         'ano'     => $_POST['ano_atual'] ?? '',
         'projeto' => $_POST['projeto_atual'] ?? '',
         'modelo'  => $_POST['modelo_atual'] ?? '',
+        'evento'  => $_POST['evento_atual'] ?? '',
         'filtro'  => $_POST['filtro_atual'] ?? '',
         'flash'   => $flash,
     ]));
@@ -860,8 +863,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo'], true)) {
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo', 'evento'], true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    if ($campo === 'evento') {
+        // Renomear o evento com duplo clique (vale só pra essa linha).
+        if ($valor === '') {
+            echo json_encode(['ok' => false, 'erro' => 'O evento não pode ficar vazio.']);
+            exit;
+        }
+        $eventoEditado = mb_substr($valor, 0, 100);
+        $stmt = mysqli_prepare($conn, "UPDATE edi SET evento = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $eventoEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $eventoEditado]);
         exit;
     }
 
@@ -953,10 +971,214 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         'ano'     => $_POST['ano_atual'] ?? '',
         'projeto' => $_POST['projeto_atual'] ?? '',
         'modelo'  => $_POST['modelo_atual'] ?? '',
+        'evento'  => $_POST['evento_atual'] ?? '',
         'filtro'  => $_POST['filtro_atual'] ?? '',
         'flash'   => $flash,
     ]) . '#linha-' . $idEditar);
     exit;
+}
+
+// Monta o WHERE da tabela edi a partir dos filtros da tela. Usado tanto na
+// listagem quanto nas ações em massa — assim a ação em massa pega exatamente
+// as mesmas linhas que aparecem filtradas na tela.
+function montarFiltroEdi(string $busca, string $filtro, string $anoFiltro, string $projetoFiltro, string $modeloFiltro, string $eventoFiltro): array
+{
+    $condicoes = [];
+    $params = [];
+    $tipos = '';
+
+    if ($busca !== '') {
+        $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ? OR evento LIKE ?)";
+        $buscaLike = "%$busca%";
+        array_push($params, $buscaLike, $buscaLike, $buscaLike, $buscaLike);
+        $tipos .= 'ssss';
+    }
+
+    if ($filtro === 'pendente') {
+        $condicoes[] = "(atendido = 0 OR atendido IS NULL)";
+    } elseif ($filtro === 'atendido') {
+        $condicoes[] = "atendido = 1";
+    }
+
+    if ($anoFiltro !== '' && ctype_digit($anoFiltro)) {
+        $condicoes[] = "ano = ?";
+        $params[] = (int) $anoFiltro;
+        $tipos .= 'i';
+    }
+
+    if ($projetoFiltro !== '') {
+        $condicoes[] = "TRIM(projeto) = ?";
+        $params[] = $projetoFiltro;
+        $tipos .= 's';
+    }
+
+    if ($modeloFiltro !== '') {
+        $condicoes[] = "TRIM(modelo) = ?";
+        $params[] = $modeloFiltro;
+        $tipos .= 's';
+    }
+
+    if ($eventoFiltro !== '') {
+        $condicoes[] = "TRIM(evento) = ?";
+        $params[] = $eventoFiltro;
+        $tipos .= 's';
+    }
+
+    $where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
+    return [$where, $params, $tipos];
+}
+
+// ---------- Ações em massa (sobre tudo que está filtrado na tela) ----------
+// Por segurança só roda se tiver filtro de Projeto e/ou Evento selecionado —
+// evita apagar/alterar a base inteira por engano.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_massa') {
+    exigirComprador();
+
+    $mBusca   = trim((string) ($_POST['busca_atual'] ?? ''));
+    $mFiltro  = trim((string) ($_POST['filtro_atual'] ?? ''));
+    $mAno     = trim((string) ($_POST['ano_atual'] ?? ''));
+    $mProjeto = trim((string) ($_POST['projeto_atual'] ?? ''));
+    $mModelo  = trim((string) ($_POST['modelo_atual'] ?? ''));
+    $mEvento  = trim((string) ($_POST['evento_atual'] ?? ''));
+    $operacao = (string) ($_POST['operacao'] ?? '');
+    $valorMassa = trim((string) ($_POST['valor_massa'] ?? ''));
+
+    $voltar = [
+        'busca'   => $mBusca,
+        'ano'     => $mAno,
+        'projeto' => $mProjeto,
+        'modelo'  => $mModelo,
+        'evento'  => $mEvento,
+        'filtro'  => $mFiltro,
+    ];
+    $redirecionar = function (array $extra) use (&$voltar) {
+        header('Location: edi.php?' . http_build_query(array_merge($voltar, $extra)));
+        exit;
+    };
+
+    $operacoesValidas = ['excluir', 'renomear_evento', 'data', 'quantidade', 'atendido', 'pendente'];
+    if (($mProjeto === '' && $mEvento === '') || !in_array($operacao, $operacoesValidas, true)) {
+        $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Selecione um Projeto e/ou Evento no filtro e escolha a ação.']);
+    }
+
+    // Valida o valor ANTES de mexer em qualquer coisa
+    $novoEvento = null;
+    $novaQuantidade = null;
+    $novaDataObj = null;
+    $novoPeriodo = null;
+    if ($operacao === 'renomear_evento') {
+        if ($valorMassa === '') {
+            $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Informe o novo nome do evento.']);
+        }
+        $novoEvento = mb_substr($valorMassa, 0, 100);
+    } elseif ($operacao === 'quantidade') {
+        $novaQuantidade = parseQuantidadeEdi($valorMassa);
+        if ($novaQuantidade === null) {
+            $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Quantidade inválida.']);
+        }
+    } elseif ($operacao === 'data') {
+        $novaDataObj = parseDataEdi($valorMassa);
+        $novoPeriodo = $novaDataObj !== null ? calcularSemanaEAno($novaDataObj) : null;
+        if ($novoPeriodo === null) {
+            $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Data inválida. Use dd/mm/aaaa.']);
+        }
+    }
+
+    // Pega as linhas que batem com o filtro
+    [$mWhere, $mParams, $mTipos] = montarFiltroEdi($mBusca, $mFiltro, $mAno, $mProjeto, $mModelo, $mEvento);
+    $stmtSel = mysqli_prepare($conn, "SELECT _tidb_rowid AS id, material, quantidade, atendido FROM edi $mWhere");
+    if (!empty($mParams)) {
+        mysqli_stmt_bind_param($stmtSel, $mTipos, ...$mParams);
+    }
+    mysqli_stmt_execute($stmtSel);
+    $linhasMassa = mysqli_fetch_all(mysqli_stmt_get_result($stmtSel), MYSQLI_ASSOC);
+    mysqli_stmt_close($stmtSel);
+
+    $ids = array_map(fn($l) => (int) $l['id'], $linhasMassa);
+    if (empty($ids)) {
+        $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Nenhum registro encontrado com esse filtro.']);
+    }
+
+    // Executa um UPDATE/DELETE com "... IN (ids)" em blocos de 500
+    $executarEmLotes = function (string $sqlAntesDoIn, string $tiposAntes, array $valoresAntes, array $idsAlvo) use ($conn): int {
+        $afetadas = 0;
+        foreach (array_chunk($idsAlvo, 500) as $bloco) {
+            $ph = implode(',', array_fill(0, count($bloco), '?'));
+            $stmt = mysqli_prepare($conn, $sqlAntesDoIn . " IN ($ph)");
+            $valores = array_merge($valoresAntes, $bloco);
+            mysqli_stmt_bind_param($stmt, $tiposAntes . str_repeat('i', count($bloco)), ...$valores);
+            mysqli_stmt_execute($stmt);
+            $afetadas += max(0, mysqli_stmt_affected_rows($stmt));
+            mysqli_stmt_close($stmt);
+        }
+        return $afetadas;
+    };
+
+    $qtdAfetada = 0;
+    mysqli_begin_transaction($conn);
+    try {
+        switch ($operacao) {
+            case 'excluir':
+                // Apaga também os lançamentos de estoque gerados por esses eventos
+                $executarEmLotes("DELETE FROM estoque WHERE origem_edi_id", '', [], $ids);
+                $qtdAfetada = $executarEmLotes("DELETE FROM edi WHERE _tidb_rowid", '', [], $ids);
+                break;
+
+            case 'renomear_evento':
+                $executarEmLotes("UPDATE edi SET evento = ? WHERE _tidb_rowid", 's', [$novoEvento], $ids);
+                $qtdAfetada = count($ids);
+                // Se o filtro era por evento, passa a filtrar pelo nome novo
+                if ($mEvento !== '') {
+                    $voltar['evento'] = $novoEvento;
+                }
+                break;
+
+            case 'data':
+                $novaData = $novaDataObj->format('Y-m-d');
+                $executarEmLotes(
+                    "UPDATE edi SET data_inicio = ?, data_fim = ?, semana = ?, ano = ? WHERE _tidb_rowid",
+                    'ssii', [$novaData, $novaData, $novoPeriodo['semana'], $novoPeriodo['ano']], $ids
+                );
+                $qtdAfetada = count($ids);
+                break;
+
+            case 'quantidade':
+                $executarEmLotes("UPDATE edi SET quantidade = ? WHERE _tidb_rowid", 'd', [(float) $novaQuantidade], $ids);
+                // Os que já estão Atendidos têm o estoque recalculado com a quantidade nova
+                foreach ($linhasMassa as $l) {
+                    if ((int) $l['atendido'] === 1) {
+                        aplicarDemandaEdiNoEstoque($conn, (int) $l['id'], (string) $l['material'], (float) $novaQuantidade, false);
+                        aplicarDemandaEdiNoEstoque($conn, (int) $l['id'], (string) $l['material'], (float) $novaQuantidade, true);
+                    }
+                }
+                $qtdAfetada = count($ids);
+                break;
+
+            case 'atendido':
+            case 'pendente':
+                $marcarAtendido = $operacao === 'atendido';
+                // Só mexe nas linhas que realmente mudam de situação (as que já
+                // estão na situação desejada são puladas, pra não lançar o estoque 2x)
+                $alvo = array_values(array_filter($linhasMassa, fn($l) => ((int) $l['atendido'] === 1) !== $marcarAtendido));
+                if (!empty($alvo)) {
+                    $executarEmLotes(
+                        "UPDATE edi SET atendido = ? WHERE _tidb_rowid", 'i', [$marcarAtendido ? 1 : 0],
+                        array_map(fn($l) => (int) $l['id'], $alvo)
+                    );
+                    foreach ($alvo as $l) {
+                        aplicarDemandaEdiNoEstoque($conn, (int) $l['id'], (string) $l['material'], (float) $l['quantidade'], $marcarAtendido);
+                    }
+                }
+                $qtdAfetada = count($alvo);
+                break;
+        }
+        mysqli_commit($conn);
+    } catch (Throwable $e) {
+        mysqli_rollback($conn);
+        $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Erro ao executar a ação em massa: ' . $e->getMessage()]);
+    }
+
+    $redirecionar(['flash' => 'massa_ok', 'massa_op' => $operacao, 'massa_qtd' => $qtdAfetada]);
 }
 
 $porPagina = 50;
@@ -968,6 +1190,7 @@ $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente'
 $anoFiltro = isset($_GET['ano']) ? trim($_GET['ano']) : ''; // '', ou um ano específico
 $projetoFiltro = isset($_GET['projeto']) ? trim($_GET['projeto']) : ''; // '', ou um projeto específico
 $modeloFiltro = isset($_GET['modelo']) ? trim($_GET['modelo']) : ''; // '', ou um modelo específico
+$eventoFiltro = isset($_GET['evento']) ? trim($_GET['evento']) : ''; // '', ou um evento específico
 $editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
 $flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
 
@@ -976,6 +1199,15 @@ $flashMap = [
     'editado'    => ['success', '✅ Registro atualizado.'],
     'erro_dados' => ['danger', '❌ Confira material, evento, semana (30-53/2026 ou 1-29/2027) e quantidade.'],
     'sync_bom'   => ['success', '🔄 Tipo, Projeto e Modelo atualizados pela BOM — ' . (int) ($_GET['sync_linhas'] ?? 0) . ' linha(s) de EDI alterada(s)' . ((int) ($_GET['sync_sem_bom'] ?? 0) > 0 ? '; ' . (int) $_GET['sync_sem_bom'] . ' material(is) sem dados na BOM (mantidos como estavam).' : '.')],
+    'massa_erro' => ['danger', '❌ ' . (string) ($_GET['massa_msg'] ?? 'Não foi possível executar a ação em massa.')],
+    'massa_ok'   => ['success', '✅ ' . ([
+        'excluir'         => 'Excluído(s)',
+        'renomear_evento' => 'Evento renomeado em',
+        'data'            => 'Data alterada em',
+        'quantidade'      => 'Quantidade alterada em',
+        'atendido'        => 'Marcado(s) como Atendido',
+        'pendente'        => 'Marcado(s) como Pendente',
+    ][$_GET['massa_op'] ?? ''] ?? 'Ação aplicada em') . ': ' . (int) ($_GET['massa_qtd'] ?? 0) . ' registro(s).'],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -987,42 +1219,7 @@ if ($resMat) {
     }
 }
 
-$condicoes = [];
-$params = [];
-$tipos = '';
-
-if ($busca !== '') {
-    $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ?)";
-    $buscaLike = "%$busca%";
-    array_push($params, $buscaLike, $buscaLike, $buscaLike);
-    $tipos .= 'sss';
-}
-
-if ($filtro === 'pendente') {
-    $condicoes[] = "(atendido = 0 OR atendido IS NULL)";
-} elseif ($filtro === 'atendido') {
-    $condicoes[] = "atendido = 1";
-}
-
-if ($anoFiltro !== '' && ctype_digit($anoFiltro)) {
-    $condicoes[] = "ano = ?";
-    $params[] = (int) $anoFiltro;
-    $tipos .= 'i';
-}
-
-if ($projetoFiltro !== '') {
-    $condicoes[] = "TRIM(projeto) = ?";
-    $params[] = $projetoFiltro;
-    $tipos .= 's';
-}
-
-if ($modeloFiltro !== '') {
-    $condicoes[] = "TRIM(modelo) = ?";
-    $params[] = $modeloFiltro;
-    $tipos .= 's';
-}
-
-$where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
+[$where, $params, $tipos] = montarFiltroEdi($busca, $filtro, $anoFiltro, $projetoFiltro, $modeloFiltro, $eventoFiltro);
 
 // Anos disponíveis na base, pra montar o combo de filtro dinamicamente
 $anosDisponiveis = [];
@@ -1039,6 +1236,14 @@ $resProjetos = mysqli_query($conn, "SELECT DISTINCT TRIM(projeto) AS projeto FRO
 if ($resProjetos) {
     while ($linhaProjeto = mysqli_fetch_assoc($resProjetos)) {
         $projetosDisponiveis[] = $linhaProjeto['projeto'];
+    }
+}
+
+$eventosDisponiveis = [];
+$resEventos = mysqli_query($conn, "SELECT DISTINCT TRIM(evento) AS evento FROM edi WHERE evento IS NOT NULL AND TRIM(evento) <> '' ORDER BY evento");
+if ($resEventos) {
+    while ($linhaEvento = mysqli_fetch_assoc($resEventos)) {
+        $eventosDisponiveis[] = $linhaEvento['evento'];
     }
 }
 
@@ -1356,7 +1561,7 @@ unset($r);
         </div>
 
         <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
-            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
+            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo htmlspecialchars($flashMap[$flash][1]); ?></div>
         <?php endif; ?>
         <?php if (isset($_GET['excluido'])): ?>
             <div class="alert alert-success py-2">✅ Evento excluído.</div>
@@ -1386,6 +1591,7 @@ unset($r);
                     <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
                     <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                     <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
+                    <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
                     <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                     <div class="col-auto">
                         <label class="form-label small mb-1">Material *</label>
@@ -1417,7 +1623,7 @@ unset($r);
             <form method="GET" class="row g-2 align-items-center">
                 <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
                 <div class="col-auto flex-grow-1">
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, projeto ou evento..." value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
                 <div class="col-auto">
                     <select name="ano" class="form-select" onchange="this.form.submit()">
@@ -1444,18 +1650,105 @@ unset($r);
                     </select>
                 </div>
                 <div class="col-auto">
+                    <select name="evento" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os eventos</option>
+                        <?php foreach ($eventosDisponiveis as $eventoOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($eventoOpcao); ?>" <?php echo ($eventoFiltro === $eventoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($eventoOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <div class="btn-group" role="group">
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
                     </div>
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="edi.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
+        </div>
+
+        <div class="card p-3 mb-4 border-warning">
+            <details <?php echo ($projetoFiltro !== '' || $eventoFiltro !== '') ? 'open' : ''; ?>>
+                <summary>⚡ Ações em massa (sobre os registros filtrados)</summary>
+                <?php if ($projetoFiltro === '' && $eventoFiltro === ''): ?>
+                    <div class="alert alert-secondary py-2 mt-3 mb-0">
+                        Selecione um <strong>Projeto</strong> e/ou um <strong>Evento</strong> nos filtros acima para liberar as ações em massa.
+                        Os demais filtros (ano, modelo, situação, busca) também são respeitados.
+                    </div>
+                <?php else: ?>
+                    <form method="POST" id="form-acao-massa" class="row g-2 align-items-end mt-2">
+                        <input type="hidden" name="acao" value="acao_massa">
+                        <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                        <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                        <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                        <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
+                        <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
+                        <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                        <div class="col-12">
+                            <small class="text-muted">
+                                Vai afetar <strong><?php echo number_format($total, 0, ',', '.'); ?> registro(s)</strong>
+                                <?php if ($projetoFiltro !== ''): ?> · Projeto: <strong><?php echo htmlspecialchars($projetoFiltro); ?></strong><?php endif; ?>
+                                <?php if ($eventoFiltro !== ''): ?> · Evento: <strong><?php echo htmlspecialchars($eventoFiltro); ?></strong><?php endif; ?>
+                                <?php if ($anoFiltro !== ''): ?> · Ano: <strong><?php echo htmlspecialchars($anoFiltro); ?></strong><?php endif; ?>
+                                <?php if ($modeloFiltro !== ''): ?> · Modelo: <strong><?php echo htmlspecialchars($modeloFiltro); ?></strong><?php endif; ?>
+                                <?php if ($filtro !== ''): ?> · Situação: <strong><?php echo htmlspecialchars(ucfirst($filtro)); ?></strong><?php endif; ?>
+                                <?php if ($busca !== ''): ?> · Busca: <strong><?php echo htmlspecialchars($busca); ?></strong><?php endif; ?>
+                            </small>
+                        </div>
+                        <div class="col-auto">
+                            <label class="form-label small mb-1">Ação</label>
+                            <select name="operacao" id="massa-operacao" class="form-select form-select-sm" style="width:220px" required>
+                                <option value="">Escolha...</option>
+                                <option value="renomear_evento">Renomear evento</option>
+                                <option value="data">Alterar data</option>
+                                <option value="quantidade">Alterar quantidade</option>
+                                <option value="atendido">Marcar como Atendido</option>
+                                <option value="pendente">Marcar como Pendente</option>
+                                <option value="excluir">🗑️ Excluir</option>
+                            </select>
+                        </div>
+                        <div class="col-auto" id="massa-valor-box" style="display:none">
+                            <label class="form-label small mb-1" id="massa-valor-label">Novo valor</label>
+                            <input type="text" name="valor_massa" id="massa-valor" class="form-control form-control-sm" style="width:200px">
+                        </div>
+                        <div class="col-auto">
+                            <button type="submit" class="btn btn-warning btn-sm">Aplicar</button>
+                        </div>
+                    </form>
+                    <script>
+                        (function () {
+                            const sel = document.getElementById('massa-operacao');
+                            const box = document.getElementById('massa-valor-box');
+                            const lbl = document.getElementById('massa-valor-label');
+                            const inp = document.getElementById('massa-valor');
+                            const total = <?php echo (int) $total; ?>;
+                            const config = {
+                                renomear_evento: ['Novo nome do evento', ''],
+                                data: ['Nova data', 'dd/mm/aaaa'],
+                                quantidade: ['Nova quantidade', 'ex.: 1.400'],
+                            };
+                            sel.addEventListener('change', function () {
+                                const c = config[sel.value];
+                                box.style.display = c ? '' : 'none';
+                                inp.required = !!c;
+                                if (c) { lbl.textContent = c[0]; inp.placeholder = c[1]; inp.value = ''; inp.focus(); }
+                            });
+                            document.getElementById('form-acao-massa').addEventListener('submit', function (e) {
+                                const texto = sel.options[sel.selectedIndex].text.replace('🗑️ ', '');
+                                let msg = texto + ' em ' + total + ' registro(s) filtrado(s)?';
+                                if (config[sel.value]) msg += '\nNovo valor: ' + inp.value;
+                                if (sel.value === 'excluir') msg += '\n\nATENÇÃO: a exclusão não pode ser desfeita (os lançamentos de estoque desses eventos também são apagados).';
+                                if (!confirm(msg)) e.preventDefault();
+                            });
+                        })();
+                    </script>
+                <?php endif; ?>
+            </details>
         </div>
 
         <div class="card">
@@ -1484,7 +1777,7 @@ unset($r);
                                 $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
                                 $idLinha = (int) $row['id'];
                                 $emEdicao = ($editando === $idLinha);
-                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&projeto=' . urlencode($projetoFiltro) . '&modelo=' . urlencode($modeloFiltro) . '&filtro=' . urlencode($filtro);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&ano=' . urlencode($anoFiltro) . '&projeto=' . urlencode($projetoFiltro) . '&modelo=' . urlencode($modeloFiltro) . '&evento=' . urlencode($eventoFiltro) . '&filtro=' . urlencode($filtro);
                                 ?>
                                 <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
@@ -1496,6 +1789,7 @@ unset($r);
                                             <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
+                    <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
@@ -1509,7 +1803,7 @@ unset($r);
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" title="Duplo clique para editar — <?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
-                                    <td><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="evento" data-valor-bruto="<?php echo htmlspecialchars($row['evento'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
                                     <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
 
                                     <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="quantidade" data-valor-bruto="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
@@ -1523,6 +1817,7 @@ unset($r);
                                             <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
+                    <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
                                             <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
@@ -1538,13 +1833,13 @@ unset($r);
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
