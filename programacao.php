@@ -1010,9 +1010,9 @@ $filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : 'pendente'; // '', 'p
 $processoFiltro = isset($_GET['processo']) ? trim($_GET['processo']) : '';
 $fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
 // Filtro de mês pela coluna Data (formato AAAA-MM, vindo do <input type="month">)
-// Mesmo esquema pro mês: ao entrar, já filtra o mês atual (pela coluna Data).
-// Apagar o mês no campo manda "mes=" vazio e mostra todos os meses.
-$mesFiltro = isset($_GET['mes']) ? trim($_GET['mes']) : date('Y-m');
+// Ao entrar, NÃO filtra mês: mostra todos os pendentes, de qualquer data.
+// O filtro de mês continua disponível pra quem quiser escolher um.
+$mesFiltro = isset($_GET['mes']) ? trim($_GET['mes']) : '';
 if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $mesFiltro)) {
     $mesFiltro = '';
 }
