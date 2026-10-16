@@ -392,6 +392,8 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="assets/dashboard.css" rel="stylesheet">
     <style>
+        /* Mesma largura de Processos (o dashboard.css trava em 1780px) */
+        .dashboard-container { max-width: 98vw; }
         #tabela-comparativos td, #tabela-comparativos th { padding: 10px 12px; vertical-align: middle; white-space: nowrap; }
         #tabela-comparativos td { font-size: .85rem; }
         #tabela-comparativos th { text-align: center; }
@@ -568,7 +570,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                     $ehSugestao = count($c['itens']) > 1 && abs($it['total'] - $c['menor_total']) < 0.005;
                                     $ehEscolhido = (int) $it['escolhido'] === 1;
                                 ?>
-                                <tr id="item-<?php echo $idItem; ?>" class="<?php echo $i === 0 ? 'inicio-grupo' : ''; ?>">
+                                <tr id="item-<?php echo $idItem; ?>" data-comp="<?php echo $cid; ?>" class="<?php echo $i === 0 ? 'inicio-grupo' : ''; ?>">
                                     <td class="celula-editavel fw-bold" data-id="<?php echo $idItem; ?>" data-campo="agente" data-valor-bruto="<?php echo h($it['agente']); ?>"><?php echo h($it['agente']); ?></td>
                                     <td class="celula-editavel centro" data-id="<?php echo $idItem; ?>" data-campo="data" data-valor-bruto="<?php echo $it['data'] ? h(dataBr($it['data'])) : ''; ?>"><?php echo dataBr($it['data']); ?></td>
                                     <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="brl" data-valor-bruto="<?php echo h(numeroComp($it['brl'])); ?>"><?php echo $it['brl'] !== null ? '<span class="moeda">R$</span>' . numeroComp($it['brl']) : ''; ?></td>
@@ -602,7 +604,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                         <td rowspan="<?php echo $qtd; ?>" class="celula-editavel grupo" data-id="<?php echo $cid; ?>" data-campo="c_processo" data-valor-bruto="<?php echo h($c['processo'] ?? ''); ?>"><?php echo h($c['processo'] ?: '—'); ?></td>
                                     <?php endif; ?>
                                     <td class="centro <?php echo $ehEscolhido ? 'escolhido-sim' : ''; ?>">
-                                        <button type="button" class="btn-escolher <?php echo $ehEscolhido ? 'marcado' : ''; ?>" onclick="escolherAgente(<?php echo $idItem; ?>)" title="<?php echo $ehEscolhido ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido'; ?>"><?php echo $ehEscolhido ? 'X' : ''; ?></button>
+                                        <button type="button" class="btn-escolher <?php echo $ehEscolhido ? 'marcado' : ''; ?>" onclick="escolherAgente(<?php echo $idItem; ?>, this)" title="<?php echo $ehEscolhido ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido'; ?>"><?php echo $ehEscolhido ? 'X' : ''; ?></button>
                                     </td>
                                     <td class="centro">
                                         <button type="button" class="btn-remover-linha" onclick="excluirAgente(<?php echo $idItem; ?>)" title="Excluir este agente">✕</button>
@@ -704,10 +706,28 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             if (salvo !== null) window.scrollTo(0, parseInt(salvo, 10) || 0);
         });
 
-        function escolherAgente(id) {
+        // Marca/desmarca NA HORA (sem recarregar a página) e grava em segundo
+        // plano. Só 1 escolhido por comparativo. Se der erro ao gravar, volta
+        // como estava. O Último preço/Saving dos PRÓXIMOS comparativos com a
+        // mesma carga se atualiza na próxima vez que a tela abrir.
+        function pintarEscolha(botao, marcado) {
+            botao.classList.toggle('marcado', marcado);
+            botao.textContent = marcado ? 'X' : '';
+            botao.title = marcado ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido';
+            botao.closest('td').classList.toggle('escolhido-sim', marcado);
+        }
+        function escolherAgente(id, botao) {
+            const linha = botao.closest('tr');
+            const grupo = document.querySelectorAll('#tabela-comparativos tr[data-comp="' + linha.dataset.comp + '"] .btn-escolher');
+            const antes = Array.from(grupo).map((b) => b.classList.contains('marcado'));
+            const marcar = !botao.classList.contains('marcado');
+            grupo.forEach((b) => pintarEscolha(b, false));
+            if (marcar) pintarEscolha(botao, true);
+
+            const desfazer = () => grupo.forEach((b, i) => pintarEscolha(b, antes[i]));
             postar({ acao: 'ajax_escolher', id: id })
-                .then((json) => { if (!json.ok) { alert(json.erro || 'Não foi possível atualizar.'); return; } recarregarMantendoScroll(); })
-                .catch(() => alert('Erro de conexão. Tente de novo.'));
+                .then((json) => { if (!json.ok) { desfazer(); alert(json.erro || 'Não foi possível atualizar.'); } })
+                .catch(() => { desfazer(); alert('Erro de conexão. Tente de novo.'); });
         }
 
         function excluirAgente(id) {
