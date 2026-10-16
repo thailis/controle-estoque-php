@@ -559,6 +559,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
                 <a class="btn btn-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
+                <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
             </nav>
         </div>
     </header>
