@@ -505,6 +505,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     exit;
 }
 
+// ---------- Atualização em massa: excluir TODAS as linhas de um projeto ----------
+// Apaga de uma vez todas as linhas da BOM que pertencem ao projeto escolhido no
+// select. Diferente do botão de excluir linha-a-linha, aqui não há como
+// identificar "a linha exata" (não faz sentido — é todo o projeto), então o
+// filtro é direto por projeto = ?, sem LIMIT. Mesma regra de permissão
+// (exigirComprador) e mesmas tabelas preservadas (Programação, Estoque, EDI e
+// Pedido de Compra não guardam vínculo com a linha da BOM, então continuam
+// intactos). A confirmação (nome do projeto + quantidade de linhas) acontece
+// no JS antes do form ser enviado — aqui é só a exclusão em si.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_projeto_bomnova') {
+    exigirComprador();
+    $projetoExcluirMassa = trim((string) ($_POST['projeto_excluir'] ?? ''));
+    $qtdExcluidosMassa = 0;
+    if ($projetoExcluirMassa !== '') {
+        $stmtExcluirProjeto = mysqli_prepare($conn, "DELETE FROM bomnova WHERE projeto = ?");
+        mysqli_stmt_bind_param($stmtExcluirProjeto, 's', $projetoExcluirMassa);
+        mysqli_stmt_execute($stmtExcluirProjeto);
+        $qtdExcluidosMassa = mysqli_stmt_affected_rows($stmtExcluirProjeto);
+        mysqli_stmt_close($stmtExcluirProjeto);
+    }
+    $flagProjetoMassa = $qtdExcluidosMassa > 0 ? ('projeto_excluido=' . $qtdExcluidosMassa) : 'projeto_excluir_erro=1';
+    header('Location: bomnova.php?' . $flagProjetoMassa);
+    exit;
+}
+
 // (Mantidos como fallback caso o JS não carregue — recarregam a página normalmente.)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_mrp') {
     exigirComprador();
@@ -908,6 +933,16 @@ if ($resProjetosDisp) {
         $projetosDisponiveis[] = $linhaProjeto['projeto'];
     }
 }
+
+// Quantidade de linhas da BOM por projeto — usado só pra avisar o usuário
+// quantas linhas serão excluídas antes de confirmar a exclusão em massa.
+$contagemPorProjetoBomnova = [];
+$resContagemProjeto = mysqli_query($conn, "SELECT projeto, COUNT(*) AS qtd FROM bomnova WHERE projeto IS NOT NULL AND projeto <> '' GROUP BY projeto");
+if ($resContagemProjeto) {
+    while ($linhaContagem = mysqli_fetch_assoc($resContagemProjeto)) {
+        $contagemPorProjetoBomnova[$linhaContagem['projeto']] = (int) $linhaContagem['qtd'];
+    }
+}
 // Sugestões pra inclusão manual: plantas, materiais, tipos e U.M. já usados,
 // e um mapa material -> (planta, projeto, tipo, modelo) pra pré-preencher.
 $plantasDisponiveis = [];
@@ -1112,6 +1147,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                 ✅ Linha excluída do BOM.
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
             </div>
+        <?php elseif (isset($_GET['projeto_excluido'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                ✅ <?php echo (int) $_GET['projeto_excluido']; ?> linha(s) do projeto excluída(s) da BOM.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
+        <?php elseif (isset($_GET['projeto_excluir_erro'])): ?>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                ⚠️ Não encontrei nenhuma linha desse projeto pra excluir.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+            </div>
         <?php elseif (isset($_GET['inserido'])): ?>
             <div class="alert alert-success alert-dismissible fade show" role="alert">
                 ✅ Linha incluída na BOM (a lista abaixo já está filtrada por esse componente).
@@ -1271,6 +1316,59 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <div class="alert alert-danger py-2 mt-3 mb-0">❌ Não foi possível sincronizar: <?php echo htmlspecialchars($resultadoSyncPreco['erro']); ?></div>
                 <?php endif; ?>
             <?php endif; ?>
+        </div>
+
+        <div class="card p-3 mb-4 border-danger">
+            <details <?php echo (isset($_GET['projeto_excluido']) || isset($_GET['projeto_excluir_erro'])) ? 'open' : ''; ?>>
+                <summary class="text-danger">⚠️ Atualização em massa — excluir projeto inteiro da BOM</summary>
+                <div class="mt-3">
+                    <form method="POST" class="row g-2 align-items-end" id="form-excluir-projeto">
+                        <input type="hidden" name="acao" value="excluir_projeto_bomnova">
+                        <div class="col-12 col-md-5">
+                            <label class="form-label small mb-1">Projeto</label>
+                            <select name="projeto_excluir" id="select_projeto_excluir" class="form-select" required>
+                                <option value="">Selecione um projeto...</option>
+                                <?php foreach ($projetosDisponiveis as $opcaoProjetoExcluir): ?>
+                                    <?php $qtdProjetoExcluir = $contagemPorProjetoBomnova[$opcaoProjetoExcluir] ?? 0; ?>
+                                    <option value="<?php echo htmlspecialchars($opcaoProjetoExcluir); ?>" data-qtd="<?php echo (int) $qtdProjetoExcluir; ?>">
+                                        <?php echo htmlspecialchars($opcaoProjetoExcluir); ?> (<?php echo (int) $qtdProjetoExcluir; ?> linha<?php echo $qtdProjetoExcluir === 1 ? '' : 's'; ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-auto">
+                            <button type="submit" class="btn btn-danger">🗑️ Excluir todas as linhas desse projeto</button>
+                        </div>
+                        <div class="col-12">
+                            <small class="text-muted">
+                                Apaga de uma vez <strong>todas</strong> as linhas da BOM com esse projeto — não tem volta.
+                                Não mexe em Programação, Estoque, EDI nem Pedido de Compra (não têm vínculo com a linha da BOM).
+                                Vai pedir confirmação digitando o nome do projeto antes de excluir.
+                            </small>
+                        </div>
+                    </form>
+                </div>
+                <script>
+                    (function () {
+                        const form = document.getElementById('form-excluir-projeto');
+                        form.addEventListener('submit', function (e) {
+                            const select = document.getElementById('select_projeto_excluir');
+                            const projeto = select.value;
+                            if (!projeto) { e.preventDefault(); return; }
+                            const opcao = select.options[select.selectedIndex];
+                            const qtd = opcao ? (opcao.dataset.qtd || '0') : '0';
+                            const digitado = prompt(
+                                'Isso vai excluir ' + qtd + ' linha(s) da BOM do projeto "' + projeto + '" — ação sem volta.\n\n' +
+                                'Pra confirmar, digite o nome do projeto exatamente como mostrado:'
+                            );
+                            if (digitado !== projeto) {
+                                e.preventDefault();
+                                if (digitado !== null) alert('Nome não confere — exclusão cancelada.');
+                            }
+                        });
+                    })();
+                </script>
+            </details>
         </div>
 
         <div class="card p-3 mb-4">
