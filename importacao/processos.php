@@ -697,39 +697,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 }
 
 // ---------- Cadastro manual ----------
+// Dois caminhos:
+//  1) "Novo processo" (padrão): o código é gerado automaticamente a partir de
+//     Categoria, Planta e Modal (Solicitação também é obrigatória).
+//  2) "Incluir em processo existente": escolhe um processo já cadastrado (em
+//     aberto) e a linha nova entra com o MESMO código — não gera outro. Os
+//     campos do cabeçalho que ficarem em branco (Solicitação, Categoria,
+//     Planta, Modal, PO, Projeto, Fornecedor, Moeda, Tipo, FFW) são copiados
+//     do processo escolhido.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual') {
-    // O processo nunca é digitado no cadastro manual — é sempre gerado, e só
-    // depois que os 4 campos que compõem o código estiverem preenchidos
-    // (Categoria, Planta, Solicitação, Modal). Fornecedor NÃO entra no código
-    // e não é mais obrigatório.
+    $processoExistente = trim($_POST['processo_existente'] ?? '');
     $categoria = trim($_POST['categoria_manual'] ?? '') ?: null;
     $planta = trim($_POST['planta_manual'] ?? '') ?: null;
     $solicitacaoTexto = trim($_POST['solicitacao_manual'] ?? '');
     $modal = trim($_POST['modal_manual'] ?? '') ?: null;
     $fornecedor = trim($_POST['fornecedor_manual'] ?? '') ?: null;
+    $po = trim($_POST['po_manual'] ?? '') ?: null;
+    $projeto = trim($_POST['projeto_manual'] ?? '') ?: null;
+    $moeda = trim($_POST['moeda_manual'] ?? '') ?: null;
+    $tipo = trim($_POST['tipo_manual'] ?? '') ?: null;
+    $ffw = trim($_POST['ffw_manual'] ?? '') ?: null;
+    $solicitacao = $solicitacaoTexto !== '' ? parseDataProcessos($solicitacaoTexto) : null;
 
-    $faltando = [];
-    if ($categoria === null) { $faltando[] = 'Categoria'; }
-    if ($planta === null) { $faltando[] = 'Planta'; }
-    if ($solicitacaoTexto === '') { $faltando[] = 'Solicitação'; }
-    if ($modal === null) { $faltando[] = 'Modal'; }
+    $processo = null;
+    $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
 
-    if (!empty($faltando)) {
-        $mensagens[] = '❌ Preencha os campos obrigatórios antes de salvar: ' . implode(', ', $faltando) . '.';
-    } else {
-        $geracao = gerarCodigoProcesso($conn, $modal, $planta, $categoria);
-        if ($geracao['codigo'] === null) {
-            $mensagens[] = '❌ ' . $geracao['erro'];
+    if ($processoExistente !== '') {
+        $stmtBase = mysqli_prepare($conn, "
+            SELECT MAX(status) AS status, MIN(solicitacao) AS solicitacao, MAX(categoria) AS categoria,
+                   MAX(planta) AS planta, MAX(modal) AS modal, MAX(po) AS po, MAX(projeto) AS projeto,
+                   MAX(fornecedor) AS fornecedor, MAX(moeda) AS moeda, MAX(tipo) AS tipo, MAX(ffw) AS ffw,
+                   COUNT(*) AS linhas
+            FROM processos WHERE processo = ?
+        ");
+        mysqli_stmt_bind_param($stmtBase, 's', $processoExistente);
+        mysqli_stmt_execute($stmtBase);
+        $base = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBase));
+        mysqli_stmt_close($stmtBase);
+
+        $statusBase = strtolower(trim((string) ($base['status'] ?? '')));
+        if (!$base || (int) $base['linhas'] === 0) {
+            $mensagens[] = "❌ O processo \"$processoExistente\" não existe.";
+        } elseif ($statusBase === 'finalizado' || $statusBase === 'cancelado') {
+            $mensagens[] = "❌ O processo \"$processoExistente\" está $statusBase — não dá pra incluir componentes nele.";
         } else {
-        $processo = $geracao['codigo'];
+            $processo = $processoExistente;
+            $solicitacao = $solicitacao ?? $base['solicitacao'];
+            $categoria = $categoria ?? $base['categoria'];
+            $planta = $planta ?? $base['planta'];
+            $modal = $modal ?? $base['modal'];
+            $po = $po ?? $base['po'];
+            $projeto = $projeto ?? $base['projeto'];
+            $fornecedor = $fornecedor ?? $base['fornecedor'];
+            $moeda = $moeda ?? $base['moeda'];
+            $tipo = $tipo ?? $base['tipo'];
+            $ffw = $ffw ?? $base['ffw'];
+        }
+    } else {
+        $faltando = [];
+        if ($categoria === null) { $faltando[] = 'Categoria'; }
+        if ($planta === null) { $faltando[] = 'Planta'; }
+        if ($solicitacaoTexto === '') { $faltando[] = 'Solicitação'; }
+        if ($modal === null) { $faltando[] = 'Modal'; }
+
+        if (!empty($faltando)) {
+            $mensagens[] = '❌ Preencha os campos obrigatórios antes de salvar: ' . implode(', ', $faltando) . '.';
+        } else {
+            $geracao = gerarCodigoProcesso($conn, $modal, $planta, $categoria);
+            if ($geracao['codigo'] === null) {
+                $mensagens[] = '❌ ' . $geracao['erro'];
+            } else {
+                $processo = $geracao['codigo'];
+            }
+        }
+    }
+
+    if ($processo !== null) {
         $stmt = mysqli_prepare($conn, "
             INSERT INTO processos (processo, status, solicitacao, categoria, planta, po, modal, projeto, material, codigo_componente, descricao, quantidade, hscode, ncm, fornecedor, preco, total, moeda, tipo, ffw, obs, controla_estoque)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
-        $status = 'aberto'; // nunca digitado — só o confirmar_entrega.php fecha (vira "finalizado")
-        $solicitacao = parseDataProcessos($solicitacaoTexto);
-        $po = trim($_POST['po_manual'] ?? '') ?: null;
-        $projeto = trim($_POST['projeto_manual'] ?? '') ?: null;
         $material = trim($_POST['material_manual'] ?? '') ?: null;
         $codigoComponente = trim($_POST['codigo_componente_manual'] ?? '') ?: null;
         $descricao = trim($_POST['descricao_manual'] ?? '') ?: null;
@@ -739,17 +786,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         $preco = parseNumeroBrProcessos(trim($_POST['preco_manual'] ?? ''));
         // Total nunca é digitado — sempre calculado: quantidade × preço.
         $total = ($quantidade !== null && $preco !== null) ? $quantidade * $preco : null;
-        $moeda = trim($_POST['moeda_manual'] ?? '') ?: null;
-        $tipo = trim($_POST['tipo_manual'] ?? '') ?: null;
-        $ffw = trim($_POST['ffw_manual'] ?? '') ?: null;
         $obs = trim($_POST['obs_manual'] ?? '') ?: null;
-        // Checkbox desmarcado não vem no POST — ausência = "nao". Padrão do
-        // formulário é vir marcado (checked), então o normal é chegar "sim".
+        // Checkbox desmarcado não vem no POST — ausência = "nao".
         $controlaEstoqueManual = isset($_POST['controla_estoque_manual']) ? 'sim' : 'nao';
 
-        // Tipos: processo(s) status(s) solicitacao(s) categoria(s) planta(s) po(s) modal(s)
-        // projeto(s) material(s) codigo_componente(s) descricao(s) quantidade(d) hscode(s)
-        // ncm(s) fornecedor(s) preco(d) total(d) moeda(s) tipo(s) ffw(s) obs(s) controla_estoque(s)
         mysqli_stmt_bind_param(
             $stmt, 'sssssssssssdsssddsssss',
             $processo, $status, $solicitacao, $categoria, $planta, $po, $modal, $projeto, $material, $codigoComponente,
@@ -757,12 +797,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             $controlaEstoqueManual
         );
         if (mysqli_stmt_execute($stmt)) {
-            $mensagens[] = "✅ Processo \"$processo\" cadastrado (código gerado automaticamente).";
+            $mensagens[] = $processoExistente !== ''
+                ? "✅ Componente incluído no processo \"$processo\"."
+                : "✅ Processo \"$processo\" cadastrado (código gerado automaticamente).";
         } else {
             $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
         }
         mysqli_stmt_close($stmt);
-        }
+    }
+}
+
+// Processos em aberto (não finalizados nem cancelados), pro dropdown
+// "Incluir em processo existente" do cadastro manual. Leva junto os dados do
+// cabeçalho, pro JS preencher o formulário ao escolher um.
+$processosAbertos = [];
+$resAbertos = mysqli_query($conn, "
+    SELECT processo, MIN(solicitacao) AS solicitacao, MAX(categoria) AS categoria, MAX(planta) AS planta,
+           MAX(modal) AS modal, MAX(po) AS po, MAX(projeto) AS projeto, MAX(fornecedor) AS fornecedor,
+           MAX(moeda) AS moeda, MAX(tipo) AS tipo, MAX(ffw) AS ffw
+    FROM processos
+    WHERE processo IS NOT NULL AND TRIM(processo) <> ''
+    GROUP BY processo
+    HAVING SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('finalizado', 'cancelado') THEN 1 ELSE 0 END) = 0
+    ORDER BY processo DESC
+");
+if ($resAbertos) {
+    while ($linhaAberto = mysqli_fetch_assoc($resAbertos)) {
+        $linhaAberto['solicitacao'] = $linhaAberto['solicitacao'] ? dataBr($linhaAberto['solicitacao']) : '';
+        $processosAbertos[$linhaAberto['processo']] = $linhaAberto;
     }
 }
 
@@ -1059,9 +1121,20 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
 
         <section class="filter-panel mb-4">
             <details>
-                <summary class="fw-bold" style="cursor:pointer;">➕ Novo processo (cadastro manual)</summary>
+                <summary class="fw-bold" style="cursor:pointer;">➕ Novo processo / incluir componente (cadastro manual)</summary>
                 <form method="POST" class="row g-3 mt-3">
                     <input type="hidden" name="acao" value="cadastro_manual">
+                    <div class="col-md-4">
+                        <label class="form-label">Incluir em</label>
+                        <select name="processo_existente" id="processo_existente" class="form-select" onchange="escolherProcessoExistente()">
+                            <option value="">➕ Novo processo (gera código novo)</option>
+                            <?php foreach ($processosAbertos as $codAberto => $pa): ?>
+                                <option value="<?php echo h($codAberto); ?>"><?php echo h($codAberto . ($pa['po'] ? ' — PO ' . $pa['po'] : '') . ($pa['fornecedor'] ? ' — ' . $pa['fornecedor'] : '')); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <small class="text-muted">Escolha um processo em aberto pra adicionar um componente nele, com o mesmo código.</small>
+                    </div>
+                    <div class="col-md-8"></div>
                     <div class="col-md-2">
                         <label class="form-label">Processo <small class="text-muted">(prévia — só confirma ao salvar)</small></label>
                         <input type="text" id="preview_codigo_processo" class="form-control" value="Preencha Categoria, Planta e Modal" disabled>
@@ -1404,8 +1477,45 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             debouncePreviewCodigoProcesso = setTimeout(buscarPreviewCodigoProcesso, 400);
         }
 
+        // Processos em aberto (cabeçalho de cada um), pro "Incluir em".
+        const processosAbertos = <?php echo json_encode($processosAbertos, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+        const camposCabecalhoProcesso = {
+            solicitacao: 'solicitacao_manual', categoria: 'categoria_manual', planta: 'planta_manual',
+            modal: 'modal_manual', po: 'po_manual', projeto: 'projeto_manual', fornecedor: 'fornecedor_manual',
+            moeda: 'moeda_manual', tipo: 'tipo_manual', ffw: 'ffw_manual',
+        };
+
+        // Ao escolher um processo existente: mostra o código dele na prévia,
+        // preenche o cabeçalho com os dados dele (dá pra mudar se quiser) e
+        // tira a obrigatoriedade de Solicitação/Categoria/Planta/Modal.
+        // Voltando pra "Novo processo", limpa o cabeçalho e volta ao normal.
+        function escolherProcessoExistente() {
+            const codigo = document.getElementById('processo_existente').value;
+            const form = document.getElementById('processo_existente').form;
+            const dados = codigo ? processosAbertos[codigo] : null;
+            Object.entries(camposCabecalhoProcesso).forEach(([chave, nome]) => {
+                const campo = form.querySelector('[name="' + nome + '"]');
+                if (!campo) return;
+                campo.value = dados ? (dados[chave] || '') : '';
+                if (['solicitacao_manual', 'categoria_manual', 'planta_manual', 'modal_manual'].includes(nome)) {
+                    campo.required = !dados;
+                }
+            });
+            if (dados) {
+                aplicarPadraoControlaEstoqueTooling();
+                document.getElementById('preview_codigo_processo').value = codigo;
+            } else {
+                buscarPreviewCodigoProcesso();
+            }
+        }
+
         function buscarPreviewCodigoProcesso() {
             const campoPreview = document.getElementById('preview_codigo_processo');
+            const existente = document.getElementById('processo_existente');
+            if (existente && existente.value) {
+                if (campoPreview) campoPreview.value = existente.value;
+                return;
+            }
             const categoria = (document.getElementById('categoria_manual').value || '').trim();
             const planta = (document.getElementById('planta_manual').value || '').trim();
             const modal = (document.getElementById('modal_manual').value || '').trim();
