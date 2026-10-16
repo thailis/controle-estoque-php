@@ -822,7 +822,7 @@ if ($resProcessosProgramacao) {
                 <td class="f-part"></td>
                 <td class="f-desc"></td>
                 <td class="center"><input type="text" class="f-eta" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}"></td>
-                <td class="center"><input type="text" class="f-unm" placeholder="UN"></td>
+                <td class="center"><input type="text" class="f-unm" value="UN"></td>
                 <td class="num f-qtd"></td>
                 <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
                 <td class="num"><input type="text" class="f-total" readonly></td>
