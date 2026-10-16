@@ -490,7 +490,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                         <table class="form-agentes w-100">
                             <thead>
                                 <tr>
-                                    <th style="width:22%">Agente *</th><th>BRL</th><th>Spread (%)</th><th>USD</th><th>EU</th><th>RMB</th>
+                                    <th style="width:22%">Agente *</th><th>BRL</th><th>USD</th><th>EU</th><th>RMB</th><th>Spread (%)</th>
                                     <th class="campo-cabecalho">Total R$ (prévia)</th><th></th>
                                 </tr>
                             </thead>
@@ -551,8 +551,8 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                 <table class="table mrp-table mb-0" id="tabela-comparativos" style="min-width: 1900px;">
                     <thead>
                         <tr>
-                            <th>Agente</th><th>Data</th><th>BRL</th><th>Spread</th><th>USD</th><th>EU</th><th>RMB</th>
-                            <th>PTAX USD</th><th>PTAX EU</th><th>PTAX RMB</th><th>Carga</th>
+                            <th>Agente</th><th>Data</th><th>BRL</th><th>USD</th><th>EU</th><th>RMB</th>
+                            <th>PTAX USD</th><th>PTAX EU</th><th>PTAX RMB</th><th>Carga</th><th>Spread</th>
                             <th>Total - R$</th><th>Último preço</th><th>Saving</th><th>Processo</th><th>Escolhido</th><th>Excluir</th>
                         </tr>
                     </thead>
@@ -572,7 +572,6 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                     <td class="celula-editavel fw-bold" data-id="<?php echo $idItem; ?>" data-campo="agente" data-valor-bruto="<?php echo h($it['agente']); ?>"><?php echo h($it['agente']); ?></td>
                                     <td class="celula-editavel centro" data-id="<?php echo $idItem; ?>" data-campo="data" data-valor-bruto="<?php echo $it['data'] ? h(dataBr($it['data'])) : ''; ?>"><?php echo dataBr($it['data']); ?></td>
                                     <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="brl" data-valor-bruto="<?php echo h(numeroComp($it['brl'])); ?>"><?php echo $it['brl'] !== null ? '<span class="moeda">R$</span>' . numeroComp($it['brl']) : ''; ?></td>
-                                    <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="spread" data-valor-bruto="<?php echo h(numeroFlex($it['spread'])); ?>"><?php echo $it['spread'] !== null ? numeroFlex($it['spread']) . '%' : ''; ?></td>
                                     <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="usd" data-valor-bruto="<?php echo h(numeroComp($it['usd'])); ?>"><?php echo $it['usd'] !== null ? '<span class="moeda">$</span>' . numeroComp($it['usd']) : ''; ?></td>
                                     <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="eu" data-valor-bruto="<?php echo h(numeroComp($it['eu'])); ?>"><?php echo $it['eu'] !== null ? '<span class="moeda">€</span>' . numeroComp($it['eu']) : ''; ?></td>
                                     <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="rmb" data-valor-bruto="<?php echo h(numeroComp($it['rmb'])); ?>"><?php echo $it['rmb'] !== null ? '<span class="moeda">¥</span>' . numeroComp($it['rmb']) : ''; ?></td>
@@ -582,6 +581,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                         <td rowspan="<?php echo $qtd; ?>" class="celula-editavel grupo" data-id="<?php echo $cid; ?>" data-campo="c_ptax_rmb" data-valor-bruto="<?php echo h(numeroFlex($c['ptax_rmb'])); ?>"><?php echo $c['ptax_rmb'] !== null ? 'R$ ' . numeroFlex($c['ptax_rmb']) : '—'; ?></td>
                                         <td rowspan="<?php echo $qtd; ?>" class="celula-editavel grupo fw-bold" data-id="<?php echo $cid; ?>" data-campo="c_carga" data-valor-bruto="<?php echo h($c['carga']); ?>" title="Use: <?php echo h(implode(', ', CARGAS_COMPARATIVO)); ?>"><?php echo h($c['carga']); ?></td>
                                     <?php endif; ?>
+                                    <td class="celula-editavel num" data-id="<?php echo $idItem; ?>" data-campo="spread" data-valor-bruto="<?php echo h(numeroFlex($it['spread'])); ?>"><?php echo $it['spread'] !== null ? numeroFlex($it['spread']) . '%' : ''; ?></td>
                                     <td class="num <?php echo $ehSugestao ? 'sugestao' : ''; ?>"><span class="moeda">R$</span><?php echo numeroComp($it['total']); ?></td>
                                     <?php if ($i === 0): ?>
                                         <td rowspan="<?php echo $qtd; ?>" class="grupo">
@@ -651,10 +651,10 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             tr.innerHTML = `
                 <td><input type="text" name="agente[]" class="form-control form-control-sm" list="lista-agentes" autocomplete="off"></td>
                 <td><input type="text" name="brl[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
-                <td><input type="text" name="spread[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="usd[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="eu[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="rmb[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
+                <td><input type="text" name="spread[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td class="campo-cabecalho"><input type="text" class="form-control form-control-sm previa-total" readonly></td>
                 <td><button type="button" class="btn-remover-linha" onclick="this.closest('tr').remove()" title="Remover">✕</button></td>
             `;
