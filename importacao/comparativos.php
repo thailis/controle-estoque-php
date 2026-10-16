@@ -385,6 +385,25 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'relatorio') {
     exit;
 }
 
+// ---------- Saving acumulado por ano (quadro do lado direito) ----------
+// Só conta o agente ESCOLHIDO (X) de cada comparativo que tenha Último preço.
+// O ano é o da Data do agente. O JS refaz a soma na hora ao marcar/desmarcar.
+$savingItens = [];
+$anosSaving = [(int) date('Y')];
+foreach ($comparativos as $cid => $c) {
+    foreach ($c['itens'] as $it) {
+        $ano = $it['data'] ? (int) substr($it['data'], 0, 4) : (int) substr((string) ($c['criado_em'] ?? date('Y')), 0, 4);
+        $anosSaving[] = $ano;
+        $savingItens[(int) $it['id']] = [
+            'ano' => $ano,
+            'saving' => $it['saving'] !== null ? round($it['saving'], 2) : null,
+            'escolhido' => (int) $it['escolhido'] === 1,
+        ];
+    }
+}
+$anosSaving = array_values(array_unique($anosSaving));
+rsort($anosSaving);
+
 // ---------- Filtros + paginação (mais recentes primeiro) ----------
 $busca = trim($_GET['busca'] ?? '');
 $filtroCarga = trim($_GET['carga'] ?? '');
@@ -441,6 +460,14 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
         #tabela-comparativos .celula-editavel { cursor: cell; }
         #tabela-comparativos .celula-editavel:hover { box-shadow: inset 0 0 0 1px #b9d3ef; }
         #tabela-comparativos .moeda { color: #66788a; margin-right: 4px; }
+        .table-toolbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+        .quadro-saving { display: flex; align-items: flex-end; gap: 12px; }
+        .quadro-saving select { width: 110px; }
+        .caixa-saving { border: 2px solid #12304a; border-radius: 6px; padding: 6px 14px; min-width: 230px; text-align: right; }
+        .caixa-saving .rotulo { display: block; font-size: .72rem; color: #66788a; text-transform: uppercase; letter-spacing: .03em; text-align: left; }
+        .caixa-saving .valor { font-size: 1.35rem; font-weight: 750; }
+        .caixa-saving .valor.neg { color: #b42318; }
+        .caixa-saving .valor.pos { color: #1d7a3e; }
         /* Símbolo da moeda encostado à esquerda da célula (alinhado em coluna), número continua à direita */
         #tabela-comparativos td.num .moeda { float: left; margin-right: 8px; }
         #tabela-comparativos .ultimo-agente { display: block; font-size: .75rem; color: #3c4c5c; font-weight: 700; }
@@ -589,6 +616,20 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                         <span style="background:#fff3a6"></span>sugestão (menor total)
                         <span style="background:#1d7a3e"></span>escolhido
                     </p>
+                </div>
+                <div class="quadro-saving">
+                    <div>
+                        <label for="ano_saving" class="form-label mb-1">Ano</label>
+                        <select id="ano_saving" class="form-select form-select-sm" onchange="atualizarSavingAcumulado()">
+                            <?php foreach ($anosSaving as $anoOp): ?>
+                                <option value="<?php echo $anoOp; ?>" <?php echo $anoOp === (int) date('Y') ? 'selected' : ''; ?>><?php echo $anoOp; ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="caixa-saving" title="Soma do Saving só dos agentes escolhidos (X) no ano">
+                        <span class="rotulo">Saving acumulado</span>
+                        <span class="valor" id="valor_saving_acumulado">—</span>
+                    </div>
                 </div>
             </div>
             <div class="table-responsive">
@@ -757,6 +798,31 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             botao.textContent = marcado ? 'X' : '';
             botao.title = marcado ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido';
         }
+        const savingItens = <?php echo json_encode($savingItens ?: new stdClass()); ?>;
+
+        function atualizarSavingAcumulado() {
+            const ano = parseInt(document.getElementById('ano_saving').value, 10);
+            let soma = 0;
+            let algum = false;
+            Object.values(savingItens).forEach((it) => {
+                if (it.escolhido && it.ano === ano && it.saving !== null) { soma += it.saving; algum = true; }
+            });
+            const caixa = document.getElementById('valor_saving_acumulado');
+            caixa.classList.remove('neg', 'pos');
+            if (!algum) { caixa.textContent = '—'; return; }
+            caixa.textContent = (soma < 0 ? '-' : '') + 'R$ ' + fmtBr(Math.abs(soma));
+            caixa.classList.add(soma < 0 ? 'neg' : 'pos');
+        }
+
+        // Atualiza o estado "escolhido" na memória a partir dos botões do grupo
+        function sincronizarSavingGrupo(grupo) {
+            grupo.forEach((b) => {
+                const idItem = b.closest('tr').id.replace('item-', '');
+                if (savingItens[idItem]) savingItens[idItem].escolhido = b.classList.contains('marcado');
+            });
+            atualizarSavingAcumulado();
+        }
+
         function escolherAgente(id, botao) {
             const linha = botao.closest('tr');
             const grupo = document.querySelectorAll('#tabela-comparativos tr[data-comp="' + linha.dataset.comp + '"] .btn-escolher');
@@ -764,8 +830,9 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             const marcar = !botao.classList.contains('marcado');
             grupo.forEach((b) => pintarEscolha(b, false));
             if (marcar) pintarEscolha(botao, true);
+            sincronizarSavingGrupo(grupo);
 
-            const desfazer = () => grupo.forEach((b, i) => pintarEscolha(b, antes[i]));
+            const desfazer = () => { grupo.forEach((b, i) => pintarEscolha(b, antes[i])); sincronizarSavingGrupo(grupo); };
             postar({ acao: 'ajax_escolher', id: id })
                 .then((json) => { if (!json.ok) { desfazer(); alert(json.erro || 'Não foi possível atualizar.'); } })
                 .catch(() => { desfazer(); alert('Erro de conexão. Tente de novo.'); });
@@ -817,6 +884,8 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                 else if (ev.key === 'Escape') { ev.preventDefault(); cancelar(); }
             });
         });
+
+        atualizarSavingAcumulado();
 
         // Começa com 4 linhas de agente
         for (let i = 0; i < 4; i++) adicionarAgente();
