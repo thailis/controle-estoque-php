@@ -438,6 +438,8 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
         #tabela-comparativos tr.inicio-grupo td { border-top: 2px solid #8fa3b8; }
         #tabela-comparativos td.grupo { background: #f6f8fb; text-align: center; }
         #tabela-comparativos td.sugestao { background: #fff3a6; font-weight: 700; }
+        #tabela-comparativos .celula-editavel { cursor: cell; }
+        #tabela-comparativos .celula-editavel:hover { box-shadow: inset 0 0 0 1px #b9d3ef; }
         #tabela-comparativos .moeda { color: #66788a; margin-right: 4px; }
         #tabela-comparativos .ultimo-agente { display: block; font-size: .75rem; color: #3c4c5c; font-weight: 700; }
         #tabela-comparativos .saving-neg { color: #b42318; }
@@ -774,17 +776,49 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                 .catch(() => alert('Erro de conexão. Tente de novo.'));
         }
 
-        // Depois de editar qualquer célula com duplo clique, recalcula a tela
-        document.addEventListener('inline-edit:salvo', recarregarMantendoScroll);
+        // Edição por duplo clique PRÓPRIA desta tela (não usa o inline-edit.js
+        // compartilhado): salva e recarrega na hora, pra Total, Último preço e
+        // Saving já aparecerem recalculados. Enter/sair do campo salva; Esc cancela.
+        document.addEventListener('dblclick', (e) => {
+            const celula = e.target.closest('#tabela-comparativos .celula-editavel');
+            if (!celula || celula.querySelector('input')) return;
+            const htmlOriginal = celula.innerHTML;
+            const valorAtual = celula.dataset.valorBruto || '';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = valorAtual;
+            input.className = 'form-control form-control-sm';
+            input.style.minWidth = '90px';
+            celula.innerHTML = '';
+            celula.appendChild(input);
+            input.focus();
+            input.select();
+
+            let resolvido = false;
+            const cancelar = () => { resolvido = true; celula.innerHTML = htmlOriginal; };
+            const salvar = () => {
+                if (resolvido) return;
+                resolvido = true;
+                const novo = input.value.trim();
+                if (novo === valorAtual.trim()) { celula.innerHTML = htmlOriginal; return; }
+                input.disabled = true;
+                postar({ acao: 'ajax_editar_campo', id: celula.dataset.id, campo: celula.dataset.campo, valor: novo })
+                    .then((json) => {
+                        if (!json.ok) { alert(json.erro || 'Não foi possível salvar.'); celula.innerHTML = htmlOriginal; return; }
+                        recarregarMantendoScroll();
+                    })
+                    .catch(() => { alert('Erro de conexão. Tente de novo.'); celula.innerHTML = htmlOriginal; });
+            };
+            input.addEventListener('blur', salvar);
+            input.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+                else if (ev.key === 'Escape') { ev.preventDefault(); cancelar(); }
+            });
+        });
 
         // Começa com 4 linhas de agente
         for (let i = 0; i < 4; i++) adicionarAgente();
     </script>
-    <script>
-        window.INLINE_EDIT_ENDPOINT = 'comparativos.php';
-        window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
-    </script>
-    <script src="assets/inline-edit.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <script>
         // Relatório .xlsx com TODOS os comparativos (ignora filtros/paginação).
