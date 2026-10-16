@@ -1357,14 +1357,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                             if (!projeto) { e.preventDefault(); return; }
                             const opcao = select.options[select.selectedIndex];
                             const qtd = opcao ? (opcao.dataset.qtd || '0') : '0';
-                            const digitado = prompt(
-                                'Isso vai excluir ' + qtd + ' linha(s) da BOM do projeto "' + projeto + '" — ação sem volta.\n\n' +
-                                'Pra confirmar, digite o nome do projeto exatamente como mostrado:'
+                            const confirmado = confirm(
+                                'Isso vai excluir ' + qtd + ' linha(s) da BOM do projeto "' + projeto + '" — ação sem volta. Confirma?'
                             );
-                            if (digitado !== projeto) {
-                                e.preventDefault();
-                                if (digitado !== null) alert('Nome não confere — exclusão cancelada.');
-                            }
+                            if (!confirmado) { e.preventDefault(); }
                         });
                     })();
                 </script>
