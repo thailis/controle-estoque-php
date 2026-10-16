@@ -3,7 +3,7 @@
 //
 // Comparativo de cotações de frete entre agentes.
 // Cada COMPARATIVO (tabela "comparativos") guarda o que vale pra cotação
-// inteira: Carga (20´ / 40 HC / AIR), PTAX USD / EU / RMB e Processo.
+// inteira: Carga (20´ / 40 HC / 40 FR / AIR), PTAX USD / EU / RMB e Processo.
 // Cada AGENTE cotado é uma linha em "comparativo_itens": Agente, Data, BRL,
 // Spread (%), USD, EU, RMB e se foi o Escolhido.
 //
@@ -15,7 +15,7 @@
 // qualquer um.
 require_once 'conexao.php';
 
-const CARGAS_COMPARATIVO = ['20´', '40 HC', 'AIR'];
+const CARGAS_COMPARATIVO = ['20´', '40 HC', '40 FR', 'AIR'];
 
 function h(mixed $valor): string
 {
@@ -86,7 +86,7 @@ function numeroFlex($valor): string
 function normalizarCarga(string $valor): ?string
 {
     $chave = strtoupper(preg_replace('/[\s\'´`’"]/u', '', $valor));
-    $mapa = ['20' => '20´', '20FT' => '20´', '20DC' => '20´', '40HC' => '40 HC', '40' => '40 HC', 'AIR' => 'AIR', 'AEREO' => 'AIR', 'AÉREO' => 'AIR'];
+    $mapa = ['20' => '20´', '20FT' => '20´', '20DC' => '20´', '40HC' => '40 HC', '40' => '40 HC', '40FR' => '40 FR', '40FLATRACK' => '40 FR', 'AIR' => 'AIR', 'AEREO' => 'AIR', 'AÉREO' => 'AIR'];
     return $mapa[$chave] ?? null;
 }
 
