@@ -349,6 +349,42 @@ foreach ($comparativos as $cid => &$c) {
 }
 unset($c);
 
+// ---------- Relatório (.xlsx): todos os itens lançados, já calculados ----------
+// Devolve JSON; o navegador monta o .xlsx (ExcelJS, mesma biblioteca da
+// Commercial Invoice). Sempre lê do banco na hora, então sai atualizado
+// mesmo depois de marcar o Escolhido sem recarregar a tela.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'relatorio') {
+    header('Content-Type: application/json; charset=UTF-8');
+    $linhasRel = [];
+    foreach (array_reverse($comparativos, true) as $cid => $c) {
+        foreach ($c['itens'] as $it) {
+            $linhasRel[] = [
+                'comparativo' => $cid,
+                'agente' => $it['agente'],
+                'data' => $it['data'] ? dataBr($it['data']) : '',
+                'brl' => $it['brl'] !== null ? (float) $it['brl'] : null,
+                'usd' => $it['usd'] !== null ? (float) $it['usd'] : null,
+                'eu' => $it['eu'] !== null ? (float) $it['eu'] : null,
+                'rmb' => $it['rmb'] !== null ? (float) $it['rmb'] : null,
+                'ptax_usd' => $c['ptax_usd'] !== null ? (float) $c['ptax_usd'] : null,
+                'ptax_eu' => $c['ptax_eu'] !== null ? (float) $c['ptax_eu'] : null,
+                'ptax_rmb' => $c['ptax_rmb'] !== null ? (float) $c['ptax_rmb'] : null,
+                'carga' => $c['carga'],
+                'spread' => $it['spread'] !== null ? (float) $it['spread'] / 100 : null,
+                'total' => round($it['total'], 2),
+                'ultimo' => $c['ultimo'] ? round($c['ultimo']['total'], 2) : null,
+                'ultimo_agente' => $c['ultimo']['agente'] ?? '',
+                'saving' => $it['saving'] !== null ? round($it['saving'], 2) : null,
+                'processo' => $c['processo'] ?? '',
+                'escolhido' => (int) $it['escolhido'] === 1,
+                'sugestao' => count($c['itens']) > 1 && abs($it['total'] - $c['menor_total']) < 0.005,
+            ];
+        }
+    }
+    echo json_encode(['linhas' => $linhasRel]);
+    exit;
+}
+
 // ---------- Filtros + paginação (mais recentes primeiro) ----------
 $busca = trim($_GET['busca'] ?? '');
 $filtroCarga = trim($_GET['carga'] ?? '');
@@ -402,7 +438,6 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
         #tabela-comparativos tr.inicio-grupo td { border-top: 2px solid #8fa3b8; }
         #tabela-comparativos td.grupo { background: #f6f8fb; text-align: center; }
         #tabela-comparativos td.sugestao { background: #fff3a6; font-weight: 700; }
-        #tabela-comparativos td.escolhido-sim { background: #92d050; }
         #tabela-comparativos .moeda { color: #66788a; margin-right: 4px; }
         #tabela-comparativos .ultimo-agente { display: block; font-size: .75rem; color: #3c4c5c; font-weight: 700; }
         #tabela-comparativos .saving-neg { color: #b42318; }
@@ -535,6 +570,9 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                 <div class="col-md-2">
                     <a href="comparativos.php" class="btn btn-outline-secondary w-100">Limpar filtros</a>
                 </div>
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-success w-100" id="btn-relatorio" onclick="exportarRelatorio()">📊 Relatório</button>
+                </div>
             </form>
         </section>
 
@@ -545,7 +583,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                     <h2>Comparativos</h2>
                     <p class="legenda mb-0"><?php echo $total; ?> encontrado(s)
                         <span style="background:#fff3a6"></span>sugestão (menor total)
-                        <span style="background:#92d050"></span>escolhido
+                        <span style="background:#1d7a3e"></span>escolhido
                     </p>
                 </div>
             </div>
@@ -603,7 +641,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                     <?php if ($i === 0): ?>
                                         <td rowspan="<?php echo $qtd; ?>" class="celula-editavel grupo" data-id="<?php echo $cid; ?>" data-campo="c_processo" data-valor-bruto="<?php echo h($c['processo'] ?? ''); ?>"><?php echo h($c['processo'] ?: '—'); ?></td>
                                     <?php endif; ?>
-                                    <td class="centro <?php echo $ehEscolhido ? 'escolhido-sim' : ''; ?>">
+                                    <td class="centro">
                                         <button type="button" class="btn-escolher <?php echo $ehEscolhido ? 'marcado' : ''; ?>" onclick="escolherAgente(<?php echo $idItem; ?>, this)" title="<?php echo $ehEscolhido ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido'; ?>"><?php echo $ehEscolhido ? 'X' : ''; ?></button>
                                     </td>
                                     <td class="centro">
@@ -714,7 +752,6 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             botao.classList.toggle('marcado', marcado);
             botao.textContent = marcado ? 'X' : '';
             botao.title = marcado ? 'Escolhido — clique pra desmarcar' : 'Marcar como escolhido';
-            botao.closest('td').classList.toggle('escolhido-sim', marcado);
         }
         function escolherAgente(id, botao) {
             const linha = botao.closest('tr');
@@ -748,5 +785,91 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+    <script>
+        // Relatório .xlsx com TODOS os comparativos (ignora filtros/paginação).
+        // Amarelo = sugestão (menor total); verde = escolhido.
+        function exportarRelatorio() {
+            if (typeof ExcelJS === 'undefined') {
+                alert('Não consegui carregar a biblioteca de planilha. Recarregue a página e tente de novo.');
+                return;
+            }
+            const botao = document.getElementById('btn-relatorio');
+            botao.disabled = true;
+            fetch('comparativos.php?ajax=relatorio')
+                .then((r) => r.json())
+                .then((dados) => {
+                    const wb = new ExcelJS.Workbook();
+                    const ws = wb.addWorksheet('Comparativos', { views: [{ state: 'frozen', ySplit: 1 }] });
+                    ws.columns = [
+                        { header: 'Comparativo', key: 'comparativo', width: 12 },
+                        { header: 'Agente', key: 'agente', width: 16 },
+                        { header: 'Data', key: 'data', width: 12 },
+                        { header: 'BRL', key: 'brl', width: 13, style: { numFmt: '"R$" #,##0.00' } },
+                        { header: 'USD', key: 'usd', width: 12, style: { numFmt: '"$" #,##0.00' } },
+                        { header: 'EU', key: 'eu', width: 12, style: { numFmt: '"€" #,##0.00' } },
+                        { header: 'RMB', key: 'rmb', width: 12, style: { numFmt: '"¥" #,##0.00' } },
+                        { header: 'PTAX USD', key: 'ptax_usd', width: 11, style: { numFmt: '#,##0.0000' } },
+                        { header: 'PTAX EU', key: 'ptax_eu', width: 11, style: { numFmt: '#,##0.0000' } },
+                        { header: 'PTAX RMB', key: 'ptax_rmb', width: 11, style: { numFmt: '#,##0.0000' } },
+                        { header: 'Carga', key: 'carga', width: 9 },
+                        { header: 'Spread', key: 'spread', width: 9, style: { numFmt: '0.00%' } },
+                        { header: 'Total - R$', key: 'total', width: 15, style: { numFmt: '"R$" #,##0.00' } },
+                        { header: 'Último preço', key: 'ultimo', width: 15, style: { numFmt: '"R$" #,##0.00' } },
+                        { header: 'Último agente', key: 'ultimo_agente', width: 14 },
+                        { header: 'Saving', key: 'saving', width: 14, style: { numFmt: '"R$" #,##0.00;[Red]-"R$" #,##0.00' } },
+                        { header: 'Processo', key: 'processo', width: 16 },
+                        { header: 'Escolhido', key: 'escolhido_txt', width: 10 },
+                    ];
+                    const cab = ws.getRow(1);
+                    cab.eachCell((c) => {
+                        c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+                        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF002060' } };
+                        c.alignment = { horizontal: 'center', vertical: 'middle' };
+                    });
+                    cab.height = 20;
+
+                    let compAnterior = null;
+                    (dados.linhas || []).forEach((l) => {
+                        const row = ws.addRow({ ...l, escolhido_txt: l.escolhido ? 'X' : '' });
+                        row.getCell('comparativo').alignment = { horizontal: 'center' };
+                        row.getCell('carga').alignment = { horizontal: 'center' };
+                        row.getCell('escolhido_txt').alignment = { horizontal: 'center' };
+                        if (compAnterior !== null && compAnterior !== l.comparativo) {
+                            row.eachCell({ includeEmpty: true }, (c) => { c.border = { top: { style: 'thin', color: { argb: 'FF8FA3B8' } } }; });
+                        }
+                        compAnterior = l.comparativo;
+                        if (l.sugestao) {
+                            ['total', 'saving'].forEach((k) => {
+                                row.getCell(k).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3A6' } };
+                                row.getCell(k).font = { bold: true };
+                            });
+                        }
+                        if (l.escolhido) {
+                            const c = row.getCell('escolhido_txt');
+                            c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D7A3E' } };
+                            c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+                        }
+                    });
+                    ws.autoFilter = { from: 'A1', to: 'R1' };
+
+                    return wb.xlsx.writeBuffer();
+                })
+                .then((buffer) => {
+                    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                    const url = URL.createObjectURL(blob);
+                    const hoje = new Date();
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'comparativos_' + hoje.toISOString().slice(0, 10) + '.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                })
+                .catch(() => alert('Erro ao gerar o relatório. Tente de novo.'))
+                .finally(() => { botao.disabled = false; });
+        }
+    </script>
 </body>
 </html>
