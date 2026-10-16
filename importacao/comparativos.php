@@ -471,15 +471,15 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                     </div>
                     <div class="col-md-2 campo-cabecalho">
                         <label class="form-label">PTAX USD</label>
-                        <input type="text" name="ptax_usd" id="ptax_usd" class="form-control" placeholder="5,10" oninput="recalcularPrevias()">
+                        <input type="text" name="ptax_usd" id="ptax_usd" class="form-control" oninput="recalcularPrevias()">
                     </div>
                     <div class="col-md-2 campo-cabecalho">
                         <label class="form-label">PTAX EU</label>
-                        <input type="text" name="ptax_eu" id="ptax_eu" class="form-control" placeholder="5,30" oninput="recalcularPrevias()">
+                        <input type="text" name="ptax_eu" id="ptax_eu" class="form-control" oninput="recalcularPrevias()">
                     </div>
                     <div class="col-md-2 campo-cabecalho">
                         <label class="form-label">PTAX RMB</label>
-                        <input type="text" name="ptax_rmb" id="ptax_rmb" class="form-control" placeholder="1,20" oninput="recalcularPrevias()">
+                        <input type="text" name="ptax_rmb" id="ptax_rmb" class="form-control" oninput="recalcularPrevias()">
                     </div>
                     <div class="col-md-2 campo-cabecalho">
                         <label class="form-label">Processo <small class="text-muted">(pode ser depois)</small></label>
@@ -651,11 +651,11 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
             tr.innerHTML = `
                 <td><input type="text" name="agente[]" class="form-control form-control-sm" list="lista-agentes" autocomplete="off"></td>
                 <td><input type="text" name="brl[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
-                <td><input type="text" name="spread[]" class="form-control form-control-sm" placeholder="2 = 2%" oninput="recalcularPrevias()"></td>
+                <td><input type="text" name="spread[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="usd[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="eu[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
                 <td><input type="text" name="rmb[]" class="form-control form-control-sm" oninput="recalcularPrevias()"></td>
-                <td class="campo-cabecalho"><input type="text" class="form-control form-control-sm previa-total" readonly placeholder="—"></td>
+                <td class="campo-cabecalho"><input type="text" class="form-control form-control-sm previa-total" readonly></td>
                 <td><button type="button" class="btn-remover-linha" onclick="this.closest('tr').remove()" title="Remover">✕</button></td>
             `;
             document.getElementById('corpo-agentes').appendChild(tr);
