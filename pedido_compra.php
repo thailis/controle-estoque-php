@@ -26,24 +26,6 @@ if ($resFiliais) {
     }
 }
 
-// Fornecedores cadastrados (tabela "fornecedores" — veja sql_fornecedores.sql).
-// Ao digitar o código SAP no campo ao lado de "Supplier", o JS procura aqui e
-// preenche Company, TAX ID, Adress, Zip Code, Commercial, Phone, Email e
-// também Payment, ICMS e IPI. Se a tabela ainda não existir, a lista fica
-// vazia e a tela continua funcionando com preenchimento manual.
-$fornecedores = [];
-try {
-    $resFornecedores = mysqli_query($conn, "SELECT sap, company, tax_id, endereco, cep, comercial, telefone, email, pagamento, icms, ipi FROM fornecedores ORDER BY company");
-    if ($resFornecedores) {
-        while ($linhaFornecedor = mysqli_fetch_assoc($resFornecedores)) {
-            $linhaFornecedor['sap'] = trim((string) $linhaFornecedor['sap']);
-            $fornecedores[] = $linhaFornecedor;
-        }
-    }
-} catch (Throwable $erroFornecedores) {
-    error_log('Tabela fornecedores indisponível: ' . $erroFornecedores->getMessage());
-}
-
 // Endpoint chamado via JS (fetch) quando o usuário digita/sai do campo "Part
 // Number" — busca a descrição do componente na BOM, se existir. Se não
 // encontrar, devolve null e o campo Description continua livre pra digitar
@@ -54,9 +36,14 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
     $descricao = null;
     if ($codigo !== '') {
         $stmt = mysqli_prepare($conn, "
-            SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), NULL)) AS descricao
+            -- Prefere a descrição de linhas ativas (MRP ≠ N); se o componente só
+            -- tiver linhas com MRP = N na BOM, usa a descrição delas mesmo.
+            SELECT COALESCE(
+                MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END),
+                MAX(NULLIF(TRIM(descricao), ''))
+            ) AS descricao
             FROM bomnova
-            WHERE TRIM(codigo_componente) = ? AND (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
+            WHERE TRIM(codigo_componente) = ?
         ");
         mysqli_stmt_bind_param($stmt, 's', $codigo);
         mysqli_stmt_execute($stmt);
@@ -82,10 +69,12 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
         $stmt = mysqli_prepare($conn, "
             SELECT p.codigo_componente, p.quantidade, p.preco, p.data,
                 (
-                    SELECT MAX(COALESCE(NULLIF(TRIM(b.descricao), ''), NULL))
+                    SELECT COALESCE(
+                        MAX(CASE WHEN b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N' THEN NULLIF(TRIM(b.descricao), '') END),
+                        MAX(NULLIF(TRIM(b.descricao), ''))
+                    )
                     FROM bomnova b
                     WHERE TRIM(b.codigo_componente) = TRIM(p.codigo_componente)
-                      AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
                 ) AS descricao
             FROM programacao p
             WHERE TRIM(p.po) = ?
@@ -344,13 +333,6 @@ if ($resProcessosProgramacao) {
 
         .btn-add-linha { font-size: .78rem; }
 
-        /* Linha "Supplier + código SAP": fica dentro da mesma tabela dos dados
-           do fornecedor, então o código começa exatamente na mesma coluna do
-           nome da empresa (alinhado com a 1ª letra do Company). */
-        table.po-info td.sup-titulo { font-weight: 750; font-size: .95rem; color: #17212b; padding-left: 0; padding-bottom: 4px; vertical-align: middle; }
-        table.po-info input.sup-ref { color: #1f5fbf; font-weight: 700; font-size: .95rem; width: 220px; }
-        .sup-status { font-size: .72rem; color: #8a96a3; margin-left: 8px; }
-
         @media print {
             * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
             body { background: #fff; }
@@ -366,8 +348,6 @@ if ($resProcessosProgramacao) {
             .rodape-textarea { color: #000 !important; }
             .po-header input, .po-header select { color: var(--destaque) !important; }
             .po-invoice-texto textarea { color: var(--destaque) !important; }
-            table.po-info input.sup-ref { color: #1f5fbf !important; }
-            table.po-info input.sup-ref::-webkit-calendar-picker-indicator { display: none !important; }
             /* Texto de exemplo (placeholder) nunca sai no PDF: campo vazio = em branco */
             input::placeholder, textarea::placeholder { color: transparent !important; opacity: 0 !important; }
         }
@@ -446,20 +426,11 @@ if ($resProcessosProgramacao) {
             </table>
         </div>
 
-        <div class="po-info-wrap" style="padding-top:8px;">
+        <div class="po-secao-titulo">
+            Supplier <input type="text" id="sup_ref" placeholder="Referência do fornecedor" style="color:var(--destaque); font-weight:700; width:220px; display:inline-block; border:none; background:transparent;">
+        </div>
+        <div class="po-info-wrap">
             <table class="po-info">
-                <tr>
-                    <td class="lbl sup-titulo">Supplier</td>
-                    <td colspan="3">
-                        <input type="text" id="sup_ref" class="sup-ref" list="lista-fornecedores" autocomplete="off" placeholder="Código SAP do fornecedor" oninput="aplicarFornecedor()" onchange="aplicarFornecedor()">
-                        <span id="sup_status" class="sup-status no-print"></span>
-                        <datalist id="lista-fornecedores">
-                            <?php foreach ($fornecedores as $forn): ?>
-                                <option value="<?php echo htmlspecialchars($forn['sap']); ?>"><?php echo htmlspecialchars((string) $forn['company']); ?></option>
-                            <?php endforeach; ?>
-                        </datalist>
-                    </td>
-                </tr>
                 <tr><td class="lbl">Company</td><td colspan="3"><input type="text" id="sup_company" placeholder="Razão social do fornecedor"></td></tr>
                 <tr><td class="lbl">TAX ID</td><td colspan="3"><input type="text" id="sup_taxid" placeholder="00.000.000/0000-00"></td></tr>
                 <tr><td class="lbl">Adress</td><td colspan="3"><input type="text" id="sup_adress" placeholder="Endereço"></td></tr>
@@ -622,46 +593,6 @@ if ($resProcessosProgramacao) {
             document.getElementById('cli_email').value = filial.email;
             document.getElementById('rodape_delivery1').value = filial.nome + ' - ' + filial.endereco;
             document.getElementById('rodape_delivery2').value = filial.cep;
-        }
-
-        // Fornecedores indexados pelo código SAP (coluna "SAP" da planilha).
-        const fornecedoresMap = <?php echo json_encode(array_column($fornecedores, null, 'sap'), JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP); ?>;
-
-        // Percentual vindo do banco (ex.: 12 / 8.8 / 3.25) → "12%", "8,8%", "3,25%"
-        // respeitando o formato nacional/internacional da tela.
-        function formatarPercentualFornecedor(valor) {
-            if (valor === null || valor === undefined || valor === '') return null;
-            const n = parseFloat(valor);
-            if (isNaN(n)) return null;
-            const texto = String(Number(n.toFixed(4)));
-            const decimais = texto.includes('.') ? texto.split('.')[1].length : 0;
-            return formatarNumeroPo(n, decimais, formatoInternacional) + '%';
-        }
-
-        // Ao digitar o código SAP no campo do Supplier: se existir no cadastro,
-        // preenche todos os dados do fornecedor. Se não existir, não apaga nada
-        // (dá pra continuar digitando os dados na mão).
-        function aplicarFornecedor() {
-            const codigo = document.getElementById('sup_ref').value.trim();
-            const status = document.getElementById('sup_status');
-            const f = fornecedoresMap[codigo];
-            if (!f) {
-                status.textContent = codigo === '' ? '' : 'código não cadastrado';
-                return;
-            }
-            status.textContent = '';
-            const preencher = (id, valor) => { if (valor !== null && valor !== undefined) document.getElementById(id).value = valor; };
-            preencher('sup_company', f.company || '');
-            preencher('sup_taxid', f.tax_id || '');
-            preencher('sup_adress', f.endereco || '');
-            preencher('sup_zip', f.cep || '');
-            preencher('sup_contato', f.comercial || '');
-            preencher('sup_phone', f.telefone || '');
-            preencher('sup_email', f.email || '');
-            if (f.pagamento) preencher('rodape_payment', f.pagamento);
-            preencher('tax_icms', formatarPercentualFornecedor(f.icms));
-            preencher('tax_ipi', formatarPercentualFornecedor(f.ipi));
-            recalcularTotal();
         }
 
         function importarAssinatura(evento) {
