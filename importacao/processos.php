@@ -176,6 +176,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_pr
     exit;
 }
 
+// ---------- Descrição do componente pela BOM do MRP (AJAX) ----------
+// Os bancos são diferentes: abre uma conexão só de leitura com o MRP usando
+// as mesmas credenciais MRP_DB_* do confirmar_entrega.php / commercial_invoice.php.
+// Prefere a descrição de linhas com MRP ≠ N; se só houver linhas N, usa elas.
+// Se não achar (ou o MRP estiver fora), devolve null e o campo fica livre.
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'descricao_bom') {
+    header('Content-Type: application/json; charset=UTF-8');
+    $codigoBusca = trim($_GET['codigo'] ?? '');
+    $descricaoBom = null;
+    if ($codigoBusca !== '') {
+        try {
+            $hostMrp = getenv('MRP_DB_HOST') ?: '';
+            $userMrp = getenv('MRP_DB_USER') ?: '';
+            $passMrp = getenv('MRP_DB_PASSWORD') ?: '';
+            if ($hostMrp !== '' && $userMrp !== '' && $passMrp !== '') {
+                $connMrp = mysqli_init();
+                mysqli_options($connMrp, MYSQLI_OPT_CONNECT_TIMEOUT, 8);
+                mysqli_ssl_set($connMrp, null, null, getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt', null, null);
+                mysqli_real_connect($connMrp, $hostMrp, $userMrp, $passMrp, getenv('MRP_DB_NAME') ?: 'controle_mrp', (int) (getenv('MRP_DB_PORT') ?: 4000), null, MYSQLI_CLIENT_SSL);
+                mysqli_set_charset($connMrp, 'utf8mb4');
+                $stmtBom = mysqli_prepare($connMrp, "
+                    SELECT COALESCE(
+                        MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END),
+                        MAX(NULLIF(TRIM(descricao), ''))
+                    ) AS descricao
+                    FROM bomnova
+                    WHERE TRIM(codigo_componente) = ?
+                ");
+                mysqli_stmt_bind_param($stmtBom, 's', $codigoBusca);
+                mysqli_stmt_execute($stmtBom);
+                $descricaoBom = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBom))['descricao'] ?? null;
+                mysqli_stmt_close($stmtBom);
+                mysqli_close($connMrp);
+            }
+        } catch (Throwable $erroBom) {
+            error_log('Busca de descrição na BOM do MRP falhou: ' . $erroBom->getMessage());
+        }
+    }
+    echo json_encode(['descricao' => $descricaoBom]);
+    exit;
+}
+
 $mensagens = [];
 $importados = 0;
 $erros = 0;
@@ -696,6 +738,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     }
 }
 
+// ---------- Sincronizar descrições com a BOM do MRP ----------
+// Para todo processo NÃO finalizado: se o componente existe na BOM do MRP,
+// a descrição da BOM substitui a que está em Processos (a BOM é a fonte
+// oficial). Componente que não está na BOM fica com a descrição digitada.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_descricoes_bom') {
+    try {
+        $hostMrp = getenv('MRP_DB_HOST') ?: '';
+        $userMrp = getenv('MRP_DB_USER') ?: '';
+        $passMrp = getenv('MRP_DB_PASSWORD') ?: '';
+        if ($hostMrp === '' || $userMrp === '' || $passMrp === '') {
+            throw new RuntimeException('Conexão com o MRP não configurada (MRP_DB_HOST/USER/PASSWORD).');
+        }
+        $connMrp = mysqli_init();
+        mysqli_options($connMrp, MYSQLI_OPT_CONNECT_TIMEOUT, 8);
+        mysqli_ssl_set($connMrp, null, null, getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt', null, null);
+        mysqli_real_connect($connMrp, $hostMrp, $userMrp, $passMrp, getenv('MRP_DB_NAME') ?: 'controle_mrp', (int) (getenv('MRP_DB_PORT') ?: 4000), null, MYSQLI_CLIENT_SSL);
+        mysqli_set_charset($connMrp, 'utf8mb4');
+
+        // Componentes dos processos não finalizados
+        $codigosSync = [];
+        $resCodigos = mysqli_query($conn, "
+            SELECT DISTINCT TRIM(codigo_componente) AS codigo
+            FROM processos
+            WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+              AND LOWER(TRIM(COALESCE(status, ''))) <> 'finalizado'
+        ");
+        while ($l = mysqli_fetch_assoc($resCodigos)) { $codigosSync[] = $l['codigo']; }
+
+        // Descrições na BOM, em blocos de 500 códigos
+        $descricoesBom = [];
+        foreach (array_chunk($codigosSync, 500) as $bloco) {
+            $marcadores = implode(',', array_fill(0, count($bloco), '?'));
+            $stmtBom = mysqli_prepare($connMrp, "
+                SELECT TRIM(codigo_componente) AS codigo,
+                    COALESCE(
+                        MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END),
+                        MAX(NULLIF(TRIM(descricao), ''))
+                    ) AS descricao
+                FROM bomnova
+                WHERE TRIM(codigo_componente) IN ($marcadores)
+                GROUP BY TRIM(codigo_componente)
+            ");
+            mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($bloco)), ...$bloco);
+            mysqli_stmt_execute($stmtBom);
+            $resBom = mysqli_stmt_get_result($stmtBom);
+            while ($l = mysqli_fetch_assoc($resBom)) {
+                if ($l['descricao'] !== null && $l['descricao'] !== '') { $descricoesBom[$l['codigo']] = $l['descricao']; }
+            }
+            mysqli_stmt_close($stmtBom);
+        }
+        mysqli_close($connMrp);
+
+        $linhasAtualizadas = 0;
+        $stmtUpd = mysqli_prepare($conn, "
+            UPDATE processos SET descricao = ?
+            WHERE TRIM(codigo_componente) = ?
+              AND LOWER(TRIM(COALESCE(status, ''))) <> 'finalizado'
+              AND (descricao IS NULL OR descricao <> ?)
+        ");
+        foreach ($descricoesBom as $codigoSync => $descSync) {
+            mysqli_stmt_bind_param($stmtUpd, 'sss', $descSync, $codigoSync, $descSync);
+            mysqli_stmt_execute($stmtUpd);
+            $linhasAtualizadas += mysqli_stmt_affected_rows($stmtUpd);
+        }
+        mysqli_stmt_close($stmtUpd);
+
+        $semBom = count($codigosSync) - count($descricoesBom);
+        $mensagens[] = "🔄 Sincronização com a BOM: $linhasAtualizadas linha(s) com descrição atualizada."
+            . ($semBom > 0 ? " $semBom componente(s) não estão na BOM e mantiveram a descrição digitada." : '');
+    } catch (Throwable $erroSync) {
+        error_log('Sincronização de descrições com a BOM falhou: ' . $erroSync->getMessage());
+        $mensagens[] = '❌ Não consegui sincronizar com a BOM do MRP: ' . $erroSync->getMessage();
+    }
+}
+
 // ---------- Cadastro manual ----------
 // Dois caminhos:
 //  1) "Novo processo" (padrão): o código é gerado automaticamente a partir de
@@ -1169,11 +1286,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Componente</label>
-                        <input type="text" name="codigo_componente_manual" class="form-control">
+                        <input type="text" name="codigo_componente_manual" id="codigo_componente_manual" class="form-control" oninput="buscarDescricaoBomProcesso()" onchange="buscarDescricaoBomProcesso(true)">
+                        <small id="status_descricao_bom" class="text-muted"></small>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">Descrição</label>
-                        <input type="text" name="descricao_manual" class="form-control">
+                        <input type="text" name="descricao_manual" id="descricao_manual" class="form-control" oninput="this.dataset.auto = ''">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Quantidade</label>
@@ -1285,6 +1403,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <div class="col-md-2">
                     <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
                 </div>
+                <div class="col-md-2">
+                    <button type="submit" form="form-sync-bom" class="btn btn-outline-primary w-100" title="Atualiza a descrição dos processos não finalizados com a descrição da BOM do MRP (componentes que não estão na BOM ficam como estão)">🔄 Sincronizar descrições com a BOM</button>
+                </div>
+            </form>
+            <form method="POST" id="form-sync-bom" class="d-none" onsubmit="return confirm('Atualizar a descrição dos processos não finalizados com a descrição da BOM do MRP?');">
+                <input type="hidden" name="acao" value="sincronizar_descricoes_bom">
             </form>
         </section>
 
@@ -1546,6 +1670,36 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 .catch(() => {
                     campoPreview.value = 'Erro ao calcular a prévia.';
                 });
+        }
+
+        // Ao digitar o Componente, busca a descrição na BOM do MRP (outro
+        // banco — o servidor faz a ponte). Só preenche se a Descrição estiver
+        // vazia ou tiver sido preenchida automaticamente antes; se você
+        // digitou a descrição na mão, ela é mantida.
+        let debounceDescricaoBom = null;
+        function buscarDescricaoBomProcesso(imediato) {
+            clearTimeout(debounceDescricaoBom);
+            debounceDescricaoBom = setTimeout(() => {
+                const codigo = document.getElementById('codigo_componente_manual').value.trim();
+                const campoDesc = document.getElementById('descricao_manual');
+                const status = document.getElementById('status_descricao_bom');
+                const podeSobrescrever = campoDesc.value.trim() === '' || campoDesc.dataset.auto === '1';
+                if (!codigo) { status.textContent = ''; if (campoDesc.dataset.auto === '1') { campoDesc.value = ''; } return; }
+                status.textContent = 'buscando na BOM...';
+                fetch('processos.php?ajax=descricao_bom&codigo=' + encodeURIComponent(codigo))
+                    .then((r) => r.json())
+                    .then((json) => {
+                        if (document.getElementById('codigo_componente_manual').value.trim() !== codigo) return;
+                        if (json.descricao) {
+                            status.textContent = 'descrição da BOM';
+                            if (podeSobrescrever) { campoDesc.value = json.descricao; campoDesc.dataset.auto = '1'; }
+                        } else {
+                            status.textContent = 'não encontrado na BOM — digite a descrição';
+                            if (campoDesc.dataset.auto === '1') { campoDesc.value = ''; campoDesc.dataset.auto = ''; }
+                        }
+                    })
+                    .catch(() => { status.textContent = ''; });
+            }, imediato ? 0 : 500);
         }
 
         // Total = Quantidade × Preço. Nunca digitado — sempre recalculado.
