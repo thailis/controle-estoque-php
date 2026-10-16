@@ -365,7 +365,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
 $buscaComponente = trim($_GET['componente'] ?? '');
 $buscaFornecedor = trim($_GET['fornecedor'] ?? '');
 $buscaProcesso   = trim($_GET['processo'] ?? '');
-$filtroStatus    = trim($_GET['status'] ?? ''); // '', 'pendente', 'confirmado', 'cancelado'
+// Padrão ao entrar: só os NÃO confirmados (e não cancelados). A ordem da lista
+// já põe primeiro os que têm Efetiva (prontos pra confirmar) e depois os em aberto.
+$filtroStatus    = isset($_GET['status']) ? trim($_GET['status']) : 'pendente'; // 'todos', 'pendente', 'confirmado', 'cancelado'
 
 $condicoesLista = [];
 $paramsLista = [];
@@ -402,7 +404,7 @@ $sqlLista = "
     FROM follow f
     LEFT JOIN processos p ON p.processo = f.processo
     $whereLista
-    ORDER BY f.integrado_mrp ASC, f.efetiva IS NULL, f.efetiva ASC
+    ORDER BY f.integrado_mrp ASC, f.efetiva IS NULL, f.efetiva ASC, f.prevista IS NULL, f.prevista ASC
 ";
 
 $registros = [];
@@ -547,15 +549,15 @@ if ($resultContagem) {
                 <div class="col-12 col-md-3">
                     <label class="form-label small mb-1">Status</label>
                     <select name="status" class="form-select form-select-sm">
-                        <option value="" <?php echo $filtroStatus === '' ? 'selected' : ''; ?>>Todos</option>
-                        <option value="pendente" <?php echo $filtroStatus === 'pendente' ? 'selected' : ''; ?>>Pendente</option>
+                        <option value="pendente" <?php echo $filtroStatus === 'pendente' ? 'selected' : ''; ?>>Pendentes e em aberto</option>
+                        <option value="todos" <?php echo in_array($filtroStatus, ['', 'todos'], true) ? 'selected' : ''; ?>>Todos</option>
                         <option value="confirmado" <?php echo $filtroStatus === 'confirmado' ? 'selected' : ''; ?>>Confirmado</option>
                         <option value="cancelado" <?php echo $filtroStatus === 'cancelado' ? 'selected' : ''; ?>>Cancelado</option>
                     </select>
                 </div>
                 <div class="col-12 d-flex gap-2">
                     <button type="submit" class="btn btn-primary btn-sm">Buscar</button>
-                    <a href="confirmar_entrega.php" class="btn btn-outline-secondary btn-sm">Limpar filtros</a>
+                    <a href="confirmar_entrega.php?status=todos" class="btn btn-outline-secondary btn-sm">Limpar filtros</a>
                 </div>
             </form>
         </section>
