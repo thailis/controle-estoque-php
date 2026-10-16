@@ -197,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     }
     $paginaVolta = (int) ($_POST['pagina_atual'] ?? 1);
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
-    $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'todos');
+    $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'aberto');
     $condicaoFiltroVolta = (string) ($_POST['condicao_atual'] ?? 'todos');
     header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&mes_base=' . urlencode((string) ($_POST['mes_base_atual'] ?? '')) . '&mes=' . urlencode((string) ($_POST['mes_atual'] ?? '')) . '&excluido=1');
     exit;
@@ -311,7 +311,9 @@ $pagina = isset($_GET['pagina']) ? max(1, (int) $_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-$filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'todos'; // todos | pendente | integrado
+// Padrão ao entrar na tela: só embarques EM ABERTO (não fechados e cujo
+// processo não está cancelado) — inclui "Aguardando confirmação".
+$filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'aberto'; // aberto | todos | pendente | integrado
 $filtroCondicao = isset($_GET['condicao']) ? trim($_GET['condicao']) : 'todos'; // todos | em_tempo | atencao | atrasado
 // Filtro de Mês: escolhe qual data do embarque vale (Prevista por padrão) e o
 // mês (aaaa-mm). Só aceita as colunas da lista — nunca vem texto livre pro SQL.
@@ -338,7 +340,10 @@ if ($busca !== '') {
     $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
     $tipos .= 'ssss';
 }
-if ($filtroStatus === 'pendente') {
+if ($filtroStatus === 'aberto') {
+    $condicoes[] = "COALESCE(f.status, 'aberto') <> 'fechado'
+        AND COALESCE(LOWER(TRIM((SELECT status FROM processos WHERE processo = f.processo LIMIT 1))), 'aberto') <> 'cancelado'";
+} elseif ($filtroStatus === 'pendente') {
     $condicoes[] = "f.integrado_mrp = 0";
 } elseif ($filtroStatus === 'integrado') {
     $condicoes[] = "f.integrado_mrp = 1";
@@ -591,6 +596,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <div class="col-md-2">
                     <label class="form-label">Status</label>
                     <select name="status" class="form-select">
+                        <option value="aberto" <?php echo $filtroStatus === 'aberto' ? 'selected' : ''; ?>>Em aberto</option>
                         <option value="todos" <?php echo $filtroStatus === 'todos' ? 'selected' : ''; ?>>Todos</option>
                         <option value="pendente" <?php echo $filtroStatus === 'pendente' ? 'selected' : ''; ?>>Pendentes de integração</option>
                         <option value="integrado" <?php echo $filtroStatus === 'integrado' ? 'selected' : ''; ?>>Já integrados ao MRP</option>
@@ -624,7 +630,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
                 <div class="col-md-2 d-flex gap-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
-                    <a href="follow.php" class="btn btn-outline-secondary">Limpar</a>
+                    <a href="follow.php?status=todos" class="btn btn-outline-secondary">Limpar</a>
                 </div>
             </form>
         </section>
