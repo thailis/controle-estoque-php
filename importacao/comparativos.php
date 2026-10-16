@@ -441,6 +441,8 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
         #tabela-comparativos .celula-editavel { cursor: cell; }
         #tabela-comparativos .celula-editavel:hover { box-shadow: inset 0 0 0 1px #b9d3ef; }
         #tabela-comparativos .moeda { color: #66788a; margin-right: 4px; }
+        /* Símbolo da moeda encostado à esquerda da célula (alinhado em coluna), número continua à direita */
+        #tabela-comparativos td.num .moeda { float: left; margin-right: 8px; }
         #tabela-comparativos .ultimo-agente { display: block; font-size: .75rem; color: #3c4c5c; font-weight: 700; }
         #tabela-comparativos .saving-neg { color: #b42318; }
         #tabela-comparativos .saving-pos { color: #1d7a3e; }
@@ -637,7 +639,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                                     <?php endif; ?>
                                     <td class="num <?php echo $ehSugestao ? 'sugestao' : ''; ?>">
                                         <?php if ($it['saving'] !== null): ?>
-                                            <span class="<?php echo $it['saving'] < 0 ? 'saving-neg' : 'saving-pos'; ?>"><?php echo $it['saving'] < 0 ? '-' : ''; ?>R$ <?php echo numeroComp(abs($it['saving'])); ?></span>
+                                            <span class="moeda">R$</span><span class="<?php echo $it['saving'] < 0 ? 'saving-neg' : 'saving-pos'; ?>"><?php echo $it['saving'] < 0 ? '-' : ''; ?><?php echo numeroComp(abs($it['saving'])); ?></span>
                                         <?php else: ?>—<?php endif; ?>
                                     </td>
                                     <?php if ($i === 0): ?>
