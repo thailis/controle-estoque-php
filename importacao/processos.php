@@ -840,6 +840,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 // Para todo processo NÃO finalizado: se o componente existe na BOM do MRP,
 // a descrição da BOM substitui a que está em Processos (a BOM é a fonte
 // oficial). Componente que não está na BOM fica com a descrição digitada.
+// ---------- Atualizar códigos (Modal / Planta / Categoria) ----------
+// Corrige processos (não finalizados) cujo código ficou diferente do Modal,
+// Planta ou Categoria cadastrados — ex.: mudou de sea pra air antes dessa
+// regra existir. Mantém ano + sequencial; aplica no Follow/Pagamento/Comparativos.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'recalcular_codigos') {
+    $mapaModalRc = ['aereo' => 'A', 'aéreo' => 'A', 'air' => 'A', 'sea' => 'S', 'maritimo' => 'S', 'marítimo' => 'S', 'road' => 'R', 'rodoviario' => 'R', 'rodoviário' => 'R', 'courrier' => 'C', 'courier' => 'C'];
+    $mapaCategoriaRc = ['tooling' => 'T', 'project' => 'P', 'other' => 'O'];
+    $resRc = mysqli_query($conn, "
+        SELECT processo, MAX(modal) AS modal, MAX(planta) AS planta, MAX(categoria) AS categoria
+        FROM processos
+        WHERE processo REGEXP '^Y[0-9]{2}[A-Z][0-9][A-Z][0-9]+$'
+        GROUP BY processo
+        HAVING SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'finalizado' THEN 1 ELSE 0 END) = 0
+    ");
+    $renomeados = [];
+    $conflitos = [];
+    while ($pr = mysqli_fetch_assoc($resRc)) {
+        $cod = $pr['processo'];
+        $lm = $mapaModalRc[mb_strtolower(trim((string) $pr['modal']), 'UTF-8')] ?? null;
+        $lc = $mapaCategoriaRc[mb_strtolower(trim((string) $pr['categoria']), 'UTF-8')] ?? null;
+        $pl = trim((string) $pr['planta']);
+        $dp = ($pl !== '' && ctype_digit(substr($pl, -1))) ? substr($pl, -1) : null;
+        if ($lm === null || $lc === null || $dp === null) {
+            continue;
+        }
+        $novo = 'Y' . substr($cod, 1, 2) . $lm . $dp . $lc . substr($cod, 6);
+        if ($novo === $cod) {
+            continue;
+        }
+        $stmtEx = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos WHERE processo = ?");
+        mysqli_stmt_bind_param($stmtEx, 's', $novo);
+        mysqli_stmt_execute($stmtEx);
+        $existe = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtEx))['total'] > 0;
+        mysqli_stmt_close($stmtEx);
+        if ($existe) {
+            $conflitos[] = "$cod → $novo";
+            continue;
+        }
+        foreach (['processos', 'follow', 'pagamento', 'comparativos'] as $tabelaRc) {
+            try {
+                $stmtUp = mysqli_prepare($conn, "UPDATE `$tabelaRc` SET processo = ? WHERE processo = ?");
+                mysqli_stmt_bind_param($stmtUp, 'ss', $novo, $cod);
+                mysqli_stmt_execute($stmtUp);
+                mysqli_stmt_close($stmtUp);
+            } catch (Throwable $erroRc) {
+                error_log("Recalcular código em $tabelaRc: " . $erroRc->getMessage());
+            }
+        }
+        $renomeados[] = "$cod → $novo";
+    }
+    $mensagens[] = empty($renomeados)
+        ? '🔧 Nenhum código precisava ser atualizado.'
+        : '🔧 ' . count($renomeados) . ' código(s) atualizado(s): ' . implode(', ', $renomeados) . '.';
+    if (!empty($conflitos)) {
+        $mensagens[] = '⚠️ Não atualizados porque o código novo já existe: ' . implode(', ', $conflitos) . '.';
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_descricoes_bom') {
     try {
         $hostMrp = getenv('MRP_DB_HOST') ?: '';
@@ -1505,6 +1563,12 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <div class="col-md-2">
                     <button type="submit" form="form-sync-bom" class="btn btn-outline-primary w-100" title="Atualiza a descrição dos processos não finalizados com a descrição da BOM do MRP (componentes que não estão na BOM ficam como estão)">🔄 Sincronizar descrições com a BOM</button>
                 </div>
+                <div class="col-md-2">
+                    <button type="submit" form="form-recalcular-codigos" class="btn btn-outline-primary w-100" title="Refaz o código dos processos não finalizados de acordo com o Modal, Planta e Categoria cadastrados (mantém ano e sequencial)">🔧 Atualizar códigos</button>
+                </div>
+            </form>
+            <form method="POST" id="form-recalcular-codigos" class="d-none" onsubmit="return confirm('Atualizar o código dos processos não finalizados de acordo com Modal/Planta/Categoria? O Follow, Pagamento e Comparativos acompanham.');">
+                <input type="hidden" name="acao" value="recalcular_codigos">
             </form>
             <form method="POST" id="form-sync-bom" class="d-none" onsubmit="return confirm('Atualizar a descrição dos processos não finalizados com a descrição da BOM do MRP?');">
                 <input type="hidden" name="acao" value="sincronizar_descricoes_bom">
@@ -1886,31 +1950,85 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
     </script>
     <script src="assets/inline-edit.js"></script>
     <script>
-        // Modal / Planta / Categoria mudam o código do processo (e valem pra
-        // todas as linhas dele) — depois de salvar, recarrega a tela mantendo a
-        // rolagem, pra já mostrar o código novo. Usa o evento do inline-edit e,
-        // como garantia, observa a célula (caso o evento não dispare).
+        // Modal / Planta / Categoria: edição por duplo clique PRÓPRIA (no lugar
+        // do inline-edit.js só nessas 3 colunas), pra poder atualizar NA HORA,
+        // sem recarregar: o valor em todas as linhas do processo e o código
+        // novo (ex.: Y26S1P0059 → Y26A1P0059). Enter/sair salva; Esc cancela.
         (function () {
-            let recarregando = false;
             const camposCodigo = ['modal', 'planta', 'categoria'];
-            function recarregar() {
-                if (recarregando) return;
-                recarregando = true;
-                try { sessionStorage.setItem('processos_scroll', String(window.scrollY)); } catch (e) {}
-                setTimeout(() => window.location.reload(), 300);
+
+            function linhasDoProcesso(codigo) {
+                return Array.from(document.querySelectorAll('#tabela-processos tbody tr')).filter((tr) => {
+                    const span = tr.querySelector('.component-code');
+                    return span && span.textContent.trim() === codigo;
+                });
             }
-            document.addEventListener('inline-edit:salvo', (e) => {
-                if (e.detail && camposCodigo.includes(e.detail.campo)) recarregar();
-            });
-            document.querySelectorAll('#tabela-processos td[data-campo]').forEach((celula) => {
-                if (!camposCodigo.includes(celula.dataset.campo)) return;
-                const textoInicial = celula.textContent.trim();
-                new MutationObserver(() => {
-                    if (celula.querySelector('input, select, textarea')) return;
-                    const atual = celula.textContent.trim();
-                    if (atual !== '' && atual !== textoInicial && !/salvando/i.test(atual)) recarregar();
-                }).observe(celula, { childList: true, characterData: true, subtree: true });
-            });
+
+            function aplicarNaTela(codigoAntigo, codigoNovo, campo, exibido, valorBruto) {
+                linhasDoProcesso(codigoAntigo).forEach((tr) => {
+                    const celula = tr.querySelector('td[data-campo="' + campo + '"]');
+                    if (celula) {
+                        celula.textContent = exibido;
+                        celula.dataset.valorBruto = valorBruto;
+                    }
+                    if (codigoNovo && codigoNovo !== codigoAntigo) {
+                        const span = tr.querySelector('.component-code');
+                        if (span) span.textContent = codigoNovo;
+                        tr.querySelectorAll('input[name="processo"]').forEach((inp) => { inp.value = codigoNovo; });
+                    }
+                });
+            }
+
+            document.addEventListener('dblclick', (e) => {
+                const celula = e.target.closest('#tabela-processos td.celula-editavel');
+                if (!celula || !camposCodigo.includes(celula.dataset.campo)) return;
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                if (celula.querySelector('input')) return;
+
+                const tr = celula.closest('tr');
+                const codigoAntigo = (tr.querySelector('.component-code') || {}).textContent?.trim() || '';
+                const htmlOriginal = celula.innerHTML;
+                const valorAtual = celula.dataset.valorBruto || '';
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = valorAtual;
+                input.className = 'form-control form-control-sm';
+                input.style.minWidth = '90px';
+                celula.innerHTML = '';
+                celula.appendChild(input);
+                input.focus();
+                input.select();
+
+                let resolvido = false;
+                const voltar = () => { celula.innerHTML = htmlOriginal; };
+                const salvar = () => {
+                    if (resolvido) return;
+                    resolvido = true;
+                    const novo = input.value.trim();
+                    input.disabled = true;
+                    fetch('processos.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ acao: 'ajax_editar_campo', id: celula.dataset.id, campo: celula.dataset.campo, valor: novo }).toString(),
+                    })
+                        .then((r) => r.json())
+                        .then((json) => {
+                            if (!json.ok) { voltar(); alert(json.erro || 'Não foi possível salvar.'); return; }
+                            celula.innerHTML = '';
+                            aplicarNaTela(codigoAntigo, json.novo_codigo || codigoAntigo, celula.dataset.campo, json.exibido ?? (novo || '—'), novo);
+                            // garante a própria célula (caso o código esteja fora do padrão)
+                            celula.textContent = json.exibido ?? (novo || '—');
+                            celula.dataset.valorBruto = novo;
+                        })
+                        .catch(() => { voltar(); alert('Erro de conexão. Tente de novo.'); });
+                };
+                input.addEventListener('blur', salvar);
+                input.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+                    else if (ev.key === 'Escape') { ev.preventDefault(); resolvido = true; voltar(); }
+                });
+            }, true);
         })();
     </script>
 </body>
