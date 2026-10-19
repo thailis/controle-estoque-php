@@ -495,6 +495,104 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
+    // Modal / Planta / Categoria fazem parte do CÓDIGO do processo
+    // (Y + ano + MODAL + PLANTA + CATEGORIA + sequencial). Ao mudar um deles, o
+    // código é refeito mantendo o ano e o sequencial (ex.: Y26S1P0059 → sea
+    // vira air → Y26A1P0059), e a mudança vale pra TODAS as linhas do processo.
+    // O novo código também é aplicado no Follow, Pagamento e Comparativos.
+    // Processos com código fora desse padrão (vindos de CSV) só têm o campo
+    // atualizado, sem mexer no código.
+    if (in_array($campo, ['modal', 'planta', 'categoria'], true)) {
+        $stmtLinha = mysqli_prepare($conn, "SELECT processo, modal, planta, categoria FROM processos WHERE id = ?");
+        mysqli_stmt_bind_param($stmtLinha, 'i', $id);
+        mysqli_stmt_execute($stmtLinha);
+        $linhaCod = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtLinha));
+        mysqli_stmt_close($stmtLinha);
+
+        $codigoAtual = trim((string) ($linhaCod['processo'] ?? ''));
+        $valorSalvo = $valor === '' ? null : $valor;
+
+        if (preg_match('/^Y(\d{2})[A-Z]\d[A-Z](\d+)$/', $codigoAtual, $partesCod)) {
+            $novos = [
+                'modal' => (string) ($linhaCod['modal'] ?? ''),
+                'planta' => (string) ($linhaCod['planta'] ?? ''),
+                'categoria' => (string) ($linhaCod['categoria'] ?? ''),
+            ];
+            $novos[$campo] = (string) $valor;
+            $mapaModal = ['aereo' => 'A', 'aéreo' => 'A', 'air' => 'A', 'sea' => 'S', 'maritimo' => 'S', 'marítimo' => 'S', 'road' => 'R', 'rodoviario' => 'R', 'rodoviário' => 'R', 'courrier' => 'C', 'courier' => 'C'];
+            $mapaCategoria = ['tooling' => 'T', 'project' => 'P', 'other' => 'O'];
+            $letraModal = $mapaModal[mb_strtolower(trim($novos['modal']), 'UTF-8')] ?? null;
+            $letraCategoria = $mapaCategoria[mb_strtolower(trim($novos['categoria']), 'UTF-8')] ?? null;
+            $plantaTrim = trim($novos['planta']);
+            $digitoPlanta = ($plantaTrim !== '' && ctype_digit(substr($plantaTrim, -1))) ? substr($plantaTrim, -1) : null;
+
+            if ($campo === 'modal' && $letraModal === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Modal não reconhecido. Use: aereo/air, sea/maritimo, road ou courrier.']);
+                exit;
+            }
+            if ($campo === 'categoria' && $letraCategoria === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Categoria não reconhecida. Use: tooling, project ou other.']);
+                exit;
+            }
+            if ($campo === 'planta' && $digitoPlanta === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Planta inválida — precisa terminar com um número (ex.: 2401).']);
+                exit;
+            }
+
+            $novoCodigo = $codigoAtual;
+            if ($letraModal !== null && $letraCategoria !== null && $digitoPlanta !== null) {
+                $novoCodigo = 'Y' . $partesCod[1] . $letraModal . $digitoPlanta . $letraCategoria . $partesCod[2];
+            }
+
+            if ($novoCodigo !== $codigoAtual) {
+                $stmtExiste = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos WHERE processo = ?");
+                mysqli_stmt_bind_param($stmtExiste, 's', $novoCodigo);
+                mysqli_stmt_execute($stmtExiste);
+                $jaExiste = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtExiste))['total'] > 0;
+                mysqli_stmt_close($stmtExiste);
+                if ($jaExiste) {
+                    echo json_encode(['ok' => false, 'erro' => "Já existe um processo com o código $novoCodigo — nada foi alterado."]);
+                    exit;
+                }
+            }
+
+            mysqli_begin_transaction($conn);
+            try {
+                $stmtTodos = mysqli_prepare($conn, "UPDATE processos SET `$campo` = ?, processo = ? WHERE processo = ?");
+                mysqli_stmt_bind_param($stmtTodos, 'sss', $valorSalvo, $novoCodigo, $codigoAtual);
+                mysqli_stmt_execute($stmtTodos);
+                mysqli_stmt_close($stmtTodos);
+
+                if ($novoCodigo !== $codigoAtual) {
+                    foreach (['follow', 'pagamento', 'comparativos'] as $tabelaRef) {
+                        try {
+                            $stmtRef = mysqli_prepare($conn, "UPDATE `$tabelaRef` SET processo = ? WHERE processo = ?");
+                            mysqli_stmt_bind_param($stmtRef, 'ss', $novoCodigo, $codigoAtual);
+                            mysqli_stmt_execute($stmtRef);
+                            mysqli_stmt_close($stmtRef);
+                        } catch (Throwable $erroRef) {
+                            // tabela pode não existir (ex.: comparativos) — segue
+                            error_log("Renomear processo em $tabelaRef: " . $erroRef->getMessage());
+                        }
+                    }
+                }
+                mysqli_commit($conn);
+            } catch (Throwable $erroRenomear) {
+                mysqli_rollback($conn);
+                echo json_encode(['ok' => false, 'erro' => 'Erro ao atualizar o processo: ' . $erroRenomear->getMessage()]);
+                exit;
+            }
+
+            echo json_encode([
+                'ok' => true,
+                'exibido' => $valorSalvo ?? '—',
+                'novo_codigo' => $novoCodigo,
+                'recarregar' => $novoCodigo !== $codigoAtual,
+            ]);
+            exit;
+        }
+    }
+
     // Campos de texto simples
     $valorSalvo = $valor === '' ? null : $valor;
     $stmt = mysqli_prepare($conn, "UPDATE processos SET `$campo` = ? WHERE id = ?");
@@ -1787,5 +1885,33 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // Modal / Planta / Categoria mudam o código do processo (e valem pra
+        // todas as linhas dele) — depois de salvar, recarrega a tela mantendo a
+        // rolagem, pra já mostrar o código novo. Usa o evento do inline-edit e,
+        // como garantia, observa a célula (caso o evento não dispare).
+        (function () {
+            let recarregando = false;
+            const camposCodigo = ['modal', 'planta', 'categoria'];
+            function recarregar() {
+                if (recarregando) return;
+                recarregando = true;
+                try { sessionStorage.setItem('processos_scroll', String(window.scrollY)); } catch (e) {}
+                setTimeout(() => window.location.reload(), 300);
+            }
+            document.addEventListener('inline-edit:salvo', (e) => {
+                if (e.detail && camposCodigo.includes(e.detail.campo)) recarregar();
+            });
+            document.querySelectorAll('#tabela-processos td[data-campo]').forEach((celula) => {
+                if (!camposCodigo.includes(celula.dataset.campo)) return;
+                const textoInicial = celula.textContent.trim();
+                new MutationObserver(() => {
+                    if (celula.querySelector('input, select, textarea')) return;
+                    const atual = celula.textContent.trim();
+                    if (atual !== '' && atual !== textoInicial && !/salvando/i.test(atual)) recarregar();
+                }).observe(celula, { childList: true, characterData: true, subtree: true });
+            });
+        })();
+    </script>
 </body>
 </html>
