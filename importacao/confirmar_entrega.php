@@ -198,6 +198,7 @@ function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente
 
 $mensagem = null;
 $erro = null;
+$aviso = null;
 
 // ---------- Confirmar entrega (1 embarque = TODOS os componentes do processo) ----------
 // Lógica de UM embarque, usada tanto pelo botão "Confirmar" de cada linha
@@ -233,6 +234,7 @@ function confirmarEmbarque(mysqli $conn, int $followId, string $dataEfetiva): ar
 
     $componentes = buscarComponentesProcesso($conn, $processoTrim);
     $complementoMensagem = '';
+    $pulados = [];
 
     if (empty($componentes)) {
         // Todos os itens do processo são "não controla estoque" (tooling,
@@ -243,30 +245,34 @@ function confirmarEmbarque(mysqli $conn, int $followId, string $dataEfetiva): ar
         try {
             $connMrp = conectarMrp();
 
-            // Valida TODOS os componentes antes de gravar qualquer um — se um
-            // falhar, nada é gravado (nem fecha o Follow/Processo).
-            $invalidos = [];
+            // Componente fora da BOM NÃO trava o processo: só ele é pulado (não
+            // vai pro MRP) e os demais são lançados normalmente. Se depois ele
+            // for cadastrado na BOM, o "Sincronizar com o MRP" lança ele.
+            // Só bloqueia se NENHUM componente do processo estiver na BOM.
+            $validos = [];
             foreach ($componentes as $comp) {
                 $validacao = validarComponenteMrp($connMrp, $comp['codigo_componente']);
-                if (!$validacao['valido']) {
-                    $invalidos[] = $validacao['motivo'];
+                if ($validacao['valido']) {
+                    $validos[] = $comp;
+                } else {
+                    $pulados[] = $comp['codigo_componente'] !== '' ? $comp['codigo_componente'] : '(sem código)';
                 }
             }
-            if (!empty($invalidos)) {
+            if (empty($validos)) {
                 mysqli_close($connMrp);
-                return ['ok' => false, 'mensagem' => "❌ {$processoTrim}: integração bloqueada — nada foi gravado. " . implode(' | ', $invalidos)];
+                return ['ok' => false, 'mensagem' => "❌ {$processoTrim}: nenhum componente está na BOM do MRP (" . implode(', ', $pulados) . ") — nada foi confirmado."];
             }
 
             mysqli_begin_transaction($connMrp);
             $criadas = 0;
             $atualizadas = 0;
-            foreach ($componentes as $comp) {
+            foreach ($validos as $comp) {
                 $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva, $comp['moeda']);
                 $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
             }
             mysqli_commit($connMrp);
             mysqli_close($connMrp);
-            $complementoMensagem = ' — ' . count($componentes) . " item(ns) (PO + componente) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
+            $complementoMensagem = ' — ' . count($validos) . " item(ns) (PO + componente) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
         } catch (Throwable $e) {
             if ($connMrp instanceof mysqli) {
                 @mysqli_rollback($connMrp);
@@ -291,13 +297,17 @@ function confirmarEmbarque(mysqli $conn, int $followId, string $dataEfetiva): ar
     mysqli_stmt_execute($stmtProcessoStatus);
     mysqli_stmt_close($stmtProcessoStatus);
 
-    return ['ok' => true, 'mensagem' => "✅ Entrega confirmada — processo {$processoTrim}" . $complementoMensagem];
+    $aviso = empty($pulados) ? '' : "⚠️ {$processoTrim}: componente(s) fora da BOM do MRP, não lançado(s): " . implode(', ', $pulados) . '. Depois de cadastrar na BOM, use "Sincronizar com o MRP".';
+    return ['ok' => true, 'mensagem' => "✅ Entrega confirmada — processo {$processoTrim}" . $complementoMensagem, 'aviso' => $aviso];
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_entrega') {
     $resultadoConfirmacao = confirmarEmbarque($conn, (int) ($_POST['follow_id'] ?? 0), trim($_POST['data_efetiva'] ?? ''));
     if ($resultadoConfirmacao['ok']) {
         $mensagem = $resultadoConfirmacao['mensagem'];
+        if (!empty($resultadoConfirmacao['aviso'])) {
+            $aviso = $resultadoConfirmacao['aviso'];
+        }
     } else {
         $erro = $resultadoConfirmacao['mensagem'];
     }
@@ -339,10 +349,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
         } else {
             $confirmados = [];
             $falhas = [];
+            $avisosMassa = [];
             foreach ($embarquesMassa as $emb) {
                 $res = confirmarEmbarque($conn, (int) $emb['id'], (string) $emb['efetiva']);
                 if ($res['ok']) {
                     $confirmados[] = trim((string) $emb['processo']);
+                    if (!empty($res['aviso'])) {
+                        $avisosMassa[] = $res['aviso'];
+                    }
                 } else {
                     $falhas[] = $res['mensagem'];
                 }
@@ -353,6 +367,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
             }
             if (!empty($falhas)) {
                 $erro = '⚠️ ' . count($falhas) . ' embarque(s) não confirmado(s): ' . implode(' | ', $falhas);
+            }
+            if (!empty($avisosMassa)) {
+                $aviso = implode(' | ', $avisosMassa);
             }
         }
     }
@@ -592,6 +609,9 @@ if ($resultContagem) {
         <?php if ($mensagem): ?>
             <div class="alert alert-success"><?php echo h($mensagem); ?></div>
         <?php endif; ?>
+        <?php if ($aviso): ?>
+            <div class="alert alert-warning"><?php echo h($aviso); ?></div>
+        <?php endif; ?>
         <?php if ($erro): ?>
             <div class="alert alert-danger"><?php echo h($erro); ?></div>
         <?php endif; ?>
@@ -603,7 +623,7 @@ if ($resultContagem) {
                     <h2>Validação antes de alimentar o MRP</h2>
                 </div>
             </div>
-            <p class="mb-0" style="color: var(--muted);">Ao confirmar, o componente é validado contra a BOM do MRP antes de seguir — se não for encontrado, a integração é <strong>bloqueada</strong> e nada é gravado. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por <strong>processo + PO + componente</strong> (se não existir essa combinação, a linha é criada com as três informações) — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
+            <p class="mb-0" style="color: var(--muted);">Ao confirmar, cada componente é validado contra a BOM do MRP — o que <strong>não estiver na BOM é pulado</strong> (não vai pro MRP e aparece num aviso), e os demais são lançados normalmente. Depois de cadastrar o componente na BOM, use "Sincronizar com o MRP" pra lançá-lo. Um embarque confirma <strong>todos os componentes do processo</strong> de uma vez. A quantidade confirmada é gravada na tela de Programação do MRP (coluna "Importado", com a data efetiva do Follow em "Data Recebida"), casando por <strong>processo + PO + componente</strong> (se não existir essa combinação, a linha é criada com as três informações) — não duplica em cima do que já estava planejado. O status do Follow e do Processo correspondente viram "Fechado"/"Finalizado" automaticamente neste momento. Depois de confirmado, o embarque continua aparecendo nesta lista — só muda para a situação "Confirmado". Itens marcados como <strong>"não controla estoque"</strong> (tooling, amostra) também podem ser confirmados aqui, mas a confirmação só fecha o Follow/Processo no site de Importação — não valida nem grava nada no MRP.</p>
             <form method="POST" class="mt-3 mb-0" onsubmit="return confirm('Reenviar TODOS os embarques já confirmados para a Programação do MRP? Importado e Data Recebida serão substituídos pelos valores do site de Importação, e linhas que faltam serão criadas.');">
                 <input type="hidden" name="acao" value="sincronizar_mrp">
                 <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com o MRP</button>
