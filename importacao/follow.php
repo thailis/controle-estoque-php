@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente'];
+    $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente', 'obs'];
     // ETA e Prevista NÃO entram mais aqui — viraram sempre calculadas (mesma
     // fórmula do cadastro manual: ETA = ETD + Transit dias, Prevista = ETA +
     // 7 dias) e travadas contra edição direta por duplo clique.
@@ -199,7 +199,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'aberto');
     $condicaoFiltroVolta = (string) ($_POST['condicao_atual'] ?? 'todos');
-    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&mes_base=' . urlencode((string) ($_POST['mes_base_atual'] ?? '')) . '&mes=' . urlencode((string) ($_POST['mes_atual'] ?? '')) . '&excluido=1');
+    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&mes_base=' . urlencode((string) ($_POST['mes_base_atual'] ?? '')) . '&mes=' . urlencode((string) ($_POST['mes_atual'] ?? '')) . '&categoria=' . urlencode((string) ($_POST['categoria_atual'] ?? '')) . '&excluido=1');
     exit;
 }
 
@@ -315,6 +315,13 @@ $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 // processo não está cancelado) — inclui "Aguardando confirmação".
 $filtroStatus = isset($_GET['status']) ? trim($_GET['status']) : 'aberto'; // aberto | todos | pendente | integrado
 $filtroCondicao = isset($_GET['condicao']) ? trim($_GET['condicao']) : 'todos'; // todos | em_tempo | atencao | atrasado
+// Categoria vem de Processos (tooling / project / other...)
+$filtroCategoria = trim($_GET['categoria'] ?? '');
+$categoriasDisponiveis = [];
+$resCategorias = mysqli_query($conn, "SELECT DISTINCT TRIM(categoria) AS categoria FROM processos WHERE categoria IS NOT NULL AND TRIM(categoria) <> '' ORDER BY categoria");
+if ($resCategorias) {
+    while ($l = mysqli_fetch_assoc($resCategorias)) { $categoriasDisponiveis[] = $l['categoria']; }
+}
 // Filtro de Mês: escolhe qual data do embarque vale (Prevista por padrão) e o
 // mês (aaaa-mm). Só aceita as colunas da lista — nunca vem texto livre pro SQL.
 $datasParaMes = ['prevista' => 'Prevista', 'eta' => 'ETA', 'etd' => 'ETD', 'efetiva' => 'Efetiva', 'pickup' => 'Pickup'];
@@ -357,6 +364,12 @@ if ($filtroCondicao === 'em_tempo') {
     $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) BETWEEN 1 AND 7";
 } elseif ($filtroCondicao === 'atrasado') {
     $condicoes[] = "f.prevista IS NOT NULL AND DATEDIFF(CURDATE(), f.prevista) > 7";
+}
+
+if ($filtroCategoria !== '') {
+    $condicoes[] = "EXISTS (SELECT 1 FROM processos pcat WHERE pcat.processo = f.processo AND TRIM(pcat.categoria) = ?)";
+    $params[] = $filtroCategoria;
+    $tipos .= 's';
 }
 
 if ($filtroMes !== '') {
@@ -448,7 +461,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 100px; }
         .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 160px; }
         .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 130px; }
-        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 80px; }
+        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 220px; } /* OBS */
+        .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 80px; }
+        .table-follow td.col-obs { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .table-follow td.celula-editavel {
             overflow-wrap: break-word;
         }
@@ -612,6 +627,15 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <option value="atrasado" <?php echo $filtroCondicao === 'atrasado' ? 'selected' : ''; ?>>Atrasado</option>
                     </select>
                 </div>
+                <div class="col-md-2">
+                    <label class="form-label">Categoria</label>
+                    <select name="categoria" class="form-select">
+                        <option value="">Todas</option>
+                        <?php foreach ($categoriasDisponiveis as $cat): ?>
+                            <option value="<?php echo h($cat); ?>" <?php echo $filtroCategoria === $cat ? 'selected' : ''; ?>><?php echo h($cat); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="col-md-1">
                     <label class="form-label">Data</label>
                     <select name="mes_base" class="form-select" title="Qual data do embarque usar no filtro de mês" onchange="this.form.mes.value=''; this.form.submit();">
@@ -645,7 +669,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table table-follow mb-0" style="min-width: 1760px;">
+                <table class="table mrp-table table-follow mb-0" style="min-width: 1980px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -662,12 +686,13 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Efetiva</th>
                             <th>Requerente</th>
                             <th>Condição</th>
+                            <th>OBS</th>
                             <th>Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="15" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="16" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -727,6 +752,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="efetiva" data-valor-bruto="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>"><?php echo dataBr($r['efetiva']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="requerente" data-valor-bruto="<?php echo h($r['requerente'] ?? ''); ?>"><?php echo h($r['requerente'] ?: '—'); ?></td>
                                     <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
+                                    <td class="celula-editavel col-obs" data-id="<?php echo $id; ?>" data-campo="obs" data-valor-bruto="<?php echo h($r['obs'] ?? ''); ?>" title="<?php echo h($r['obs'] ?? ''); ?>"><?php echo h(($r['obs'] ?? '') !== '' ? $r['obs'] : '—'); ?></td>
                                     <td>
                                         <form method="POST" class="m-0 form-excluir-follow">
                                             <input type="hidden" name="acao" value="excluir_follow">
@@ -737,6 +763,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="condicao_atual" value="<?php echo h($filtroCondicao); ?>">
                                             <input type="hidden" name="mes_base_atual" value="<?php echo h($filtroMesBase); ?>">
                                             <input type="hidden" name="mes_atual" value="<?php echo h($filtroMes); ?>">
+                                            <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
                                             <button type="submit" class="btn btn-outline-danger btn-sm" title="Excluir do Follow">✕</button>
                                         </form>
                                     </td>
@@ -754,7 +781,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>&mes_base=<?php echo urlencode($filtroMesBase); ?>&mes=<?php echo urlencode($filtroMes); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>&mes_base=<?php echo urlencode($filtroMesBase); ?>&mes=<?php echo urlencode($filtroMes); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>

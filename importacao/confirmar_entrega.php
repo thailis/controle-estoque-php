@@ -200,100 +200,185 @@ $mensagem = null;
 $erro = null;
 
 // ---------- Confirmar entrega (1 embarque = TODOS os componentes do processo) ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_entrega') {
-    $followId = (int) ($_POST['follow_id'] ?? 0);
-    $dataEfetiva = trim($_POST['data_efetiva'] ?? '');
-
+// Lógica de UM embarque, usada tanto pelo botão "Confirmar" de cada linha
+// quanto pela confirmação em massa (por Projeto ou PO).
+// Devolve ['ok' => bool, 'mensagem' => string].
+function confirmarEmbarque(mysqli $conn, int $followId, string $dataEfetiva): array
+{
     if ($followId <= 0 || $dataEfetiva === '') {
-        $erro = 'Dados incompletos — selecione o embarque e informe a data de entrega.';
+        return ['ok' => false, 'mensagem' => 'Dados incompletos — selecione o embarque e informe a data de entrega.'];
+    }
+    $stmt = mysqli_prepare($conn, "
+        SELECT f.id, f.processo, f.integrado_mrp,
+               (SELECT COUNT(*) FROM processos WHERE processo = f.processo) AS total_linhas_processo,
+               (SELECT COUNT(*) FROM processos WHERE processo = f.processo AND LOWER(TRIM(status)) = 'cancelado') AS linhas_canceladas
+        FROM follow f
+        WHERE f.id = ?
+    ");
+    mysqli_stmt_bind_param($stmt, 'i', $followId);
+    mysqli_stmt_execute($stmt);
+    $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+
+    if (!$linha || (int) $linha['total_linhas_processo'] === 0) {
+        return ['ok' => false, 'mensagem' => 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.'];
+    }
+    $processoTrim = trim((string) $linha['processo']);
+    if ((int) $linha['integrado_mrp'] === 1) {
+        return ['ok' => false, 'mensagem' => "Processo {$processoTrim} já foi confirmado anteriormente — não é possível confirmar de novo (evita duplicar). Use \"Sincronizar com o MRP\" se precisar reenviar."];
+    }
+    if ((int) $linha['linhas_canceladas'] > 0) {
+        return ['ok' => false, 'mensagem' => "❌ O processo \"{$processoTrim}\" está CANCELADO — não é possível confirmar entrega."];
+    }
+
+    $componentes = buscarComponentesProcesso($conn, $processoTrim);
+    $complementoMensagem = '';
+
+    if (empty($componentes)) {
+        // Todos os itens do processo são "não controla estoque" (tooling,
+        // amostra): fecha só no site de Importação, sem tocar no MRP.
+        $complementoMensagem = ' — itens não controlam estoque, apenas o status foi atualizado no site de Importação (sem lançamento no MRP).';
     } else {
-        $stmt = mysqli_prepare($conn, "
-            SELECT f.id, f.processo, f.integrado_mrp,
-                   (SELECT COUNT(*) FROM processos WHERE processo = f.processo) AS total_linhas_processo,
-                   (SELECT COUNT(*) FROM processos WHERE processo = f.processo AND LOWER(TRIM(status)) = 'cancelado') AS linhas_canceladas
-            FROM follow f
-            WHERE f.id = ?
-        ");
-        mysqli_stmt_bind_param($stmt, 'i', $followId);
-        mysqli_stmt_execute($stmt);
-        $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-        mysqli_stmt_close($stmt);
+        $connMrp = null;
+        try {
+            $connMrp = conectarMrp();
 
-        if (!$linha || (int) $linha['total_linhas_processo'] === 0) {
-            $erro = 'Não encontrei esse embarque (ou o processo vinculado a ele) no banco.';
-        } elseif ((int) $linha['integrado_mrp'] === 1) {
-            $erro = 'Esse embarque já foi confirmado anteriormente — não é possível confirmar de novo (evita duplicar). Use "Sincronizar com o MRP" se precisar reenviar.';
-        } elseif ((int) $linha['linhas_canceladas'] > 0) {
-            // Trava no servidor — mesmo que alguém envie o follow_id direto.
-            $erro = "❌ O processo \"{$linha['processo']}\" está CANCELADO — não é possível confirmar entrega.";
-        } else {
-            $processoTrim = trim((string) $linha['processo']);
-            $componentes = buscarComponentesProcesso($conn, $processoTrim);
-            $prosseguirComFechamento = true;
-            $complementoMensagem = '';
-
-            if (empty($componentes)) {
-                // Todos os itens do processo são "não controla estoque" (tooling,
-                // amostra): fecha só no site de Importação, sem tocar no MRP.
-                $complementoMensagem = ' — itens não controlam estoque, apenas o status foi atualizado no site de Importação (sem lançamento no MRP).';
-            } else {
-                try {
-                    $connMrp = conectarMrp();
-
-                    // Valida TODOS os componentes antes de gravar qualquer um —
-                    // se um falhar, nada é gravado (nem fecha o Follow/Processo),
-                    // pra não deixar o processo pela metade no MRP.
-                    $invalidos = [];
-                    foreach ($componentes as $comp) {
-                        $validacao = validarComponenteMrp($connMrp, $comp['codigo_componente']);
-                        if (!$validacao['valido']) {
-                            $invalidos[] = $validacao['motivo'];
-                        }
-                    }
-
-                    if (!empty($invalidos)) {
-                        $erro = '❌ Integração bloqueada — nada foi gravado. ' . implode(' | ', $invalidos);
-                        $prosseguirComFechamento = false;
-                    } else {
-                        mysqli_begin_transaction($connMrp);
-                        $criadas = 0;
-                        $atualizadas = 0;
-                        foreach ($componentes as $comp) {
-                            $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva, $comp['moeda']);
-                            $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
-                        }
-                        mysqli_commit($connMrp);
-                        $complementoMensagem = ' — ' . count($componentes) . " item(ns) (PO + componente) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
-                    }
-                    mysqli_close($connMrp);
-                } catch (Throwable $e) {
-                    if (isset($connMrp) && $connMrp instanceof mysqli) {
-                        @mysqli_rollback($connMrp);
-                    }
-                    $erro = '❌ Erro ao conectar/gravar no MRP (nada foi gravado): ' . $e->getMessage();
-                    $prosseguirComFechamento = false;
+            // Valida TODOS os componentes antes de gravar qualquer um — se um
+            // falhar, nada é gravado (nem fecha o Follow/Processo).
+            $invalidos = [];
+            foreach ($componentes as $comp) {
+                $validacao = validarComponenteMrp($connMrp, $comp['codigo_componente']);
+                if (!$validacao['valido']) {
+                    $invalidos[] = $validacao['motivo'];
                 }
             }
-
-            if ($prosseguirComFechamento) {
-                // Follow vira "fechado" e Processo vira "finalizado" só aqui —
-                // nunca digitados. integrado_mrp = trava contra duplicar.
-                $stmtUpdate = mysqli_prepare($conn, "
-                    UPDATE follow
-                    SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
-                    WHERE id = ?
-                ");
-                mysqli_stmt_bind_param($stmtUpdate, 'si', $dataEfetiva, $followId);
-                mysqli_stmt_execute($stmtUpdate);
-                mysqli_stmt_close($stmtUpdate);
-
-                $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
-                mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
-                mysqli_stmt_execute($stmtProcessoStatus);
-                mysqli_stmt_close($stmtProcessoStatus);
-
-                $mensagem = "✅ Entrega confirmada — processo {$processoTrim}" . $complementoMensagem;
+            if (!empty($invalidos)) {
+                mysqli_close($connMrp);
+                return ['ok' => false, 'mensagem' => "❌ {$processoTrim}: integração bloqueada — nada foi gravado. " . implode(' | ', $invalidos)];
             }
+
+            mysqli_begin_transaction($connMrp);
+            $criadas = 0;
+            $atualizadas = 0;
+            foreach ($componentes as $comp) {
+                $resultadoGravacao = gravarComponenteNaProgramacao($connMrp, $comp['codigo_componente'], $processoTrim, $comp['po'], $comp['quantidade'], $dataEfetiva, $comp['moeda']);
+                $resultadoGravacao === 'criada' ? $criadas++ : $atualizadas++;
+            }
+            mysqli_commit($connMrp);
+            mysqli_close($connMrp);
+            $complementoMensagem = ' — ' . count($componentes) . " item(ns) (PO + componente) lançado(s) na Programação do MRP ($atualizadas atualizada(s), $criadas criada(s)), com Importado e Data Recebida.";
+        } catch (Throwable $e) {
+            if ($connMrp instanceof mysqli) {
+                @mysqli_rollback($connMrp);
+            }
+            return ['ok' => false, 'mensagem' => "❌ {$processoTrim}: erro ao conectar/gravar no MRP (nada foi gravado): " . $e->getMessage()];
+        }
+    }
+
+    // Follow vira "fechado" e Processo vira "finalizado" só aqui — nunca
+    // digitados. integrado_mrp = trava contra duplicar.
+    $stmtUpdate = mysqli_prepare($conn, "
+        UPDATE follow
+        SET efetiva = ?, integrado_mrp = 1, integrado_em = NOW(), status = 'fechado'
+        WHERE id = ?
+    ");
+    mysqli_stmt_bind_param($stmtUpdate, 'si', $dataEfetiva, $followId);
+    mysqli_stmt_execute($stmtUpdate);
+    mysqli_stmt_close($stmtUpdate);
+
+    $stmtProcessoStatus = mysqli_prepare($conn, "UPDATE processos SET status = 'finalizado' WHERE processo = ?");
+    mysqli_stmt_bind_param($stmtProcessoStatus, 's', $linha['processo']);
+    mysqli_stmt_execute($stmtProcessoStatus);
+    mysqli_stmt_close($stmtProcessoStatus);
+
+    return ['ok' => true, 'mensagem' => "✅ Entrega confirmada — processo {$processoTrim}" . $complementoMensagem];
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_entrega') {
+    $resultadoConfirmacao = confirmarEmbarque($conn, (int) ($_POST['follow_id'] ?? 0), trim($_POST['data_efetiva'] ?? ''));
+    if ($resultadoConfirmacao['ok']) {
+        $mensagem = $resultadoConfirmacao['mensagem'];
+    } else {
+        $erro = $resultadoConfirmacao['mensagem'];
+    }
+}
+
+// ---------- Confirmação em massa (por Projeto ou PO) ----------
+// Confirma de uma vez todos os embarques PRONTOS (com Efetiva, ainda não
+// confirmados, processo não cancelado) cujo processo tenha o Projeto ou a PO
+// escolhida. Cada embarque passa pela mesma validação da confirmação
+// individual — se um falhar (ex.: componente fora da BOM), só ele fica de
+// fora e aparece na lista de erros; os outros seguem.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_em_massa') {
+    [$tipoMassa, $valorMassa] = array_pad(explode('|', (string) ($_POST['alvo_massa'] ?? ''), 2), 2, '');
+    $valorMassa = trim($valorMassa);
+    if (!in_array($tipoMassa, ['projeto', 'po'], true) || $valorMassa === '') {
+        $erro = 'Escolha um Projeto ou uma PO para confirmar em massa.';
+    } else {
+        $colunaMassa = $tipoMassa === 'projeto' ? 'projeto' : 'po';
+        $stmtMassa = mysqli_prepare($conn, "
+            SELECT DISTINCT f.id, f.efetiva, f.processo
+            FROM follow f
+            JOIN processos p ON p.processo = f.processo
+            WHERE f.integrado_mrp = 0
+              AND f.efetiva IS NOT NULL
+              AND TRIM(p.`$colunaMassa`) = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM processos pc
+                  WHERE pc.processo = f.processo AND LOWER(TRIM(pc.status)) = 'cancelado'
+              )
+            ORDER BY f.efetiva ASC
+        ");
+        mysqli_stmt_bind_param($stmtMassa, 's', $valorMassa);
+        mysqli_stmt_execute($stmtMassa);
+        $embarquesMassa = mysqli_fetch_all(mysqli_stmt_get_result($stmtMassa), MYSQLI_ASSOC);
+        mysqli_stmt_close($stmtMassa);
+
+        if (empty($embarquesMassa)) {
+            $erro = 'Nenhum embarque pronto para confirmar (com Efetiva preenchida) para ' . ($tipoMassa === 'projeto' ? 'o Projeto' : 'a PO') . " \"$valorMassa\".";
+        } else {
+            $confirmados = [];
+            $falhas = [];
+            foreach ($embarquesMassa as $emb) {
+                $res = confirmarEmbarque($conn, (int) $emb['id'], (string) $emb['efetiva']);
+                if ($res['ok']) {
+                    $confirmados[] = trim((string) $emb['processo']);
+                } else {
+                    $falhas[] = $res['mensagem'];
+                }
+            }
+            $rotuloMassa = ($tipoMassa === 'projeto' ? 'Projeto' : 'PO') . " \"$valorMassa\"";
+            if (!empty($confirmados)) {
+                $mensagem = "✅ Confirmação em massa — $rotuloMassa: " . count($confirmados) . ' embarque(s) confirmado(s): ' . implode(', ', $confirmados) . '.';
+            }
+            if (!empty($falhas)) {
+                $erro = '⚠️ ' . count($falhas) . ' embarque(s) não confirmado(s): ' . implode(' | ', $falhas);
+            }
+        }
+    }
+}
+
+// Opções da confirmação em massa: Projetos e POs que têm embarques prontos
+// (com Efetiva, não confirmados, não cancelados), com a quantidade de cada.
+$opcoesMassa = ['projeto' => [], 'po' => []];
+foreach (['projeto', 'po'] as $colunaOpcao) {
+    $resOpcao = mysqli_query($conn, "
+        SELECT TRIM(p.`$colunaOpcao`) AS valor, COUNT(DISTINCT f.id) AS qtd
+        FROM follow f
+        JOIN processos p ON p.processo = f.processo
+        WHERE f.integrado_mrp = 0
+          AND f.efetiva IS NOT NULL
+          AND p.`$colunaOpcao` IS NOT NULL AND TRIM(p.`$colunaOpcao`) <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM processos pc
+              WHERE pc.processo = f.processo AND LOWER(TRIM(pc.status)) = 'cancelado'
+          )
+        GROUP BY TRIM(p.`$colunaOpcao`)
+        ORDER BY valor
+    ");
+    if ($resOpcao) {
+        while ($o = mysqli_fetch_assoc($resOpcao)) {
+            $opcoesMassa[$colunaOpcao][] = $o;
         }
     }
 }
@@ -523,6 +608,41 @@ if ($resultContagem) {
                 <input type="hidden" name="acao" value="sincronizar_mrp">
                 <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com o MRP</button>
                 <small class="text-muted ms-2">Reenvia todos os confirmados (todos os componentes de cada processo). Pode rodar mais de uma vez — substitui, não duplica.</small>
+            </form>
+        </section>
+
+        <section class="filter-panel mb-4">
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow text-primary">Ação em massa</span>
+                    <h2>Confirmar vários embarques de uma vez</h2>
+                </div>
+            </div>
+            <form method="POST" class="row g-2 align-items-end" onsubmit="const s=this.alvo_massa; if(!s.value){alert('Escolha um Projeto ou PO.');return false;} return confirm('Confirmar a entrega de TODOS os embarques prontos de ' + s.options[s.selectedIndex].text + '? Cada um será lançado no MRP com a sua data Efetiva.');">
+                <input type="hidden" name="acao" value="confirmar_em_massa">
+                <div class="col-12 col-md-6">
+                    <label class="form-label small mb-1">Projeto ou PO <small class="text-muted">(só aparecem os que têm embarques com Efetiva, prontos pra confirmar)</small></label>
+                    <select name="alvo_massa" class="form-select form-select-sm">
+                        <option value="">Selecione...</option>
+                        <?php if (!empty($opcoesMassa['projeto'])): ?>
+                            <optgroup label="Projeto">
+                                <?php foreach ($opcoesMassa['projeto'] as $o): ?>
+                                    <option value="projeto|<?php echo h($o['valor']); ?>">Projeto <?php echo h($o['valor']); ?> (<?php echo (int) $o['qtd']; ?> embarque(s))</option>
+                                <?php endforeach; ?>
+                            </optgroup>
+                        <?php endif; ?>
+                        <?php if (!empty($opcoesMassa['po'])): ?>
+                            <optgroup label="PO">
+                                <?php foreach ($opcoesMassa['po'] as $o): ?>
+                                    <option value="po|<?php echo h($o['valor']); ?>">PO <?php echo h($o['valor']); ?> (<?php echo (int) $o['qtd']; ?> embarque(s))</option>
+                                <?php endforeach; ?>
+                            </optgroup>
+                        <?php endif; ?>
+                    </select>
+                </div>
+                <div class="col-12 col-md-3">
+                    <button type="submit" class="btn btn-success btn-sm w-100">✅ Confirmar em massa</button>
+                </div>
             </form>
         </section>
 
