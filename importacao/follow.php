@@ -446,6 +446,8 @@ while ($row = mysqli_fetch_assoc($result)) {
            mexer no dashboard.css, compartilhado com Processos/Pagamento/
            Confirmar entrega) cada coluna fica com largura previsível e só
            Requerente absorve o espaço que sobra. */
+        /* Mesma largura de Processos (o dashboard.css trava em 1780px) */
+        .dashboard-container { max-width: 98vw; }
         .table-follow { table-layout: fixed; }
         .table-follow th:nth-child(1), .table-follow td:nth-child(1) { width: 150px; }
         .table-follow th:nth-child(2), .table-follow td:nth-child(2) { width: 150px; }

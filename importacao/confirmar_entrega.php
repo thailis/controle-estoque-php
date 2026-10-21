@@ -201,7 +201,7 @@ $erro = null;
 
 // ---------- Confirmar entrega (1 embarque = TODOS os componentes do processo) ----------
 // Lógica de UM embarque, usada tanto pelo botão "Confirmar" de cada linha
-// quanto pela confirmação em massa (por Projeto ou PO).
+// quanto pela confirmação em massa (por Processo ou PO).
 // Devolve ['ok' => bool, 'mensagem' => string].
 function confirmarEmbarque(mysqli $conn, int $followId, string $dataEfetiva): array
 {
@@ -303,19 +303,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     }
 }
 
-// ---------- Confirmação em massa (por Projeto ou PO) ----------
+// ---------- Confirmação em massa (por Processo ou PO) ----------
 // Confirma de uma vez todos os embarques PRONTOS (com Efetiva, ainda não
-// confirmados, processo não cancelado) cujo processo tenha o Projeto ou a PO
+// confirmados, processo não cancelado) do Processo ou da PO
 // escolhida. Cada embarque passa pela mesma validação da confirmação
 // individual — se um falhar (ex.: componente fora da BOM), só ele fica de
 // fora e aparece na lista de erros; os outros seguem.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirmar_em_massa') {
     [$tipoMassa, $valorMassa] = array_pad(explode('|', (string) ($_POST['alvo_massa'] ?? ''), 2), 2, '');
     $valorMassa = trim($valorMassa);
-    if (!in_array($tipoMassa, ['projeto', 'po'], true) || $valorMassa === '') {
-        $erro = 'Escolha um Projeto ou uma PO para confirmar em massa.';
+    if (!in_array($tipoMassa, ['processo', 'po'], true) || $valorMassa === '') {
+        $erro = 'Escolha um Processo ou uma PO para confirmar em massa.';
     } else {
-        $colunaMassa = $tipoMassa === 'projeto' ? 'projeto' : 'po';
+        $colunaMassa = $tipoMassa === 'processo' ? 'processo' : 'po';
         $stmtMassa = mysqli_prepare($conn, "
             SELECT DISTINCT f.id, f.efetiva, f.processo
             FROM follow f
@@ -335,7 +335,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
         mysqli_stmt_close($stmtMassa);
 
         if (empty($embarquesMassa)) {
-            $erro = 'Nenhum embarque pronto para confirmar (com Efetiva preenchida) para ' . ($tipoMassa === 'projeto' ? 'o Projeto' : 'a PO') . " \"$valorMassa\".";
+            $erro = 'Nenhum embarque pronto para confirmar (com Efetiva preenchida) para ' . ($tipoMassa === 'processo' ? 'o Processo' : 'a PO') . " \"$valorMassa\".";
         } else {
             $confirmados = [];
             $falhas = [];
@@ -347,7 +347,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
                     $falhas[] = $res['mensagem'];
                 }
             }
-            $rotuloMassa = ($tipoMassa === 'projeto' ? 'Projeto' : 'PO') . " \"$valorMassa\"";
+            $rotuloMassa = ($tipoMassa === 'processo' ? 'Processo' : 'PO') . " \"$valorMassa\"";
             if (!empty($confirmados)) {
                 $mensagem = "✅ Confirmação em massa — $rotuloMassa: " . count($confirmados) . ' embarque(s) confirmado(s): ' . implode(', ', $confirmados) . '.';
             }
@@ -358,10 +358,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'confirm
     }
 }
 
-// Opções da confirmação em massa: Projetos e POs que têm embarques prontos
+// Opções da confirmação em massa: Processos e POs que têm embarques prontos
 // (com Efetiva, não confirmados, não cancelados), com a quantidade de cada.
-$opcoesMassa = ['projeto' => [], 'po' => []];
-foreach (['projeto', 'po'] as $colunaOpcao) {
+$opcoesMassa = ['processo' => [], 'po' => []];
+foreach (['processo', 'po'] as $colunaOpcao) {
     $resOpcao = mysqli_query($conn, "
         SELECT TRIM(p.`$colunaOpcao`) AS valor, COUNT(DISTINCT f.id) AS qtd
         FROM follow f
@@ -618,16 +618,16 @@ if ($resultContagem) {
                     <h2>Confirmar vários embarques de uma vez</h2>
                 </div>
             </div>
-            <form method="POST" class="row g-2 align-items-end" onsubmit="const s=this.alvo_massa; if(!s.value){alert('Escolha um Projeto ou PO.');return false;} return confirm('Confirmar a entrega de TODOS os embarques prontos de ' + s.options[s.selectedIndex].text + '? Cada um será lançado no MRP com a sua data Efetiva.');">
+            <form method="POST" class="row g-2 align-items-end" onsubmit="const s=this.alvo_massa; if(!s.value){alert('Escolha um Processo ou PO.');return false;} return confirm('Confirmar a entrega de TODOS os embarques prontos de ' + s.options[s.selectedIndex].text + '? Cada um será lançado no MRP com a sua data Efetiva.');">
                 <input type="hidden" name="acao" value="confirmar_em_massa">
                 <div class="col-12 col-md-6">
-                    <label class="form-label small mb-1">Projeto ou PO <small class="text-muted">(só aparecem os que têm embarques com Efetiva, prontos pra confirmar)</small></label>
+                    <label class="form-label small mb-1">Processo ou PO <small class="text-muted">(só aparecem os que têm embarques com Efetiva, prontos pra confirmar)</small></label>
                     <select name="alvo_massa" class="form-select form-select-sm">
                         <option value="">Selecione...</option>
-                        <?php if (!empty($opcoesMassa['projeto'])): ?>
-                            <optgroup label="Projeto">
-                                <?php foreach ($opcoesMassa['projeto'] as $o): ?>
-                                    <option value="projeto|<?php echo h($o['valor']); ?>">Projeto <?php echo h($o['valor']); ?> (<?php echo (int) $o['qtd']; ?> embarque(s))</option>
+                        <?php if (!empty($opcoesMassa['processo'])): ?>
+                            <optgroup label="Processo">
+                                <?php foreach ($opcoesMassa['processo'] as $o): ?>
+                                    <option value="processo|<?php echo h($o['valor']); ?>">Processo <?php echo h($o['valor']); ?> (<?php echo (int) $o['qtd']; ?> embarque(s))</option>
                                 <?php endforeach; ?>
                             </optgroup>
                         <?php endif; ?>
