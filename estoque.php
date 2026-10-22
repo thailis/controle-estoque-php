@@ -401,8 +401,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     if ($descricaoNova === '') {
         $stmtDescBom = mysqli_prepare($conn, "
             SELECT COALESCE(
-                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM estoque WHERE TRIM(codigo_componente) = ?),
-                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM bomnova WHERE TRIM(codigo_componente) = ?)
+                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM bomnova WHERE TRIM(codigo_componente) = ?),
+                (SELECT MAX(NULLIF(TRIM(descricao), '')) FROM estoque WHERE TRIM(codigo_componente) = ?)
             ) AS descricao
         ");
         mysqli_stmt_bind_param($stmtDescBom, 'ss', $codigoNovo, $codigoNovo);
@@ -501,10 +501,10 @@ $somaEstoque = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 // Monta uma linha por componente, com descrição, total (soma de todas as plantas) e status MRP
 function montarSqlComponentes(string $where): string
 {
-    // Descrição: a gravada no estoque; se estiver vazia (ex.: componente que só
-    // tem baixas de EDI), usa a da BOM.
+    // Descrição: a da BOM manda (se renomear na BOM, muda aqui na hora). A
+    // gravada no estoque só aparece pra componente que não está na BOM.
     return "SELECT e.codigo_componente,
-                   COALESCE(MAX(NULLIF(TRIM(e.descricao), '')), MAX(bom.descricao)) AS descricao,
+                   COALESCE(MAX(bom.descricao), MAX(NULLIF(TRIM(e.descricao), ''))) AS descricao,
                    SUM(COALESCE(CAST(e.estoque AS DECIMAL(18,4)), 0)) AS total,
                    MAX(bom.tem_ativo) AS tem_ativo,
                    MAX(bom.total_linhas) AS total_linhas
@@ -513,7 +513,10 @@ function montarSqlComponentes(string $where): string
                 SELECT TRIM(codigo_componente) AS codigo_componente,
                        MAX(CASE WHEN mrp IS NULL OR TRIM(mrp) = '' OR UPPER(TRIM(mrp)) <> 'N' THEN 1 ELSE 0 END) AS tem_ativo,
                        COUNT(*) AS total_linhas,
-                       MAX(NULLIF(TRIM(descricao), '')) AS descricao
+                       COALESCE(
+                           MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END),
+                           MAX(NULLIF(TRIM(descricao), ''))
+                       ) AS descricao
                 FROM bomnova
                 GROUP BY TRIM(codigo_componente)
             ) bom ON bom.codigo_componente = TRIM(e.codigo_componente)
