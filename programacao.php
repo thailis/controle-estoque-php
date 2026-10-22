@@ -409,7 +409,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
             $quantidadeRecebida = $itemProg['quantidade_recebida'] !== null ? (float) $itemProg['quantidade_recebida'] : 0.0;
 
             $stmtDesc = mysqli_prepare($conn, "
-                SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao
+                SELECT COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), '')), '') AS descricao
                 FROM bomnova
                 WHERE TRIM(codigo_componente) = ?
             ");
@@ -519,7 +519,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
                     $quantidadeRecebida = $itemProg['quantidade_recebida'] !== null ? (float) $itemProg['quantidade_recebida'] : 0.0;
 
                     $stmtDesc = mysqli_prepare($conn, "
-                        SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao
+                        SELECT COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), '')), '') AS descricao
                         FROM bomnova
                         WHERE TRIM(codigo_componente) = ?
                     ");
@@ -666,7 +666,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
                         $codigoLote = trim((string) $l['codigo_componente']);
                         $qtdRecebidaLote = $l['quantidade_recebida'] !== null ? (float) $l['quantidade_recebida'] : 0.0;
 
-                        $stmtDescLote = mysqli_prepare($conn, "SELECT MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao FROM bomnova WHERE TRIM(codigo_componente) = ?");
+                        $stmtDescLote = mysqli_prepare($conn, "SELECT COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), '')), '') AS descricao FROM bomnova WHERE TRIM(codigo_componente) = ?");
                         mysqli_stmt_bind_param($stmtDescLote, 's', $codigoLote);
                         mysqli_stmt_execute($stmtDescLote);
                         $descLote = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescLote))['descricao'] ?? '';
@@ -1070,11 +1070,17 @@ $condicoes = [];
 $params = [];
 $tipos = '';
 
+// Busca por componente — aceita VÁRIOS de uma vez, separados por ; , espaço
+// ou quebra de linha (ex.: "12058499; 12058500" ou colado de uma coluna do Excel).
 if ($busca !== '') {
-    $condicoes[] = "p.codigo_componente LIKE ?";
-    $buscaLike = "%$busca%";
-    $params[] = $buscaLike;
-    $tipos .= 's';
+    $termosBusca = array_values(array_unique(array_filter(array_map('trim', preg_split('/[;,\s]+/', $busca)), fn($t) => $t !== '')));
+    if (!empty($termosBusca)) {
+        $condicoes[] = '(' . implode(' OR ', array_fill(0, count($termosBusca), 'p.codigo_componente LIKE ?')) . ')';
+        foreach ($termosBusca as $termo) {
+            $params[] = "%$termo%";
+            $tipos .= 's';
+        }
+    }
 }
 
 if ($filtro === 'pendente') {
@@ -1208,7 +1214,7 @@ $sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.data, p.quantidade
         FROM programacao p
         LEFT JOIN (
             SELECT TRIM(codigo_componente) AS codigo_componente,
-                   MAX(COALESCE(NULLIF(TRIM(descricao), ''), '')) AS descricao,
+                   COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), '')), '') AS descricao,
                    MAX(COALESCE(NULLIF(TRIM(pn), ''), '')) AS pn,
                    GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores
             FROM bomnova
@@ -1475,7 +1481,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="card p-3 mb-4">
             <form method="GET" class="row g-2 align-items-center">
                 <div class="col-auto flex-grow-1">
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por componente..." value="<?php echo h($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar componente(s) — vários: 12058499; 12058500" value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
                     <input type="text" name="processo" class="form-control form-control-sm" placeholder="PO ou processo..." list="lista-processos" autocomplete="off" value="<?php echo h($processoFiltro); ?>" onchange="this.form.submit()">

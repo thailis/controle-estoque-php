@@ -439,11 +439,29 @@ if ($busca !== '') {
     // Filtra o COMPONENTE inteiro (todas as linhas dele), não só as linhas cuja
     // descrição bate — senão o Total ficava parcial ao buscar por descrição.
     // Busca pela descrição também olha a da BOM (pra achar quem não tem descrição no estoque)
-    $where = "WHERE e.codigo_componente IN (SELECT codigo_componente FROM estoque WHERE codigo_componente LIKE ? OR descricao LIKE ?)
-              OR TRIM(e.codigo_componente) IN (SELECT TRIM(codigo_componente) FROM bomnova WHERE descricao LIKE ?)";
-    $buscaLike = "%$busca%";
-    $params = [$buscaLike, $buscaLike, $buscaLike];
-    $tipos = 'sss';
+    // Aceita VÁRIOS termos de uma vez, separados por ; , ou quebra de linha
+    // (ex.: "12058499; 12058500"). Códigos separados só por espaço também
+    // funcionam ("12058499 12058500") — mas texto de descrição com espaço
+    // ("Strap 2") continua sendo uma busca só.
+    $termosBusca = array_values(array_filter(array_map('trim', preg_split('/[;,\r\n\t]+/', $busca)), fn($t) => $t !== ''));
+    if (count($termosBusca) === 1 && str_contains($termosBusca[0], ' ')) {
+        $partes = preg_split('/\s+/', $termosBusca[0]);
+        $todasCodigo = true;
+        foreach ($partes as $parte) {
+            if (!preg_match('/^[A-Za-z0-9.\-]+$/', $parte) || !preg_match('/\d/', $parte)) { $todasCodigo = false; break; }
+        }
+        if ($todasCodigo) { $termosBusca = $partes; }
+    }
+    $termosBusca = array_values(array_unique($termosBusca));
+    $clausulas = [];
+    foreach ($termosBusca as $termo) {
+        $clausulas[] = "(e.codigo_componente IN (SELECT codigo_componente FROM estoque WHERE codigo_componente LIKE ? OR descricao LIKE ?)
+              OR TRIM(e.codigo_componente) IN (SELECT TRIM(codigo_componente) FROM bomnova WHERE descricao LIKE ?))";
+        $buscaLike = "%$termo%";
+        array_push($params, $buscaLike, $buscaLike, $buscaLike);
+        $tipos .= 'sss';
+    }
+    $where = 'WHERE ' . implode(' OR ', $clausulas);
 }
 
 // Lista de plantas existentes na base (vira uma coluna por planta na tabela)
@@ -864,7 +882,7 @@ if (!empty($componentes)) {
         <div class="card p-3 mb-4">
             <form method="GET" class="row g-2">
                 <div class="col-auto flex-grow-1">
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por componente ou descrição..." value="<?php echo h($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por componente ou descrição — vários: 12058499; 12058500" value="<?php echo h($busca); ?>">
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
