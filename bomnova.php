@@ -904,10 +904,33 @@ $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $condicoesWhere[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ? OR modelo LIKE ?)";
-    $buscaLike = "%$busca%";
-    $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
-    $tipos .= 'ssssss';
+    // Vários termos separados por ; , ou quebra de linha (ex.: colar uma lista de
+    // componentes). Se for um termo só com espaços e todas as partes parecerem
+    // códigos (letras/números com pelo menos um dígito), separa pelos espaços também.
+    $termosBusca = array_values(array_filter(array_map('trim', preg_split('/[;,\r\n\t]+/', $busca)), 'strlen'));
+    if (count($termosBusca) === 1 && preg_match('/\s/', $termosBusca[0])) {
+        $partesEspaco = preg_split('/\s+/', $termosBusca[0]);
+        $todasCodigos = true;
+        foreach ($partesEspaco as $parteEspaco) {
+            if (!preg_match('/^[A-Za-z0-9._\-\/]+$/', $parteEspaco) || !preg_match('/\d/', $parteEspaco)) {
+                $todasCodigos = false;
+                break;
+            }
+        }
+        if ($todasCodigos) {
+            $termosBusca = $partesEspaco;
+        }
+    }
+    $condicoesBusca = [];
+    foreach ($termosBusca as $termoBusca) {
+        $condicoesBusca[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ? OR modelo LIKE ?)";
+        $buscaLike = "%$termoBusca%";
+        $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
+        $tipos .= 'ssssss';
+    }
+    if (!empty($condicoesBusca)) {
+        $condicoesWhere[] = '(' . implode(' OR ', $condicoesBusca) . ')';
+    }
 }
 if ($projetoFiltro !== '') {
     $condicoesWhere[] = "projeto = ?";
@@ -1371,7 +1394,7 @@ while ($row = mysqli_fetch_assoc($result)) {
             <form method="GET" class="row g-2 align-items-end">
                 <div class="col-12 col-md flex-grow-1">
                     <label class="form-label small text-muted mb-1">Busca livre</label>
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, componente, descrição, fornecedor ou projeto..." value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, componente, descrição, fornecedor ou projeto (vários: separe com ;)" value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
                 <div class="col-12 col-md-auto" style="min-width: 200px;">
                     <label class="form-label small text-muted mb-1">Projeto</label>
