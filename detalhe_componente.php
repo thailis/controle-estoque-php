@@ -109,7 +109,7 @@ try {
     // de Compras, mas sem precisar registrar nada na tabela "programacao". Só entra em ação
     // se os 5 parâmetros obrigatórios estiverem preenchidos (mesma regra do Planejamento).
     $stmtParam = mysqli_prepare($conn, "
-        SELECT moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup
+        SELECT moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup, congelamento_dias
         FROM parametros_compra
         WHERE TRIM(codigo_componente) = ?
           AND moq IS NOT NULL AND frozen_zone_dias IS NOT NULL AND transit_time_dias IS NOT NULL
@@ -128,6 +128,14 @@ try {
     error_log('Erro no detalhe do componente: ' . $erro->getMessage());
     $erroDetalhe = 'Não foi possível carregar os dados deste componente. Verifique se a tabela "programacao" já foi criada (veja sql_programacao.sql).';
 }
+
+// Frozen Zone (período de congelamento do pedido): entregas com data até
+// hoje + N dias já não podem ser alteradas. Não entra no cálculo da compra —
+// só pinta a linha "Entrada programada": amarelo = congelado, laranja = ainda
+// dá pra alterar, branco = sem pedido.
+$congelamentoDias = ($parametrosCompra !== null && $parametrosCompra['congelamento_dias'] !== null)
+    ? (int) $parametrosCompra['congelamento_dias'] : null;
+$limiteFrozen = $congelamentoDias !== null ? $hoje->modify('+' . $congelamentoDias . ' days') : null;
 
 // Monta a projeção dia a dia: saldo(dia) = saldo(dia anterior) + entrada do dia - saída do dia
 // O ponto de partida (hoje) usa o estoque físico atual como saldo "anterior", já somando
@@ -276,6 +284,10 @@ if ($erroDetalhe === null) {
         .linha-sugestao td { font-weight: 750; color: #1c6e2d; border-top: 2px dashed #2f9e44; }
         .linha-sugestao td.saldo-negativo { color: #c53535; }
         .col-compra-sugerida { background: #e4f7e9 !important; }
+        /* Frozen Zone na linha "Entrada programada" (vence o amarelo-claro de hoje / verde de EDI) */
+        .evolucao-table td.entrada-congelada { background: #ffe600 !important; font-weight: 750; color: #3d3500; }
+        .evolucao-table td.entrada-alteravel { background: #ffb366 !important; font-weight: 750; color: #4a2600; }
+        .legenda-frozen span { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin: 0 4px 0 12px; }
     </style>
 </head>
 <body>
@@ -316,7 +328,7 @@ if ($erroDetalhe === null) {
 
         <?php if ($parametrosCompra === null): ?>
             <div class="alert alert-secondary" role="alert">
-                Este componente não tem os 5 parâmetros de compra preenchidos (MOQ, Frozen Zone, Transit Time,
+                Este componente não tem os 5 parâmetros de compra preenchidos (MOQ, Lead Time, Transit Time,
                 Estoque Mínimo e Estoque Máximo) em <a href="parametros_compra.php">Parâmetros de Compra</a>,
                 então não é possível simular o efeito de uma compra sugerida aqui.
             </div>
@@ -344,13 +356,13 @@ if ($erroDetalhe === null) {
                 </article>
                 <article class="metric-card metric-neutral">
                     <span class="metric-label">Frozen Zone</span>
-                    <strong><?php echo (int) $parametrosCompra['frozen_zone_dias']; ?></strong>
-                    <small>dias</small>
+                    <strong><?php echo $parametrosCompra['congelamento_dias'] !== null ? (int) $parametrosCompra['congelamento_dias'] : '—'; ?></strong>
+                    <small><?php echo $congelamentoDias !== null ? 'dias • alterar só entregas após ' . h($limiteFrozen->format('d/m/Y')) : 'não cadastrado em Parâmetros'; ?></small>
                 </article>
                 <article class="metric-card metric-neutral">
                     <span class="metric-label">Lead Time total</span>
                     <strong><?php echo (int) $parametrosCompra['frozen_zone_dias'] + (int) $parametrosCompra['transit_time_dias']; ?></strong>
-                    <small>Frozen Zone (<?php echo (int) $parametrosCompra['frozen_zone_dias']; ?>) + Transit Time (<?php echo (int) $parametrosCompra['transit_time_dias']; ?>)</small>
+                    <small>Lead Time (<?php echo (int) $parametrosCompra['frozen_zone_dias']; ?>) + Transit Time (<?php echo (int) $parametrosCompra['transit_time_dias']; ?>)</small>
                 </article>
             </section>
 
@@ -407,7 +419,13 @@ if ($erroDetalhe === null) {
                 <div>
                     <span class="eyebrow text-primary">Projeção</span>
                     <h2>Saldo dia a dia</h2>
-                    <p>De <?php echo h($hoje->format('d/m/Y')); ?> até <?php echo h($dataLimite->format('d/m/Y')); ?> • coluna amarela = hoje</p>
+                    <p class="legenda-frozen">De <?php echo h($hoje->format('d/m/Y')); ?> até <?php echo h($dataLimite->format('d/m/Y')); ?> • coluna amarela-clara = hoje
+                        <?php if ($limiteFrozen !== null): ?>
+                            • Entrada programada:
+                            <span style="background:#ffe600"></span>congelada (Frozen Zone até <?php echo h($limiteFrozen->format('d/m/Y')); ?>)
+                            <span style="background:#ffb366"></span>pode alterar
+                        <?php endif; ?>
+                    </p>
                 </div>
             </div>
             <div class="scroll-wrapper">
@@ -454,11 +472,21 @@ if ($erroDetalhe === null) {
                             <?php foreach ($dias as $dia): ?>
                                 <?php
                                     $classesCel = [];
+                                    $tituloEntrada = '';
                                     if ($dia['saida'] > 0) { $classesCel[] = 'col-evento'; }
                                     if ($dia['data']->format('Y-m-d') === $hoje->format('Y-m-d')) { $classesCel[] = 'col-hoje'; }
+                                    if ($dia['entrada'] != 0 && $limiteFrozen !== null) {
+                                        if ($dia['data'] <= $limiteFrozen) {
+                                            $classesCel[] = 'entrada-congelada';
+                                            $tituloEntrada = 'Dentro do Frozen Zone — pedido congelado, não pode mais ser alterado';
+                                        } else {
+                                            $classesCel[] = 'entrada-alteravel';
+                                            $tituloEntrada = 'Fora do Frozen Zone — dá pra alterar até ' . $dia['data']->modify('-' . $congelamentoDias . ' days')->format('d/m/Y');
+                                        }
+                                    }
                                 ?>
-                                <td class="<?php echo h(implode(' ', $classesCel)); ?>">
-                                    <?php echo $dia['entrada'] > 0 ? numeroBr($dia['entrada'], 0) : '<span class="valor-vazio">—</span>'; ?>
+                                <td class="<?php echo h(implode(' ', $classesCel)); ?>"<?php if ($tituloEntrada !== ''): ?> title="<?php echo h($tituloEntrada); ?>"<?php endif; ?>>
+                                    <?php echo $dia['entrada'] != 0 ? numeroBr($dia['entrada'], 0) : '<span class="valor-vazio">—</span>'; ?>
                                 </td>
                             <?php endforeach; ?>
                         </tr>

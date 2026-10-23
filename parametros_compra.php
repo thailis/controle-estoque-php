@@ -84,7 +84,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     'codigo_do_componente'
                 ],
                     'moq' => ['moq'],
-                    'frozen_zone_dias' => ['frozen_zone_dias', 'lead_time_dias', 'frozen_zone', 'frozenzone', 'lead_time_(dias)', 'lead_time'],
+                    // Lead Time de produção (coluna antiga "frozen_zone_dias" no banco)
+                    'frozen_zone_dias' => ['frozen_zone_dias', 'lead_time_dias', 'lead_time_(dias)', 'lead_time'],
+                    // Frozen Zone de verdade = período de congelamento do pedido (coluna nova)
+                    'congelamento_dias' => ['congelamento_dias', 'congelamento', 'frozen_zone', 'frozenzone', 'frozen_zone_(dias)', 'frozen'],
                     'transit_time_dias' => ['transit_time_dias', 'transit_time', 'transittime', 'transit_time_(dias)'],
                     'estoque_min_dias' => ['estoque_min_dias', 'min', 'min_dias', 'estoque_min_(dias)'],
                     'estoque_max_dias' => ['estoque_max_dias', 'max', 'max_dias', 'estoque_max_(dias)'],
@@ -119,11 +122,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             }, $v);
                             $linhasSql[] = '(' . implode(', ', $vals) . ')';
                         }
-                        $sql = "INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup) VALUES "
+                        // Frozen Zone: célula vazia (ou CSV sem essa coluna) mantém o valor atual.
+                        $sql = "INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup, congelamento_dias) VALUES "
                             . implode(', ', $linhasSql)
                             . " ON DUPLICATE KEY UPDATE moq = VALUES(moq), frozen_zone_dias = VALUES(frozen_zone_dias), "
                             . "transit_time_dias = VALUES(transit_time_dias), estoque_min_dias = VALUES(estoque_min_dias), estoque_max_dias = VALUES(estoque_max_dias), "
-                            . "setup = VALUES(setup)";
+                            . "setup = VALUES(setup), congelamento_dias = COALESCE(VALUES(congelamento_dias), congelamento_dias)";
                         if (mysqli_query($conn, $sql)) {
                             $importados += count($lote);
                         } else {
@@ -164,6 +168,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         // sem o símbolo "%" — mas se vier com "%" mesmo assim, removemos.
                         $setupTexto = $indices['setup'] !== null ? str_replace('%', '', (string) ($linha[$indices['setup']] ?? '')) : '';
                         $setup = $indices['setup'] !== null ? parseNumeroBrParametros($setupTexto) : null;
+                        $congelamento = $indices['congelamento_dias'] !== null ? parseNumeroBrParametros((string) ($linha[$indices['congelamento_dias']] ?? '')) : null;
 
                         $lote[] = [
                             $codigo,
@@ -173,6 +178,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             $min !== null ? (int) $min : null,
                             $max !== null ? (int) $max : null,
                             $setup,
+                            $congelamento !== null ? (int) $congelamento : null,
                         ];
 
                         if (count($lote) >= $tamanhoLote) {
@@ -205,6 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $minManual = parseNumeroBrParametros(trim($_POST['min_manual'] ?? ''));
     $maxManual = parseNumeroBrParametros(trim($_POST['max_manual'] ?? ''));
     $setupManual = parseNumeroBrParametros(str_replace('%', '', trim($_POST['setup_manual'] ?? '')));
+    $congelamentoManual = parseNumeroBrParametros(trim($_POST['congelamento_manual'] ?? ''));
 
     $flash = 'erro_dados';
     if ($codigoManual !== '') {
@@ -212,17 +219,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         $transitIntManual = $transitManual !== null ? (int) $transitManual : null;
         $minIntManual = $minManual !== null ? (int) $minManual : null;
         $maxIntManual = $maxManual !== null ? (int) $maxManual : null;
+        $congelamentoIntManual = $congelamentoManual !== null ? (int) $congelamentoManual : null;
 
         $stmtManual = mysqli_prepare($conn, "
-            INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO parametros_compra (codigo_componente, moq, frozen_zone_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup, congelamento_dias)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE moq = VALUES(moq), frozen_zone_dias = VALUES(frozen_zone_dias),
                 transit_time_dias = VALUES(transit_time_dias), estoque_min_dias = VALUES(estoque_min_dias),
-                estoque_max_dias = VALUES(estoque_max_dias), setup = VALUES(setup)
+                estoque_max_dias = VALUES(estoque_max_dias), setup = VALUES(setup),
+                congelamento_dias = COALESCE(VALUES(congelamento_dias), congelamento_dias)
         ");
         mysqli_stmt_bind_param(
-            $stmtManual, "sdiiiid",
-            $codigoManual, $moqManual, $frozenIntManual, $transitIntManual, $minIntManual, $maxIntManual, $setupManual
+            $stmtManual, "sdiiiidi",
+            $codigoManual, $moqManual, $frozenIntManual, $transitIntManual, $minIntManual, $maxIntManual, $setupManual, $congelamentoIntManual
         );
         mysqli_stmt_execute($stmtManual);
         mysqli_stmt_close($stmtManual);
@@ -258,6 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         'min' => 'estoque_min_dias',
         'max' => 'estoque_max_dias',
         'setup' => 'setup',
+        'congelamento' => 'congelamento_dias',
     ];
 
     if ($codigo === '' || !isset($colunasPorCampo[$campo])) {
@@ -273,7 +283,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     }
 
     $coluna = $colunasPorCampo[$campo];
-    $ehInteiro = in_array($campo, ['frozen', 'transit', 'min', 'max'], true);
+    $ehInteiro = in_array($campo, ['frozen', 'transit', 'min', 'max', 'congelamento'], true);
     $valorGravar = $ehInteiro ? (int) $numero : (float) $numero;
     $tipoBind = $ehInteiro ? 'i' : 'd';
 
@@ -478,7 +488,7 @@ $totalCompletos = (int) (mysqli_fetch_assoc($resultCompletos)['total'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.moq, p.frozen_zone_dias, p.transit_time_dias, p.estoque_min_dias, p.estoque_max_dias, p.setup FROM parametros_compra p $where ORDER BY p.codigo_componente";
+    $sqlExport = "SELECT p.codigo_componente, p.moq, p.frozen_zone_dias, p.transit_time_dias, p.estoque_min_dias, p.estoque_max_dias, p.setup, p.congelamento_dias FROM parametros_compra p $where ORDER BY p.codigo_componente";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, $tipos, ...$params);
@@ -491,7 +501,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="parametros-compra-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'MOQ', 'Lead Time (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)', 'Setup (%)'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'MOQ', 'Lead Time (dias)', 'Transit Time (dias)', 'Estoque Min (dias)', 'Estoque Max (dias)', 'Setup (%)', 'Frozen Zone (dias)'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         // MOQ e setup vêm do banco com ponto decimal (ex.: 500.0000, 20.00). O Excel em
         // português espera vírgula decimal e lê o ponto como separador de milhar,
@@ -504,13 +514,14 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         fputcsv($saida, [
             $linha['codigo_componente'], $moqFormatado, $linha['frozen_zone_dias'],
             $linha['transit_time_dias'], $linha['estoque_min_dias'], $linha['estoque_max_dias'], $setupFormatado,
+            $linha['congelamento_dias'],
         ], ';', '"', '');
     }
     fclose($saida);
     exit;
 }
 
-$sql = "SELECT p.codigo_componente, p.moq, p.frozen_zone_dias, p.transit_time_dias, p.estoque_min_dias, p.estoque_max_dias, p.setup,
+$sql = "SELECT p.codigo_componente, p.moq, p.frozen_zone_dias, p.transit_time_dias, p.estoque_min_dias, p.estoque_max_dias, p.setup, p.congelamento_dias,
                bg.fornecedores
         FROM parametros_compra p
         LEFT JOIN (
@@ -626,8 +637,9 @@ if (!empty($rows)) {
         .table th:nth-child(5),
         .table th:nth-child(6),
         .table th:nth-child(7),
-        .table th:nth-child(8) { max-width: 95px; }
-        .table th:nth-child(9) { max-width: 115px; }
+        .table th:nth-child(8),
+        .table th:nth-child(9) { max-width: 95px; }
+        .table th:nth-child(10) { max-width: 115px; }
         .table td { white-space: nowrap; text-align: center; }
         .table td.text-end { text-align: center !important; }
         .btn-remover-linha { border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; line-height: 1; }
@@ -709,7 +721,8 @@ if (!empty($rows)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>codigo_componente, moq, lead_time_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup</code><br>
+                        <code>codigo_componente, moq, lead_time_dias, transit_time_dias, estoque_min_dias, estoque_max_dias, setup, frozen_zone</code><br>
+                        <code>frozen_zone</code> = período de congelamento do pedido (dias). Ex.: entrega em 05/12 com Frozen Zone 30 → dá pra alterar até 05/11. Não entra no cálculo da compra (só mostra na Evolução quais pedidos já estão congelados). Célula vazia mantém o valor atual.<br>
                         (A coluna do componente também aceita o cabeçalho <code>componente</code>, igual nas outras telas de importação do sistema.)<br>
                         (O CSV exportado pela tela usa títulos amigáveis — "MOQ", "Lead Time (dias)" etc. — e pode ser reimportado normalmente; os dois formatos de cabeçalho são aceitos.)<br>
                         Todas as colunas exceto <code>codigo_componente</code> são opcionais — mas a data sugerida de compra só é calculada para componentes com <strong>todos</strong> os 5 parâmetros principais preenchidos (MOQ, Lead Time, Transit Time, Min, Max).<br>
@@ -763,6 +776,10 @@ if (!empty($rows)) {
                         <input type="text" name="setup_manual" class="form-control form-control-sm text-end" style="width:100px" placeholder="Ex.: 20">
                     </div>
                     <div class="col-auto">
+                        <label class="form-label small mb-1">Frozen Zone (dias)</label>
+                        <input type="text" name="congelamento_manual" class="form-control form-control-sm text-end" style="width:110px">
+                    </div>
+                    <div class="col-auto">
                         <button type="submit" class="btn btn-primary btn-sm">Salvar</button>
                     </div>
                     <div class="col-12">
@@ -806,13 +823,14 @@ if (!empty($rows)) {
                             <th class="text-end">Estoque Min (dias)</th>
                             <th class="text-end">Estoque Max (dias)</th>
                             <th class="text-end">Setup (%)</th>
+                            <th class="text-end" title="Período de congelamento do pedido: pedidos com entrega até hoje + esses dias não podem mais ser alterados. Não entra no cálculo da compra.">Frozen Zone (dias)</th>
                             <th class="text-end">Estoque Segurança (un)</th>
                             <th>Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -830,6 +848,7 @@ if (!empty($rows)) {
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="min" data-valor-bruto="<?php echo h($row['estoque_min_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_min_dias'] ?? '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="max" data-valor-bruto="<?php echo h($row['estoque_max_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_max_dias'] ?? '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="setup" data-valor-bruto="<?php echo h($row['setup'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="congelamento" data-valor-bruto="<?php echo h($row['congelamento_dias'] ?? ''); ?>" title="Duplo clique para editar"><?php echo $row['congelamento_dias'] ?? '—'; ?></td>
                                     <?php $celSeg = celulaEstoqueSeguranca($row); ?>
                                     <td class="text-end" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?>"<?php endif; ?>>
                                         <?php echo h($celSeg[0]); ?>
