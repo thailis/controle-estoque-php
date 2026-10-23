@@ -558,7 +558,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     $projetoVoltaExcluir = (string) ($_POST['projeto_atual'] ?? '');
     $fornecedorVoltaExcluir = (string) ($_POST['fornecedor_atual'] ?? '');
     $flagExcluir = $linhasAfetadasExcluir > 0 ? 'excluido=1' : 'excluir_erro=1';
-    header('Location: bomnova.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&projeto=' . urlencode($projetoVoltaExcluir) . '&fornecedor=' . urlencode($fornecedorVoltaExcluir) . '&' . $flagExcluir);
+    header('Location: bomnova.php?pagina=' . $paginaVoltaExcluir . '&busca=' . urlencode($buscaVoltaExcluir) . '&projeto=' . urlencode($projetoVoltaExcluir) . '&fornecedor=' . urlencode($fornecedorVoltaExcluir) . '&modelo=' . urlencode((string) ($_POST['modelo_atual'] ?? '')) . '&' . $flagExcluir);
     exit;
 }
 
@@ -620,7 +620,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     $projetoVolta = (string) ($_POST['projeto_atual'] ?? '');
     $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
     $flag = $linhasAfetadas > 0 ? 'mrp_ok' : 'mrp_erro';
-    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&' . $flag . '=1');
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&modelo=' . urlencode((string) ($_POST['modelo_atual'] ?? '')) . '&' . $flag . '=1');
     exit;
 }
 
@@ -659,7 +659,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     $projetoVolta = (string) ($_POST['projeto_atual'] ?? '');
     $fornecedorVolta = (string) ($_POST['fornecedor_atual'] ?? '');
-    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&' . $flag . '=1');
+    header('Location: bomnova.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&projeto=' . urlencode($projetoVolta) . '&fornecedor=' . urlencode($fornecedorVolta) . '&modelo=' . urlencode((string) ($_POST['modelo_atual'] ?? '')) . '&' . $flag . '=1');
     exit;
 }
 
@@ -955,6 +955,7 @@ $offset = ($pagina - 1) * $porPagina;
 $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $projetoFiltro = isset($_GET['projeto']) ? trim($_GET['projeto']) : '';
 $fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
+$modeloFiltro = isset($_GET['modelo']) ? trim($_GET['modelo']) : '';
 
 $condicoesWhere = [];
 $params = [];
@@ -997,6 +998,11 @@ if ($projetoFiltro !== '') {
 if ($fornecedorFiltro !== '') {
     $condicoesWhere[] = "fornecedor = ?";
     $params[] = $fornecedorFiltro;
+    $tipos .= 's';
+}
+if ($modeloFiltro !== '') {
+    $condicoesWhere[] = "TRIM(modelo) = ?";
+    $params[] = $modeloFiltro;
     $tipos .= 's';
 }
 
@@ -1055,6 +1061,24 @@ if ($resFornecedoresDisp) {
     while ($linhaFornecedor = mysqli_fetch_assoc($resFornecedoresDisp)) {
         $fornecedoresDisponiveis[] = $linhaFornecedor['fornecedor'];
     }
+}
+
+// Modelos pro filtro — se um Projeto estiver escolhido, só os modelos dele.
+$modelosDisponiveis = [];
+$sqlModelosDisp = "SELECT DISTINCT TRIM(modelo) AS modelo FROM bomnova WHERE modelo IS NOT NULL AND TRIM(modelo) <> ''"
+    . ($projetoFiltro !== '' ? " AND projeto = ?" : '') . " ORDER BY modelo";
+$stmtModelosDisp = mysqli_prepare($conn, $sqlModelosDisp);
+if ($projetoFiltro !== '') {
+    mysqli_stmt_bind_param($stmtModelosDisp, 's', $projetoFiltro);
+}
+mysqli_stmt_execute($stmtModelosDisp);
+$resModelosDisp = mysqli_stmt_get_result($stmtModelosDisp);
+while ($linhaModelo = mysqli_fetch_assoc($resModelosDisp)) {
+    $modelosDisponiveis[] = $linhaModelo['modelo'];
+}
+mysqli_stmt_close($stmtModelosDisp);
+if ($modeloFiltro !== '' && !in_array($modeloFiltro, $modelosDisponiveis, true)) {
+    $modelosDisponiveis[] = $modeloFiltro; // mantém o escolhido visível mesmo se trocar o projeto
 }
 
 $sqlTotal = "SELECT COUNT(*) AS total FROM bomnova $where";
@@ -1483,10 +1507,19 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <div class="col-12 col-md-auto" style="min-width: 180px;">
+                    <label class="form-label small text-muted mb-1">Modelo</label>
+                    <select name="modelo" class="form-select">
+                        <option value="">Todos</option>
+                        <?php foreach ($modelosDisponiveis as $opcaoModelo): ?>
+                            <option value="<?php echo htmlspecialchars($opcaoModelo); ?>" <?php echo $modeloFiltro === $opcaoModelo ? 'selected' : ''; ?>><?php echo htmlspecialchars($opcaoModelo); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <div class="col-12 col-md-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="bomnova.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -1615,6 +1648,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                                             <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
@@ -1649,6 +1683,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                                             <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
@@ -1672,6 +1707,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
                                             <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo htmlspecialchars($fornecedorFiltro); ?>">
+                                            <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
                                             <input type="hidden" name="orig_rid" value="<?php echo htmlspecialchars((string) ($row['rid'] ?? '')); ?>">
                                             <input type="hidden" name="orig_planta" value="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>">
                                             <input type="hidden" name="orig_projeto" value="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>">
@@ -1697,13 +1733,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
