@@ -1493,12 +1493,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Planta</th>
                             <th>Projeto</th>
                             <th>Material</th>
+                            <th>Modelo</th>
                             <th>Tipo</th>
                             <th>Fornecedor</th>
                             <th>Componente</th>
                             <th title="Código antigo que este componente substitui (duplo clique pra editar). O antigo para de gerar compra e o estoque dele é consumido primeiro.">Substitui</th>
                             <th>PN</th>
-                            <th>Modelo</th>
                             <th>Descrição</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
@@ -1555,12 +1555,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="projeto" data-valor-bruto="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="tipo" data-valor-bruto="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['tipo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="fornecedor" data-valor-bruto="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="codigo_componente" data-valor-bruto="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td class="celula-editavel" data-campo="substitui" data-valor-bruto="<?php echo htmlspecialchars($row['substitui'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Código antigo que este componente substitui — duplo clique para editar"><?php echo htmlspecialchars($row['substitui'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
-                                    <td class="celula-editavel" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
