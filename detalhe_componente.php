@@ -15,9 +15,41 @@ function numeroBr($valor, int $decimais = 2): string
 }
 
 $codigo = trim($_GET['codigo'] ?? '');
+
+// Lista de componentes da BOM (MRP ≠ N) pra sugerir no campo de busca
+$componentesLista = [];
+$resLista = mysqli_query($conn, "
+    SELECT TRIM(codigo_componente) AS codigo,
+           COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), ''))) AS descricao
+    FROM bomnova
+    WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+    GROUP BY TRIM(codigo_componente)
+    ORDER BY codigo
+");
+if ($resLista) {
+    while ($l = mysqli_fetch_assoc($resLista)) {
+        $componentesLista[$l['codigo']] = (string) ($l['descricao'] ?? '');
+    }
+}
+
 if ($codigo === '') {
-    http_response_code(400);
-    die('Código do componente não informado. Volte ao <a href="index.php">Dashboard</a> e clique em "Ver evolução" em um componente.');
+    // Sem componente informado: mostra só o campo de busca
+    ?><!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Evolução do estoque</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/dashboard.css" rel="stylesheet"></head><body>
+    <main class="container py-5" style="max-width:640px">
+        <h1 class="h4 mb-3">Evolução do estoque</h1>
+        <form method="GET" class="d-flex gap-2">
+            <input class="form-control" name="codigo" list="lista-componentes-detalhe" placeholder="Digite o código do componente" autofocus required>
+            <button class="btn btn-primary" type="submit">Ver</button>
+        </form>
+        <datalist id="lista-componentes-detalhe">
+            <?php foreach ($componentesLista as $cod => $desc): ?><option value="<?php echo h($cod); ?>"><?php echo h($desc); ?></option><?php endforeach; ?>
+        </datalist>
+        <p class="mt-3"><a href="index.php">← Voltar ao Dashboard</a></p>
+    </main></body></html><?php
+    exit;
 }
 
 $hoje = new DateTimeImmutable('today');
@@ -318,8 +350,19 @@ if ($erroDetalhe === null) {
         <?php else: ?>
 
         <section class="filter-panel mb-4">
-            <span class="eyebrow text-primary">Componente</span>
-            <h2 class="mb-2"><?php echo h($codigo); ?></h2>
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                <div>
+                    <span class="eyebrow text-primary">Componente</span>
+                    <h2 class="mb-2"><?php echo h($codigo); ?></h2>
+                </div>
+                <form method="GET" class="d-flex gap-2" style="min-width:320px">
+                    <input class="form-control form-control-sm" name="codigo" list="lista-componentes-detalhe" placeholder="Ver outro componente..." autocomplete="off" required>
+                    <button class="btn btn-primary btn-sm" type="submit">Ver</button>
+                </form>
+                <datalist id="lista-componentes-detalhe">
+                    <?php foreach ($componentesLista as $cod => $desc): ?><option value="<?php echo h($cod); ?>"><?php echo h($desc); ?></option><?php endforeach; ?>
+                </datalist>
+            </div>
             <p class="mb-1"><strong>Descrição:</strong> <?php echo h($infoComponente['descricao'] ?: '—'); ?></p>
             <p class="mb-1"><strong>Fornecedor(es):</strong> <?php echo h($infoComponente['fornecedores'] ?: 'Não informado'); ?></p>
             <p class="mb-1"><strong>Projeto(s):</strong> <?php echo h($infoComponente['projetos'] ?: '—'); ?></p>
