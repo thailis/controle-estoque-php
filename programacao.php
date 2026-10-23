@@ -717,6 +717,143 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
     exit;
 }
 
+// ---------- Sincronizar com os Processos (site de Importação) ----------
+// Lê os processos em ABERTO com Estoque = Sim e garante que cada combinação
+// PROCESSO + PO + COMPONENTE exista na Programação:
+//   - já existe com os três iguais → não mexe (não duplica);
+//   - existe o mesmo componente com o mesmo processo e PO em branco (ou o mesmo
+//     PO e processo em branco) → só completa o que faltava;
+//   - senão → cria a linha (quantidade, preço e moeda do processo; Data = ETA
+//     prevista no Follow). Processo sem ETA no Follow fica de fora e é avisado.
+function conectarImportacaoProgramacao(): mysqli
+{
+    $host = getenv('IMPORT_DB_HOST') ?: '';
+    $port = (int) (getenv('IMPORT_DB_PORT') ?: 4000);
+    $dbname = getenv('IMPORT_DB_NAME') ?: 'controle_importacao';
+    $user = getenv('IMPORT_DB_USER') ?: '';
+    $password = getenv('IMPORT_DB_PASSWORD') ?: '';
+    $sslCa = getenv('IMPORT_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt';
+    if ($host === '' || $user === '' || $password === '') {
+        throw new RuntimeException('Configuração do banco de importação incompleta (IMPORT_DB_*).');
+    }
+    $connImp = mysqli_init();
+    mysqli_options($connImp, MYSQLI_OPT_CONNECT_TIMEOUT, 8);
+    mysqli_ssl_set($connImp, null, null, $sslCa, null, null);
+    if (!@mysqli_real_connect($connImp, $host, $user, $password, $dbname, $port, null, MYSQLI_CLIENT_SSL)) {
+        throw new RuntimeException('Não consegui conectar ao banco de importação: ' . mysqli_connect_error());
+    }
+    mysqli_set_charset($connImp, 'utf8mb4');
+    return $connImp;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincronizar_processos') {
+    exigirComprador();
+    $sincCriadas = 0;
+    $sincCompletadas = 0;
+    $sincExistentes = 0;
+    $sincSemData = [];
+    $flashSinc = 'sinc_ok';
+    try {
+        $connImp = conectarImportacaoProgramacao();
+
+        // ETA prevista de cada processo (a mais cedo, se houver mais de um embarque)
+        $etaPorProcesso = [];
+        $resEta = mysqli_query($connImp, "
+            SELECT TRIM(processo) AS processo, MIN(prevista) AS prevista
+            FROM follow
+            WHERE prevista IS NOT NULL AND processo IS NOT NULL AND TRIM(processo) <> ''
+            GROUP BY TRIM(processo)
+        ");
+        while ($l = mysqli_fetch_assoc($resEta)) {
+            $etaPorProcesso[$l['processo']] = substr((string) $l['prevista'], 0, 10);
+        }
+
+        $resProc = mysqli_query($connImp, "
+            SELECT TRIM(processo) AS processo, TRIM(COALESCE(po, '')) AS po, TRIM(codigo_componente) AS componente,
+                   SUM(COALESCE(quantidade, 0)) AS quantidade, MAX(preco) AS preco, MAX(NULLIF(TRIM(moeda), '')) AS moeda
+            FROM processos
+            WHERE processo IS NOT NULL AND TRIM(processo) <> ''
+              AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+              AND COALESCE(NULLIF(LOWER(TRIM(status)), ''), 'aberto') = 'aberto'
+              AND LOWER(TRIM(COALESCE(controla_estoque, ''))) = 'sim'
+            GROUP BY TRIM(processo), TRIM(COALESCE(po, '')), TRIM(codigo_componente)
+        ");
+        $linhasProc = [];
+        while ($l = mysqli_fetch_assoc($resProc)) {
+            $linhasProc[] = $l;
+        }
+        mysqli_close($connImp);
+
+        $stmtBusca = mysqli_prepare($conn, "
+            SELECT id, TRIM(COALESCE(processo, '')) AS processo, TRIM(COALESCE(po, '')) AS po
+            FROM programacao
+            WHERE TRIM(codigo_componente) = ?
+              AND (
+                    (TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?)
+                 OR (TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = '')
+                 OR (TRIM(COALESCE(processo, '')) = '' AND TRIM(COALESCE(po, '')) = ? AND ? <> '')
+              )
+            ORDER BY (TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?) DESC, id
+            LIMIT 1
+        ");
+        $stmtCompleta = mysqli_prepare($conn, "UPDATE programacao SET processo = ?, po = COALESCE(NULLIF(?, ''), po) WHERE id = ?");
+        $stmtInsere = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
+
+        mysqli_begin_transaction($conn);
+        foreach ($linhasProc as $l) {
+            $proc = (string) $l['processo'];
+            $po = (string) $l['po'];
+            $comp = (string) $l['componente'];
+
+            mysqli_stmt_bind_param($stmtBusca, 'ssssssss', $comp, $proc, $po, $proc, $po, $po, $proc, $po);
+            mysqli_stmt_execute($stmtBusca);
+            $existente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBusca));
+
+            if ($existente) {
+                if ($existente['processo'] === $proc && $existente['po'] === $po) {
+                    $sincExistentes++;
+                } else {
+                    $idExistente = (int) $existente['id'];
+                    mysqli_stmt_bind_param($stmtCompleta, 'ssi', $proc, $po, $idExistente);
+                    mysqli_stmt_execute($stmtCompleta);
+                    $sincCompletadas++;
+                }
+                continue;
+            }
+
+            $dataEta = $etaPorProcesso[$proc] ?? null;
+            if ($dataEta === null || $dataEta === '0000-00-00') {
+                $sincSemData[$proc] = true;
+                continue;
+            }
+            $poGravar = $po !== '' ? $po : null;
+            $qtd = (float) $l['quantidade'];
+            $preco = $l['preco'] !== null ? (float) $l['preco'] : null;
+            $moeda = $l['moeda'] !== null ? strtoupper((string) $l['moeda']) : 'BRL';
+            mysqli_stmt_bind_param($stmtInsere, 'ssssdds', $comp, $poGravar, $proc, $dataEta, $qtd, $preco, $moeda);
+            mysqli_stmt_execute($stmtInsere);
+            $sincCriadas++;
+        }
+        mysqli_commit($conn);
+        mysqli_stmt_close($stmtBusca);
+        mysqli_stmt_close($stmtCompleta);
+        mysqli_stmt_close($stmtInsere);
+    } catch (Throwable $erroSinc) {
+        try { mysqli_rollback($conn); } catch (Throwable $e) { /* nada a desfazer */ }
+        error_log('Erro ao sincronizar programação com processos: ' . $erroSinc->getMessage());
+        $flashSinc = 'sinc_erro';
+    }
+
+    header('Location: programacao.php?' . http_build_query([
+        'flash'        => $flashSinc,
+        'sinc_criadas' => $sincCriadas,
+        'sinc_compl'   => $sincCompletadas,
+        'sinc_exist'   => $sincExistentes,
+        'sinc_semdata' => implode(', ', array_slice(array_keys($sincSemData), 0, 30)),
+    ]));
+    exit;
+}
+
 // Inserção manual de uma nova programação direto pelo site, sem CSV
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir_manual') {
     exigirComprador();
@@ -1031,6 +1168,16 @@ $flashMap = [
     'lote_data_invalida' => ['danger', '❌ Data inválida. Use dd/mm/aaaa.'],
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
     'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
+    'sinc_ok'       => [
+        trim((string) ($_GET['sinc_semdata'] ?? '')) !== '' ? 'warning' : 'success',
+        '🔄 Sincronização com os Processos: ' . (int) ($_GET['sinc_criadas'] ?? 0) . ' linha(s) criada(s), '
+            . (int) ($_GET['sinc_compl'] ?? 0) . ' completada(s) com processo/PO, '
+            . (int) ($_GET['sinc_exist'] ?? 0) . ' já existiam (não duplicadas).'
+            . (trim((string) ($_GET['sinc_semdata'] ?? '')) !== ''
+                ? '<br>⚠️ Ficaram de fora por não ter ETA prevista no Follow: <strong>' . htmlspecialchars((string) $_GET['sinc_semdata'], ENT_QUOTES, 'UTF-8') . '</strong> — preencha a data prevista no Follow e sincronize de novo.'
+                : ''),
+    ],
+    'sinc_erro'     => ['danger', '❌ Não foi possível sincronizar com os Processos (conexão com o banco de importação). Tente de novo.'],
 ];
 
 // Lista de componentes existentes na BOM, pra sugerir no campo de entrada manual
@@ -1448,6 +1595,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </form>
             <small class="text-muted d-block mt-2">PN e Descrição vêm automaticamente da BOM pelo código do componente. Data Recebida, Quantidade Recebida e Saldo ficam disponíveis pra editar (duplo clique) depois que o material chegar.</small>
+        </div>
+
+        <div class="card p-3 mb-4">
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <form method="POST" class="m-0" onsubmit="return confirm('Sincronizar com os Processos em aberto (Estoque = Sim)? Linhas que já existem (mesmo componente + processo + PO) não são duplicadas.');">
+                    <input type="hidden" name="acao" value="sincronizar_processos">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com Processos</button>
+                </form>
+                <small class="text-muted">Traz da Importação os processos <strong>em aberto</strong> com <strong>Estoque = Sim</strong>. Mesmo componente + processo + PO já na Programação = não duplica. Componente em outro processo/PO = cria linha nova (quantidade, preço e moeda do processo; data = ETA prevista no Follow).</small>
+            </div>
         </div>
 
         <div class="card p-3 mb-4">

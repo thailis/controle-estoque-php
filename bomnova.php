@@ -1106,7 +1106,13 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
             ($linhaExport['moeda'] ?? '') !== '' ? $linhaExport['moeda'] : 'BRL',
             $linhaExport['mrp'], $linhaExport['planejamento'],
-            strtolower(trim((string) ($linhaExport['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project',
+            (function ($l) {
+                $mrpE = strtoupper(trim((string) ($l['mrp'] ?? '')));
+                $planE = strtoupper(trim((string) ($l['planejamento'] ?? '')));
+                if ($planE !== 'S' && $planE !== 'N') { $planE = $mrpE === 'N' ? 'N' : 'S'; }
+                if ($mrpE === 'N' && $planE === 'N') { return 'Inativo'; }
+                return strtolower(trim((string) ($l['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project';
+            })($linhaExport),
             $linhaExport['substitui'] ?? '',
         ], ';', '"', '');
     }
@@ -1149,6 +1155,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         .status-toggle-btn { cursor: pointer; min-width: 74px; font-size: .75rem; }
         .badge-status-project { background: #fd7e14; color: #fff; }
         .badge-status-handover { background: #2f9e44; color: #fff; }
+        .badge-status-inativo { background: #adb5bd; color: #fff; cursor: not-allowed; }
         .badge-mrp-n { background: #fff0f0; color: #c53535; }
         .mrp-toggle-btn {
             cursor: pointer;
@@ -1547,10 +1554,22 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         'um' => (string) ($row['um'] ?? ''),
                                     ], JSON_HEX_APOS | JSON_HEX_QUOT);
                                 ?>
-                                <?php $ehHandover = strtolower(trim((string) ($row['status'] ?? ''))) === 'handover'; ?>
+                                <?php
+                                    $ehHandover = strtolower(trim((string) ($row['status'] ?? ''))) === 'handover';
+                                    // MRP = N e Plan = N → Inativo (sobrepõe o Status gravado, que fica guardado
+                                    // e volta a aparecer se o MRP/Plan for reativado).
+                                    $ehInativo = $mrp === 'N' && $planejamento === 'N';
+                                    if ($ehInativo) {
+                                        $statusClasse = 'badge-status-inativo';
+                                        $statusTexto = 'Inativo';
+                                    } else {
+                                        $statusClasse = $ehHandover ? 'badge-status-handover' : 'badge-status-project';
+                                        $statusTexto = $ehHandover ? 'Handover' : 'Project';
+                                    }
+                                ?>
                                 <tr>
                                     <td>
-                                        <button type="button" class="badge border-0 status-toggle-btn <?php echo $ehHandover ? 'badge-status-handover' : 'badge-status-project'; ?>" data-extra='<?php echo $contextoLinha; ?>' title="Clique pra alternar entre Project e Handover"><?php echo $ehHandover ? 'Handover' : 'Project'; ?></button>
+                                        <button type="button" class="badge border-0 status-toggle-btn <?php echo $statusClasse; ?>" data-extra='<?php echo $contextoLinha; ?>' data-handover="<?php echo $ehHandover ? '1' : '0'; ?>" <?php echo $ehInativo ? 'disabled' : ''; ?> title="<?php echo $ehInativo ? 'Inativo: MRP e Plan estão em N' : 'Clique pra alternar entre Project e Handover'; ?>"><?php echo $statusTexto; ?></button>
                                     </td>
                                     <td class="celula-editavel" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="projeto" data-valor-bruto="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
@@ -1749,6 +1768,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                         formPlan.querySelector('input[name="mrp_atual"]').value = json.mrpTexto;
                         formPlan.querySelector('input[name="planejamento_atual"]').value = json.planTexto;
                     }
+                    const botaoStatus = linha.querySelector('.status-toggle-btn');
+                    if (botaoStatus && typeof atualizarBotaoStatus === 'function') {
+                        atualizarBotaoStatus(botaoStatus, json.mrpTexto === 'N' && json.planTexto === 'N');
+                    }
                 })
                 .catch(() => {
                     alert('Erro de conexão ao atualizar. Tente de novo.');
@@ -1756,6 +1779,24 @@ while ($row = mysqli_fetch_assoc($result)) {
         });
     </script>
     <script>
+        // Pinta o botão de Status: Inativo (cinza, travado) quando MRP e Plan = N;
+        // senão Project (laranja) ou Handover (verde), conforme o que está gravado.
+        function atualizarBotaoStatus(botao, inativo) {
+            const handover = botao.dataset.handover === '1';
+            botao.classList.remove('badge-status-project', 'badge-status-handover', 'badge-status-inativo');
+            if (inativo) {
+                botao.classList.add('badge-status-inativo');
+                botao.textContent = 'Inativo';
+                botao.disabled = true;
+                botao.title = 'Inativo: MRP e Plan estão em N';
+            } else {
+                botao.classList.add(handover ? 'badge-status-handover' : 'badge-status-project');
+                botao.textContent = handover ? 'Handover' : 'Project';
+                botao.disabled = false;
+                botao.title = 'Clique pra alternar entre Project e Handover';
+            }
+        }
+
         // Status Project ⇄ Handover por AJAX (sem recarregar). A linha é achada
         // pelo id (rid) e pelos campos do contexto da linha (data-extra).
         document.addEventListener('click', function (evento) {
@@ -1775,12 +1816,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                 .then((r) => r.json())
                 .then((json) => {
                     if (!json.ok) { alert(json.erro || 'Não foi possível atualizar.'); return; }
-                    botao.textContent = json.handover ? 'Handover' : 'Project';
-                    botao.classList.toggle('badge-status-handover', json.handover);
-                    botao.classList.toggle('badge-status-project', !json.handover);
+                    botao.dataset.handover = json.handover ? '1' : '0';
+                    atualizarBotaoStatus(botao, false);
                 })
                 .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'))
-                .finally(() => { botao.disabled = false; });
+                .finally(() => { if (!botao.classList.contains('badge-status-inativo')) botao.disabled = false; });
         });
 
         // Quando um campo-chave da linha é editado, o contexto do botão de Status
