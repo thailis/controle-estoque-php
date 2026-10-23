@@ -1,6 +1,7 @@
 <?php
 require_once 'conexao.php';
 require_once 'mrp_calculo.php';
+require_once 'substituicoes.php';
 
 require_once 'auth.php';
 exigirLogin();
@@ -129,8 +130,29 @@ try {
     }
     mysqli_stmt_close($stmtComponentes);
 
+    // Substituição de código (coluna "Substitui" da BOM): o código antigo não gera
+    // compra; estoque, entradas programadas e demanda dele entram no cálculo do novo.
+    $subs = carregarSubstituicoes($conn);
+    $antigosPorComponente = [];
+    foreach (array_keys($componentes) as $codigoSub) {
+        if (codigoSubstitutoFinal($subs, (string) $codigoSub) !== null) {
+            unset($componentes[$codigoSub]);
+            continue;
+        }
+        $antigosSub = codigosAntigosDe($subs, (string) $codigoSub);
+        if ($antigosSub) {
+            $antigosPorComponente[(string) $codigoSub] = $antigosSub;
+        }
+    }
+
     if (!empty($componentes)) {
-        $codigos = array_keys($componentes);
+        $codigos = array_map('strval', array_keys($componentes));
+        foreach ($antigosPorComponente as $antigosSub) {
+            foreach ($antigosSub as $antigoSub) {
+                $codigos[] = $antigoSub;
+            }
+        }
+        $codigos = array_values(array_unique($codigos));
         $placeholders = implode(',', array_fill(0, count($codigos), '?'));
         $tiposCodigos = str_repeat('s', count($codigos));
 
@@ -171,7 +193,39 @@ try {
         }
         mysqli_stmt_close($stmtDemanda);
 
+        // Junta os códigos antigos no novo: estoque, programação e demanda somados.
+        $estoqueAntigos = [];
+        if (!empty($antigosPorComponente)) {
+            $todosAntigos = array_values(array_unique(array_merge(...array_values($antigosPorComponente))));
+            $phAntigos = implode(',', array_fill(0, count($todosAntigos), '?'));
+            $stmtEstAntigos = mysqli_prepare($conn, "
+                SELECT TRIM(codigo_componente) AS codigo_componente, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS estoque_atual
+                FROM estoque WHERE TRIM(codigo_componente) IN ($phAntigos)
+                GROUP BY TRIM(codigo_componente)
+            ");
+            mysqli_stmt_bind_param($stmtEstAntigos, str_repeat('s', count($todosAntigos)), ...$todosAntigos);
+            mysqli_stmt_execute($stmtEstAntigos);
+            $resEstAntigos = mysqli_stmt_get_result($stmtEstAntigos);
+            while ($linha = mysqli_fetch_assoc($resEstAntigos)) {
+                $estoqueAntigos[$linha['codigo_componente']] = (float) $linha['estoque_atual'];
+            }
+            mysqli_stmt_close($stmtEstAntigos);
+
+            foreach ($antigosPorComponente as $codigoNovo => $antigosSub) {
+                foreach ($antigosSub as $antigoSub) {
+                    $componentes[$codigoNovo]['estoque_atual'] = (float) $componentes[$codigoNovo]['estoque_atual'] + ($estoqueAntigos[$antigoSub] ?? 0.0);
+                    foreach ($programacaoPorComponente[$antigoSub] ?? [] as $dataSub => $qtdSub) {
+                        $programacaoPorComponente[$codigoNovo][$dataSub] = ($programacaoPorComponente[$codigoNovo][$dataSub] ?? 0.0) + $qtdSub;
+                    }
+                    foreach ($demandaPorComponente[$antigoSub] ?? [] as $dataSub => $qtdSub) {
+                        $demandaPorComponente[$codigoNovo][$dataSub] = ($demandaPorComponente[$codigoNovo][$dataSub] ?? 0.0) + $qtdSub;
+                    }
+                }
+            }
+        }
+
         foreach ($componentes as $codigo => $comp) {
+            $codigo = (string) $codigo;
             $setupComp = $comp['setup'] !== null ? (float) $comp['setup'] : 0.0;
 
             // Estoque de segurança calculado automaticamente (sem dias cadastrados
@@ -221,6 +275,7 @@ try {
                     'fornecedores' => $comp['fornecedores'],
                     'projetos' => $comp['projetos'],
                     'estoque_atual' => (float) $comp['estoque_atual'],
+                    'antigos' => $antigosPorComponente[$codigo] ?? [],
                     'status' => $p['status'],
                     // Mostra a DATA DE NECESSIDADE (quando o saldo ficaria negativo/abaixo
                     // do estoque de segurança), não mais a data sugerida de compra (que é
@@ -455,6 +510,9 @@ try {
                                     </td>
                                     <td>
                                         <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
+                                        <?php if (!empty($r['antigos'])): ?>
+                                            <span class="badge bg-warning-subtle text-dark border ms-1" title="Substitui <?php echo h(implode(', ', $r['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui e são consumidos primeiro">consome <?php echo h(implode(', ', $r['antigos'])); ?></span>
+                                        <?php endif; ?>
                                         <?php if ($r['total_parcelas'] > 1): ?>
                                             <span class="badge bg-light text-secondary border ms-1" title="Este componente tem <?php echo $r['total_parcelas']; ?> pedidos escalonados no período calculado">parcela <?php echo $r['parcela']; ?>/<?php echo $r['total_parcelas']; ?></span>
                                         <?php endif; ?>

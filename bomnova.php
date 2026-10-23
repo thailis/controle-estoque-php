@@ -201,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo', 'substitui'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -229,6 +229,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
             $casasDecimais = BOMNOVA_CASAS_DECIMAIS[$campo] ?? 4;
             $valorParaGravar = number_format($numeroEditado, $casasDecimais, '.', '');
             $valorParaExibir = number_format($numeroEditado, $casasDecimais, ',', '.');
+        }
+    }
+
+    // Substitui: código antigo que esta linha (componente novo) substitui. Vazio = nenhum.
+    if ($campo === 'substitui') {
+        if ($novoValor === '') {
+            $valorParaGravar = null;
+        } elseif ($novoValor === trim((string) ($_POST['orig_codigo_componente'] ?? ''))) {
+            echo json_encode(['ok' => false, 'erro' => 'O componente não pode substituir ele mesmo.']);
+            exit;
         }
     }
 
@@ -361,6 +371,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
 // Mesma regra dos handlers com reload logo abaixo, só que devolve JSON pra JS
 // trocar as duas badges no lugar (MRP força Planejamento junto quando muda
 // pra N, então o retorno já traz o estado das duas).
+// Status da linha: alterna Project (laranja) ⇄ Handover (verde). Vazio = Project.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_status') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+    $camposStatus = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um'];
+    $valoresStatus = [];
+    foreach ($camposStatus as $c) {
+        $valoresStatus[] = (string) ($_POST['orig_' . $c] ?? '');
+    }
+    $condStatus = array_map(fn($c) => "COALESCE($c, '') = ?", $camposStatus);
+    if (ridLinhaBomnova() > 0) {
+        $condStatus = ['_tidb_rowid = ' . ridLinhaBomnova()];
+        $valoresStatus = [];
+    }
+    $whereStatus = implode(' AND ', $condStatus);
+    $stmtStatus = mysqli_prepare($conn, "UPDATE bomnova SET status = CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'handover' THEN 'project' ELSE 'handover' END WHERE $whereStatus LIMIT 1");
+    if (!empty($valoresStatus)) {
+        mysqli_stmt_bind_param($stmtStatus, str_repeat('s', count($valoresStatus)), ...$valoresStatus);
+    }
+    try {
+        mysqli_stmt_execute($stmtStatus);
+    } catch (Throwable $erroStatus) {
+        echo json_encode(['ok' => false, 'erro' => 'Não foi possível salvar: ' . $erroStatus->getMessage()]);
+        exit;
+    }
+    mysqli_stmt_close($stmtStatus);
+
+    $stmtLer = mysqli_prepare($conn, "SELECT status FROM bomnova WHERE $whereStatus LIMIT 1");
+    if (!empty($valoresStatus)) {
+        mysqli_stmt_bind_param($stmtLer, str_repeat('s', count($valoresStatus)), ...$valoresStatus);
+    }
+    mysqli_stmt_execute($stmtLer);
+    $linhaLida = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtLer));
+    mysqli_stmt_close($stmtLer);
+    if (!$linhaLida) {
+        echo json_encode(['ok' => false, 'erro' => 'Não achei essa linha no banco. Recarregue a página e tente de novo.']);
+        exit;
+    }
+    $ehHandover = strtolower(trim((string) ($linhaLida['status'] ?? ''))) === 'handover';
+    echo json_encode(['ok' => true, 'handover' => $ehHandover]);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_toggle_mrp') {
     header('Content-Type: application/json; charset=UTF-8');
     if (!ehComprador()) {
@@ -1014,7 +1071,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($temFiltro) {
@@ -1030,7 +1087,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -1049,13 +1106,15 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
             ($linhaExport['moeda'] ?? '') !== '' ? $linhaExport['moeda'] : 'BRL',
             $linhaExport['mrp'], $linhaExport['planejamento'],
+            strtolower(trim((string) ($linhaExport['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project',
+            $linhaExport['substitui'] ?? '',
         ], ';', '"', '');
     }
     fclose($saida);
     exit;
 }
 
-$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento
+$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -1087,6 +1146,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table th { background: #f8f9fa; white-space: nowrap; }
         .table td { white-space: nowrap; }
         .badge-mrp-s { background: #eaf8f0; color: #247a4d; }
+        .status-toggle-btn { cursor: pointer; min-width: 74px; font-size: .75rem; }
+        .badge-status-project { background: #fd7e14; color: #fff; }
+        .badge-status-handover { background: #2f9e44; color: #fff; }
         .badge-mrp-n { background: #fff0f0; color: #c53535; }
         .mrp-toggle-btn {
             cursor: pointer;
@@ -1427,12 +1489,14 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <table class="table table-hover table-sm tabela-bom">
                     <thead>
                         <tr>
+                            <th title="Clique no botão da linha pra alternar Project ⇄ Handover">Status</th>
                             <th>Planta</th>
                             <th>Projeto</th>
                             <th>Material</th>
                             <th>Tipo</th>
                             <th>Fornecedor</th>
                             <th>Componente</th>
+                            <th title="Código antigo que este componente substitui (duplo clique pra editar). O antigo para de gerar compra e o estoque dele é consumido primeiro.">Substitui</th>
                             <th>PN</th>
                             <th>Modelo</th>
                             <th>Descrição</th>
@@ -1452,7 +1516,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="21" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="23" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1483,13 +1547,18 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         'um' => (string) ($row['um'] ?? ''),
                                     ], JSON_HEX_APOS | JSON_HEX_QUOT);
                                 ?>
+                                <?php $ehHandover = strtolower(trim((string) ($row['status'] ?? ''))) === 'handover'; ?>
                                 <tr>
+                                    <td>
+                                        <button type="button" class="badge border-0 status-toggle-btn <?php echo $ehHandover ? 'badge-status-handover' : 'badge-status-project'; ?>" data-extra='<?php echo $contextoLinha; ?>' title="Clique pra alternar entre Project e Handover"><?php echo $ehHandover ? 'Handover' : 'Project'; ?></button>
+                                    </td>
                                     <td class="celula-editavel" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="projeto" data-valor-bruto="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="tipo" data-valor-bruto="<?php echo htmlspecialchars($row['tipo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['tipo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="fornecedor" data-valor-bruto="<?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['fornecedor'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="codigo_componente" data-valor-bruto="<?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><strong><?php echo htmlspecialchars($row['codigo_componente'] ?? ''); ?></strong></td>
+                                    <td class="celula-editavel" data-campo="substitui" data-valor-bruto="<?php echo htmlspecialchars($row['substitui'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Código antigo que este componente substitui — duplo clique para editar"><?php echo htmlspecialchars($row['substitui'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
@@ -1684,6 +1753,50 @@ while ($row = mysqli_fetch_assoc($result)) {
                 .catch(() => {
                     alert('Erro de conexão ao atualizar. Tente de novo.');
                 });
+        });
+    </script>
+    <script>
+        // Status Project ⇄ Handover por AJAX (sem recarregar). A linha é achada
+        // pelo id (rid) e pelos campos do contexto da linha (data-extra).
+        document.addEventListener('click', function (evento) {
+            const botao = evento.target.closest('.status-toggle-btn');
+            if (!botao || botao.disabled) return;
+            let contexto = {};
+            try { contexto = JSON.parse(botao.dataset.extra || '{}'); } catch (e) { contexto = {}; }
+            const dados = new URLSearchParams();
+            dados.set('acao', 'ajax_toggle_status');
+            Object.keys(contexto).forEach(function (chave) { dados.set('orig_' + chave, contexto[chave] ?? ''); });
+            botao.disabled = true;
+            fetch('bomnova.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados.toString(),
+            })
+                .then((r) => r.json())
+                .then((json) => {
+                    if (!json.ok) { alert(json.erro || 'Não foi possível atualizar.'); return; }
+                    botao.textContent = json.handover ? 'Handover' : 'Project';
+                    botao.classList.toggle('badge-status-handover', json.handover);
+                    botao.classList.toggle('badge-status-project', !json.handover);
+                })
+                .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'))
+                .finally(() => { botao.disabled = false; });
+        });
+
+        // Quando um campo-chave da linha é editado, o contexto do botão de Status
+        // também precisa acompanhar (mesma ideia do data-extra das células).
+        document.addEventListener('inline-edit:salvo', function (evento) {
+            const campo = evento.detail && evento.detail.campo;
+            const linha = evento.target.closest && evento.target.closest('tr');
+            const botao = linha && linha.querySelector('.status-toggle-btn');
+            const celula = linha && linha.querySelector('td[data-campo="' + campo + '"]');
+            if (!botao || !celula) return;
+            try {
+                const contexto = JSON.parse(botao.dataset.extra || '{}');
+                if (!(campo in contexto)) return;
+                contexto[campo] = String(evento.detail.exibido ?? celula.textContent).trim();
+                botao.dataset.extra = JSON.stringify(contexto);
+            } catch (e) { /* ignora */ }
         });
     </script>
     <script>

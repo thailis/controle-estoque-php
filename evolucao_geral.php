@@ -1,5 +1,6 @@
 <?php
 require_once 'conexao.php';
+require_once 'substituicoes.php';
 
 require_once 'auth.php';
 exigirLogin();
@@ -114,6 +115,7 @@ $projetosPorDia = [];
 $maxEntregas = 0;
 
 try {
+    $subs = carregarSubstituicoes($conn);
     $fornecedores = opcoesDistintasGeral($conn, 'fornecedor');
     $projetos = opcoesDistintasGeral($conn, 'projeto');
 
@@ -870,7 +872,10 @@ try {
                         <?php else: ?>
                             <?php foreach ($componentesPagina as $componente): ?>
                                 <tr>
-                                    <td class="cel-componente" data-componente="<?php echo h($componente['codigo_componente']); ?>" title="Clique para marcar/desmarcar"><strong class="component-code"><?php echo h($componente['codigo_componente']); ?></strong></td>
+                                    <td class="cel-componente" data-componente="<?php echo h($componente['codigo_componente']); ?>" title="Clique para marcar/desmarcar"><strong class="component-code"><?php echo h($componente['codigo_componente']); ?></strong><?php
+                                        $novoSub = codigoSubstitutoFinal($subs ?? ['novo_por_antigo' => []], (string) $componente['codigo_componente']);
+                                        $antigosSub = $novoSub === null ? codigosAntigosDe($subs ?? ['antigos_por_novo' => []], (string) $componente['codigo_componente']) : [];
+                                    ?><?php if ($novoSub !== null): ?> <span class="badge bg-warning-subtle text-dark border" title="Substituído por <?php echo h($novoSub); ?> na BOM — não gera compra">→</span><?php elseif ($antigosSub): ?> <span class="badge bg-warning-subtle text-dark border" title="Substitui <?php echo h(implode(', ', $antigosSub)); ?> — consome o estoque dele primeiro (o saldo desta linha é só deste código)">↺</span><?php endif; ?></td>
                                     <td title="<?php echo h($componente['descricao']); ?>"><?php echo h($componente['descricao']); ?></td>
                                     <td title="<?php echo h($componente['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($componente['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($componente['projetos'] ?: '—'); ?>"><?php echo h($componente['projetos'] ?: '—'); ?></td>

@@ -1,6 +1,7 @@
 <?php
 require_once 'conexao.php';
 require_once 'mrp_calculo.php';
+require_once 'substituicoes.php';
 
 require_once 'auth.php';
 exigirLogin();
@@ -58,6 +59,13 @@ $hoje = new DateTimeImmutable('today');
 // pra frente, e fica entre o Dashboard (90 dias) e o Planejamento/MRP (12 meses).
 $dataLimite = $hoje->modify('+180 days');
 
+// Substituição de código (coluna "Substitui" da BOM)
+$subs = carregarSubstituicoes($conn);
+$substituidoPor = codigoSubstitutoFinal($subs, $codigo);       // este código é antigo → foi trocado por...
+$codigosAntigos = $substituidoPor === null ? codigosAntigosDe($subs, $codigo) : []; // este é o novo → consome...
+$codigosGrupo = array_merge([$codigo], $codigosAntigos);
+$estoquePorAntigo = [];
+
 $erroDetalhe = null;
 $infoComponente = ['descricao' => '', 'fornecedores' => '', 'projetos' => ''];
 $estoqueAtual = 0.0;
@@ -88,25 +96,37 @@ try {
     }
     mysqli_stmt_close($stmtInfo);
 
+    // Com substituição, o estoque/programação/demanda dos códigos antigos entram
+    // junto com os deste componente ($codigosGrupo = este + antigos).
+    $phGrupo = implode(',', array_fill(0, count($codigosGrupo), '?'));
+    $tiposGrupo = str_repeat('s', count($codigosGrupo));
+
     $stmtEstoque = mysqli_prepare($conn, "
-        SELECT SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS estoque_atual
+        SELECT TRIM(codigo_componente) AS codigo, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS estoque_atual
         FROM estoque
-        WHERE TRIM(codigo_componente) = ?
+        WHERE TRIM(codigo_componente) IN ($phGrupo)
+        GROUP BY TRIM(codigo_componente)
     ");
-    mysqli_stmt_bind_param($stmtEstoque, 's', $codigo);
+    mysqli_stmt_bind_param($stmtEstoque, $tiposGrupo, ...$codigosGrupo);
     mysqli_stmt_execute($stmtEstoque);
-    $estoqueAtual = (float) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtEstoque))['estoque_atual'] ?? 0);
+    $resEstoque = mysqli_stmt_get_result($stmtEstoque);
+    while ($linhaEst = mysqli_fetch_assoc($resEstoque)) {
+        $estoqueAtual += (float) $linhaEst['estoque_atual'];
+        if ((string) $linhaEst['codigo'] !== $codigo) {
+            $estoquePorAntigo[(string) $linhaEst['codigo']] = (float) $linhaEst['estoque_atual'];
+        }
+    }
     mysqli_stmt_close($stmtEstoque);
 
     // Programação de entradas futuras (chegadas previstas), somadas por data
     $stmtProg = mysqli_prepare($conn, "
         SELECT data, SUM(quantidade) AS quantidade
         FROM programacao
-        WHERE TRIM(codigo_componente) = ?
+        WHERE TRIM(codigo_componente) IN ($phGrupo)
           AND (atendido = 0 OR atendido IS NULL)
         GROUP BY data
     ");
-    mysqli_stmt_bind_param($stmtProg, 's', $codigo);
+    mysqli_stmt_bind_param($stmtProg, $tiposGrupo, ...$codigosGrupo);
     mysqli_stmt_execute($stmtProg);
     $resProg = mysqli_stmt_get_result($stmtProg);
     while ($linha = mysqli_fetch_assoc($resProg)) {
@@ -123,12 +143,12 @@ try {
                ) AS quantidade
         FROM bomnova b
         JOIN edi e ON TRIM(b.material) = TRIM(e.material)
-        WHERE TRIM(b.codigo_componente) = ? AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+        WHERE TRIM(b.codigo_componente) IN ($phGrupo) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
           AND (b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')
           AND (e.atendido = 0 OR e.atendido IS NULL)
         GROUP BY e.data_inicio
     ");
-    mysqli_stmt_bind_param($stmtDemanda, 's', $codigo);
+    mysqli_stmt_bind_param($stmtDemanda, $tiposGrupo, ...$codigosGrupo);
     mysqli_stmt_execute($stmtDemanda);
     $resDemanda = mysqli_stmt_get_result($stmtDemanda);
     while ($linha = mysqli_fetch_assoc($resDemanda)) {
@@ -213,7 +233,7 @@ if ($erroDetalhe === null) {
     // meses rolantes (igual ao Planejamento) pra achar a real data de necessidade, mesmo
     // que a tabela exibida (Evolução do Estoque) use um horizonte mais curto ($dataLimite,
     // hoje + 180 dias rolantes).
-    if ($parametrosCompra !== null) {
+    if ($parametrosCompra !== null && $substituidoPor === null) {
         $setupComp = $parametrosCompra['setup'] !== null ? (float) $parametrosCompra['setup'] : 0.0;
         $segurancaQtd = calcularEstoqueSegurancaQtd(
             $demandaPorData,
@@ -366,10 +386,24 @@ if ($erroDetalhe === null) {
             <p class="mb-1"><strong>Descrição:</strong> <?php echo h($infoComponente['descricao'] ?: '—'); ?></p>
             <p class="mb-1"><strong>Fornecedor(es):</strong> <?php echo h($infoComponente['fornecedores'] ?: 'Não informado'); ?></p>
             <p class="mb-1"><strong>Projeto(s):</strong> <?php echo h($infoComponente['projetos'] ?: '—'); ?></p>
-            <p class="mb-0"><strong>Estoque físico atual (hoje):</strong> <?php echo numeroBr($estoqueAtual); ?></p>
+            <p class="mb-0"><strong>Estoque físico atual (hoje):</strong> <?php echo numeroBr($estoqueAtual); ?><?php if (!empty($codigosAntigos)): ?> <small class="text-muted">(inclui <?php echo h(implode(', ', $codigosAntigos)); ?>)</small><?php endif; ?></p>
         </section>
 
-        <?php if ($parametrosCompra === null): ?>
+        <?php if ($substituidoPor !== null): ?>
+            <div class="alert alert-warning" role="alert">
+                🔁 Este código foi <strong>substituído por <a href="detalhe_componente.php?codigo=<?php echo urlencode($substituidoPor); ?>"><?php echo h($substituidoPor); ?></a></strong> na BOM.
+                Ele não gera sugestão de compra — o saldo dele é consumido primeiro pelo <?php echo h($substituidoPor); ?>.
+            </div>
+        <?php elseif (!empty($codigosAntigos)): ?>
+            <div class="alert alert-warning" role="alert">
+                🔁 Substitui
+                <?php foreach ($codigosAntigos as $i => $antigo): ?><?php echo $i > 0 ? ', ' : ''; ?><a href="detalhe_componente.php?codigo=<?php echo urlencode($antigo); ?>"><strong><?php echo h($antigo); ?></strong></a> (estoque <?php echo numeroBr($estoquePorAntigo[$antigo] ?? 0, 0); ?>)<?php endforeach; ?>.
+                O estoque, as entradas programadas e a demanda do código antigo já estão somados abaixo — a compra do <?php echo h($codigo); ?> só aparece depois que esse saldo for consumido.
+            </div>
+        <?php endif; ?>
+
+        <?php if ($substituidoPor !== null): ?>
+        <?php elseif ($parametrosCompra === null): ?>
             <div class="alert alert-secondary" role="alert">
                 Este componente não tem os 5 parâmetros de compra preenchidos (MOQ, Lead Time, Transit Time,
                 Estoque Mínimo e Estoque Máximo) em <a href="parametros_compra.php">Parâmetros de Compra</a>,
