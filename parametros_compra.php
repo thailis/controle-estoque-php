@@ -772,12 +772,12 @@ if (!empty($rows)) {
                         <input type="text" name="max_manual" class="form-control form-control-sm text-end" style="width:110px">
                     </div>
                     <div class="col-auto">
-                        <label class="form-label small mb-1">Setup (%)</label>
-                        <input type="text" name="setup_manual" class="form-control form-control-sm text-end" style="width:100px" placeholder="Ex.: 20">
-                    </div>
-                    <div class="col-auto">
                         <label class="form-label small mb-1">Frozen Zone (dias)</label>
                         <input type="text" name="congelamento_manual" class="form-control form-control-sm text-end" style="width:110px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Setup (%)</label>
+                        <input type="text" name="setup_manual" class="form-control form-control-sm text-end" style="width:100px" placeholder="Ex.: 20">
                     </div>
                     <div class="col-auto">
                         <button type="submit" class="btn btn-primary btn-sm">Salvar</button>
@@ -822,8 +822,8 @@ if (!empty($rows)) {
                             <th class="text-end">Transit Time (dias)</th>
                             <th class="text-end">Estoque Min (dias)</th>
                             <th class="text-end">Estoque Max (dias)</th>
-                            <th class="text-end">Setup (%)</th>
                             <th class="text-end" title="Período de congelamento do pedido: pedidos com entrega até hoje + esses dias não podem mais ser alterados. Não entra no cálculo da compra.">Frozen Zone (dias)</th>
+                            <th class="text-end">Setup (%)</th>
                             <th class="text-end">Estoque Segurança (un)</th>
                             <th>Excluir</th>
                         </tr>
@@ -847,8 +847,8 @@ if (!empty($rows)) {
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="transit" data-valor-bruto="<?php echo h($row['transit_time_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['transit_time_dias'] ?? '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="min" data-valor-bruto="<?php echo h($row['estoque_min_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_min_dias'] ?? '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="max" data-valor-bruto="<?php echo h($row['estoque_max_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['estoque_max_dias'] ?? '—'; ?></td>
-                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="setup" data-valor-bruto="<?php echo h($row['setup'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="congelamento" data-valor-bruto="<?php echo h($row['congelamento_dias'] ?? ''); ?>" title="Duplo clique para editar"><?php echo $row['congelamento_dias'] ?? '—'; ?></td>
+                                    <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="setup" data-valor-bruto="<?php echo h($row['setup'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['setup'] !== null ? number_format((float) $row['setup'], 2, ',', '.') . '%' : '—'; ?></td>
                                     <?php $celSeg = celulaEstoqueSeguranca($row); ?>
                                     <td class="text-end" <?php if ($celSeg[1] !== ''): ?>title="<?php echo h($celSeg[1]); ?>"<?php endif; ?>>
                                         <?php echo h($celSeg[0]); ?>
