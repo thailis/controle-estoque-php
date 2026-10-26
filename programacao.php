@@ -211,7 +211,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 // — mesmo que alguém force modo=substituir, nada é apagado aqui.
 
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $stmtVerifica = mysqli_prepare($conn, "SELECT id FROM programacao WHERE TRIM(codigo_componente) = ? AND data = ? LIMIT 1");
+                // Chave de "já existe": Componente + Data + PO + Processo (vazio = vazio).
+                // Mesmo componente e data, mas com outro PO ou processo, é outro pedido → entra.
+                $stmtVerifica = mysqli_prepare($conn, "
+                    SELECT id FROM programacao
+                    WHERE TRIM(codigo_componente) = ? AND data = ?
+                      AND TRIM(COALESCE(po, '')) = ? AND TRIM(COALESCE(processo, '')) = ?
+                    LIMIT 1
+                ");
                 $stmtUpdate = mysqli_prepare($conn, "UPDATE programacao SET quantidade = ? WHERE id = ?");
                 // Só usada quando o CSV traz uma coluna de Preço pareada com aquele
                 // lançamento — atualiza a quantidade e o preço juntos, sem apagar o
@@ -292,7 +299,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         $idExistente = null;
                         if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
-                            mysqli_stmt_bind_param($stmtVerifica, "ss", $codigoComponente, $data);
+                            $poChave = (string) ($poLinha ?? '');
+                            $processoChave = (string) ($processoLinha ?? '');
+                            mysqli_stmt_bind_param($stmtVerifica, "ssss", $codigoComponente, $data, $poChave, $processoChave);
                             mysqli_stmt_execute($stmtVerifica);
                             $resVerifica = mysqli_stmt_get_result($stmtVerifica);
                             $linhaExistente = mysqli_fetch_assoc($resVerifica);
@@ -1505,14 +1514,14 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="modo" id="modo_sem_duplicar" value="sem_duplicar">
                             <label class="form-check-label" for="modo_sem_duplicar">
-                                <strong>Adicionar sem duplicar</strong> — ignora linhas cujo Componente+Data já existe
+                                <strong>Adicionar sem duplicar</strong> — ignora linhas cujo Componente + Data + PO + Processo já existe
                             </label>
                         </div>
 
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="modo" id="modo_atualizar" value="atualizar">
                             <label class="form-check-label" for="modo_atualizar">
-                                <strong>Adicionar e atualizar</strong> — se já existir (mesmo Componente+Data), atualiza a quantidade; senão insere novo
+                                <strong>Adicionar e atualizar</strong> — se já existir (mesmo Componente + Data + PO + Processo), atualiza a quantidade; senão insere novo
                             </label>
                         </div>
 
