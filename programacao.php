@@ -762,6 +762,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $sincCompletadas = 0;
     $sincExistentes = 0;
     $sincSemData = [];
+    $idsCriadas = [];
+    $idsCompletadas = [];
     $flashSinc = 'sinc_ok';
     try {
         $connImp = conectarImportacaoProgramacao();
@@ -827,6 +829,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
                     mysqli_stmt_bind_param($stmtCompleta, 'ssi', $proc, $po, $idExistente);
                     mysqli_stmt_execute($stmtCompleta);
                     $sincCompletadas++;
+                    $idsCompletadas[] = $idExistente;
                 }
                 continue;
             }
@@ -843,6 +846,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
             mysqli_stmt_bind_param($stmtInsere, 'ssssdds', $comp, $poGravar, $proc, $dataEta, $qtd, $preco, $moeda);
             mysqli_stmt_execute($stmtInsere);
             $sincCriadas++;
+            $idsCriadas[] = (int) mysqli_stmt_insert_id($stmtInsere);
         }
         mysqli_commit($conn);
         mysqli_stmt_close($stmtBusca);
@@ -860,6 +864,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         'sinc_compl'   => $sincCompletadas,
         'sinc_exist'   => $sincExistentes,
         'sinc_semdata' => implode(', ', array_slice(array_keys($sincSemData), 0, 30)),
+        // ids das linhas criadas/completadas, pros links "ver quais" da mensagem
+        'sinc_ids_c'   => implode(',', array_slice($idsCriadas, 0, 400)),
+        'sinc_ids_u'   => implode(',', array_slice($idsCompletadas, 0, 400)),
     ]));
     exit;
 }
@@ -1183,6 +1190,12 @@ $flashMap = [
         '🔄 Sincronização com os Processos: ' . (int) ($_GET['sinc_criadas'] ?? 0) . ' linha(s) criada(s), '
             . (int) ($_GET['sinc_compl'] ?? 0) . ' completada(s) com processo/PO, '
             . (int) ($_GET['sinc_exist'] ?? 0) . ' já existiam (não duplicadas).'
+            . (trim((string) ($_GET['sinc_ids_c'] ?? '')) !== ''
+                ? ' <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_c']), ENT_QUOTES, 'UTF-8') . '">Ver as criadas</a>'
+                : '')
+            . (trim((string) ($_GET['sinc_ids_u'] ?? '')) !== ''
+                ? ' • <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_u']), ENT_QUOTES, 'UTF-8') . '">Ver as completadas</a>'
+                : '')
             . (trim((string) ($_GET['sinc_semdata'] ?? '')) !== ''
                 ? '<br>⚠️ Ficaram de fora por não ter ETA prevista no Follow: <strong>' . htmlspecialchars((string) $_GET['sinc_semdata'], ENT_QUOTES, 'UTF-8') . '</strong> — preencha a data prevista no Follow e sincronize de novo.'
                 : ''),
@@ -1226,6 +1239,13 @@ if ($resForn) {
 $condicoes = [];
 $params = [];
 $tipos = '';
+
+// Filtro por lista de ids (links "Ver as criadas/completadas" da sincronização).
+$idsFiltro = array_values(array_unique(array_filter(array_map('intval', explode(',', (string) ($_GET['ids'] ?? ''))), fn($i) => $i > 0)));
+if (!empty($idsFiltro)) {
+    $condicoes[] = 'p.id IN (' . implode(',', $idsFiltro) . ')'; // só inteiros — seguro
+    $porPagina = 500; // mostra tudo numa página só
+}
 
 // Busca por componente — aceita VÁRIOS de uma vez, separados por ; , espaço
 // ou quebra de linha (ex.: "12058499; 12058500" ou colado de uma coluna do Excel).
@@ -1545,6 +1565,9 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
             <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
+        <?php endif; ?>
+        <?php if (!empty($idsFiltro)): ?>
+            <div class="alert alert-info py-2">🔎 Mostrando só as <?php echo count($idsFiltro); ?> linha(s) da sincronização. <a class="alert-link" href="programacao.php">Ver tudo</a></div>
         <?php endif; ?>
         <?php if (isset($_GET['excluido'])): ?>
             <div class="alert alert-success py-2">✅ Programação excluída.</div>
