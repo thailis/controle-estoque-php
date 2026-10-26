@@ -143,7 +143,8 @@ function buscarComponentesProcesso(mysqli $conn, string $processo): array
 //    processo já preenchido com outro valor;
 // 3) se ainda não achar, CRIA a linha já com processo, PO e componente
 //    (Quantidade = 0, já que não houve planejamento; Data = efetiva).
-// Em todos os casos SUBSTITUI "importado", "data_recebida" e "moeda" (a
+// Em todos os casos SUBSTITUI "importado", "quantidade_recebida" (= importado),
+// "data_recebida" e "moeda" (a
 // Programação nasce com BRL por padrão e passa a ter a moeda do processo;
 // se o processo não tiver moeda, mantém a que estava) — nunca soma,
 // então refazer a confirmação/sincronização deixa o MRP igual ao site de
@@ -178,20 +179,20 @@ function gravarComponenteNaProgramacao(mysqli $connMrp, string $codigoComponente
     if ($existente) {
         $stmtAtualiza = mysqli_prepare($connMrp, "
             UPDATE programacao
-            SET importado = ?, data_recebida = ?, processo = ?, po = COALESCE(?, po), moeda = COALESCE(?, moeda, 'BRL')
+            SET importado = ?, quantidade_recebida = CASE WHEN COALESCE(atendido, 0) = 0 THEN ? ELSE quantidade_recebida END, data_recebida = ?, processo = ?, po = COALESCE(?, po), moeda = COALESCE(?, moeda, 'BRL')
             WHERE id = ?
         ");
-        mysqli_stmt_bind_param($stmtAtualiza, 'dssssi', $quantidade, $dataEfetiva, $processo, $poGravar, $moedaGravar, $existente['id']);
+        mysqli_stmt_bind_param($stmtAtualiza, 'ddssssi', $quantidade, $quantidade, $dataEfetiva, $processo, $poGravar, $moedaGravar, $existente['id']);
         mysqli_stmt_execute($stmtAtualiza);
         mysqli_stmt_close($stmtAtualiza);
         return 'atualizada';
     }
 
     $stmtInsere = mysqli_prepare($connMrp, "
-        INSERT INTO programacao (codigo_componente, processo, po, data, quantidade, importado, data_recebida, moeda)
-        VALUES (?, ?, ?, ?, 0, ?, ?, COALESCE(?, 'BRL'))
+        INSERT INTO programacao (codigo_componente, processo, po, data, quantidade, importado, quantidade_recebida, data_recebida, moeda)
+        VALUES (?, ?, ?, ?, 0, ?, ?, ?, COALESCE(?, 'BRL'))
     ");
-    mysqli_stmt_bind_param($stmtInsere, 'ssssdss', $codigoComponente, $processo, $poGravar, $dataEfetiva, $quantidade, $dataEfetiva, $moedaGravar);
+    mysqli_stmt_bind_param($stmtInsere, 'ssssddss', $codigoComponente, $processo, $poGravar, $dataEfetiva, $quantidade, $quantidade, $dataEfetiva, $moedaGravar);
     mysqli_stmt_execute($stmtInsere);
     mysqli_stmt_close($stmtInsere);
     return 'criada';
