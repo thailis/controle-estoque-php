@@ -156,6 +156,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
     $modo = $_POST['modo'] ?? 'adicionar';
+    if (!in_array($modo, ['adicionar', 'sem_duplicar', 'atualizar'], true)) {
+        $modo = 'adicionar';
+    }
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
         $mensagens[] = "❌ Erro no upload do arquivo.";
@@ -204,10 +207,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 } elseif (empty($paresDataQuantidade)) {
                     $mensagens[] = "❌ Não encontrei nenhuma coluna de quantidade (ex.: 'quantidade', 'quantidade 2'...).";
                 } else {
-                if ($modo === 'substituir') {
-                    mysqli_query($conn, "TRUNCATE TABLE programacao");
-                    $mensagens[] = "🗑️ Tabela 'programacao' esvaziada antes da importação.";
-                }
+                // "Substituir tudo" (apagava a programação inteira) foi removido de propósito
+                // — mesmo que alguém force modo=substituir, nada é apagado aqui.
 
                 $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $stmtVerifica = mysqli_prepare($conn, "SELECT id FROM programacao WHERE TRIM(codigo_componente) = ? AND data = ? LIMIT 1");
@@ -1515,12 +1516,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                             </label>
                         </div>
 
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_substituir" value="substituir">
-                            <label class="form-check-label" for="modo_substituir">
-                                <strong>Substituir tudo</strong> — apaga toda a programação atual e importa somente o que está no arquivo
-                            </label>
-                        </div>
 
                         <button type="submit" class="btn btn-primary mt-2">Importar</button>
                     </form>
