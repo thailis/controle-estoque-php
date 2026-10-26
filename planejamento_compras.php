@@ -288,6 +288,7 @@ try {
                     'quantidade' => $p['quantidade'],
                     'quantidade_base' => $p['quantidade_base'],
                     'setup' => $p['setup'],
+                    'moq' => (float) $comp['moq'],
                     'estoque_seguranca_qtd' => $segurancaQtd,
                     'parcela' => $indice + 1,
                     'total_parcelas' => $totalParcelas,
@@ -521,7 +522,7 @@ try {
                                     <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
-                                    <td class="text-center" <?php if ($r['setup'] > 0): ?>title="Já inclui <?php echo numeroBr($r['setup'], 0); ?>% de setup/scrap (base: <?php echo numeroBr($r['quantidade_base'], 0); ?>)"<?php endif; ?>>
+                                    <td class="text-center" title="Necessidade: <?php echo numeroBr($r['quantidade_base'], 0); ?><?php if ($r['setup'] > 0): ?> + <?php echo numeroBr($r['setup'], 0); ?>% de setup<?php endif; ?><?php if ($r['moq'] > 0): ?> → arredondado pro múltiplo do MOQ (<?php echo numeroBr($r['moq'], 0); ?>)<?php endif; ?>">
                                         <span class="qtd-sugerida-wrap">
                                             <span class="qtd-sugerida-num"><?php echo numeroBr($r['quantidade'], 0); ?></span>
                                             <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border qtd-sugerida-badge">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>

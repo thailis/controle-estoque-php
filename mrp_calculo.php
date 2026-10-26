@@ -59,10 +59,10 @@ function calcularEstoqueSegurancaQtd(
 //      sem passar do teto do Estoque Máximo (dias) cadastrado — a não ser que o MOQ do
 //      fornecedor sozinho já exija mais que isso (aí o MOQ vence, é o mínimo que dá pra
 //      pedir, mesmo passando do Máximo).
-//   4) O MOQ é tratado só como PISO mínimo (compra pelo menos o MOQ) — não arredonda pra
-//      múltiplo dele. Ex.: déficit de 8.464 com MOQ 100 vira 8.464 (não 8.500). Se o
-//      déficit for menor que o MOQ, aí sim compra o MOQ inteiro (é o mínimo que dá pra
-//      pedir). Depois injeta de volta na simulação, pra próxima revisão já considerar
+//   4) O MOQ é tratado como MÚLTIPLO (lote fechado): a quantidade (já com setup) é
+//      arredondada pra cima pro próximo múltiplo do MOQ. Ex.: déficit de 8.464 com MOQ
+//      100 vira 8.500; déficit de 120 com MOQ 500 vira 500. Depois injeta de volta na
+//      simulação, pra próxima revisão já considerar
 //      essa compra — na data em que o material realmente fica disponível (ver
 //      "$iDisponibilidade" mais abaixo), não no dia em que o piso apenas detectou o
 //      problema, nem no dia da demanda que gerou a necessidade.
@@ -357,19 +357,23 @@ function calcularParcelasCompraPlanejamento(
             continue;
         }
 
-        // MOQ como PISO mínimo, não como múltiplo/lote fechado: compra o déficit sem passar
-        // do teto do Máximo, exceto quando o MOQ sozinho já exige mais que isso (aí compra
-        // o MOQ, que é o mínimo que o fornecedor aceita).
-        $quantidadeBase = $moq > 0
-            ? max($moq, min($quantidadeAlvo, $tetoCompra))
-            : min($quantidadeAlvo, $tetoCompra);
+        // Necessidade = déficit sem passar do teto do Máximo.
+        $quantidadeBase = min($quantidadeAlvo, $tetoCompra);
 
-        // Setup (% de perda/scrap) aplicado por último, depois de todo o cálculo de netting,
-        // do piso de MOQ e do teto de Máximo. A quantidade FÍSICA que chega de fato é a
-        // final (com setup) — é ela que volta pra simulação pra achar a próxima parcela.
-        $quantidadeFinal = $setupPercentual > 0
+        // Setup (% de perda/scrap) aplicado sobre a necessidade.
+        $quantidadeComSetup = $setupPercentual > 0
             ? $quantidadeBase * (1 + $setupPercentual / 100)
             : $quantidadeBase;
+
+        // MOQ como MÚLTIPLO (lote fechado): arredonda PRA CIMA pro próximo múltiplo do
+        // MOQ, já com o setup incluído — assim a quantidade final é sempre um pedido
+        // válido pro fornecedor. Ex.: MOQ 500, necessidade 1.320 → 1.500; necessidade
+        // 120 → 500. A quantidade FÍSICA que chega é a final — é ela que volta pra
+        // simulação pra achar a próxima parcela (a sobra do arredondamento já entra
+        // no saldo e adia/reduz a próxima compra).
+        $quantidadeFinal = $moq > 0
+            ? max($moq, ceil(round($quantidadeComSetup / $moq, 6)) * $moq)
+            : $quantidadeComSetup;
 
         // Urgente = a data sugerida já passou OU cai dentro dos próximos 7 dias (ainda dá
         // tempo de agir esta semana, mas não sobra folga pra esperar a próxima revisão
