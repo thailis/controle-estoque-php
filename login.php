@@ -5,9 +5,17 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Já logado? Manda direto pro dashboard.
+// Pra onde ir depois de entrar: a tela que a pessoa tentou abrir (ex.: uma
+// tela da Importação), se veio em ?voltar=. Só aceita endereço interno do
+// próprio site (começa com "/" e não com "//"), nunca um site de fora.
+$voltar = (string) ($_GET['voltar'] ?? '');
+if ($voltar === '' || $voltar[0] !== '/' || str_starts_with($voltar, '//') || str_contains($voltar, '\\')) {
+    $voltar = 'index.php';
+}
+
+// Já logado? Manda direto pra tela de destino.
 if (!empty($_SESSION['usuario_id'])) {
-    header('Location: index.php');
+    header('Location: ' . $voltar);
     exit;
 }
 
@@ -37,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['usuario_id'] = $linha['id'];
             $_SESSION['usuario_nome'] = $linha['nome'];
             $_SESSION['papel'] = $linha['papel'];
-            header('Location: index.php');
+            header('Location: ' . $voltar);
             exit;
         }
 

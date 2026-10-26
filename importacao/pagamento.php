@@ -1,6 +1,7 @@
 <?php
 // importacao/pagamento.php
 require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 function h(mixed $valor): string
 {
@@ -78,6 +79,27 @@ function normalizarTextoPagamento(string $texto): string
     ];
     return strtr($texto, $mapa);
 }
+
+// Processos têm UMA LINHA POR COMPONENTE. O pagamento é por PROCESSO: esta
+// subconsulta junta todas as linhas do processo numa só —
+//   status     = cancelado só se TODAS as linhas estiverem canceladas;
+//   po/fornecedor = todos os distintos, separados por vírgula;
+//   total      = soma do total de todos os componentes (sem os cancelados).
+const SQL_PROCESSO_AGRUPADO = "
+    SELECT processo,
+           CASE WHEN SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'cancelado' THEN 1 ELSE 0 END) = COUNT(*)
+                THEN 'cancelado'
+                ELSE MAX(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) <> 'cancelado' THEN status END)
+           END AS status,
+           GROUP_CONCAT(DISTINCT NULLIF(TRIM(po), '') ORDER BY TRIM(po) SEPARATOR ', ') AS po,
+           GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedor,
+           MAX(NULLIF(TRIM(moeda), '')) AS moeda,
+           SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) <> 'cancelado' THEN total END) AS total,
+           COUNT(*) AS componentes
+    FROM processos
+    WHERE processo IS NOT NULL AND TRIM(processo) <> ''
+    GROUP BY processo
+";
 
 $mensagens = [];
 $importados = 0;
@@ -170,7 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                     mysqli_begin_transaction($conn);
                     mysqli_query($conn, "DELETE FROM pagamento");
                 }
-                $stmtProcCsv = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM processos WHERE processo = ? LIMIT 1");
+                $stmtProcCsv = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE processo = ?");
                 $stmtDupCsv = mysqli_prepare($conn, "
                     SELECT id FROM pagamento
                     WHERE processo = ? AND COALESCE(cod_twin, '') = ? AND COALESCE(numerario_inicial, '') = ?
@@ -294,7 +316,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     if ($processo === '') {
         $mensagens[] = '❌ Escolha um processo já cadastrado em Processos.';
     } else {
-        $stmtProc = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM processos WHERE processo = ? LIMIT 1");
+        $stmtProc = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE processo = ?");
         mysqli_stmt_bind_param($stmtProc, 's', $processo);
         mysqli_stmt_execute($stmtProc);
         $dadosProcesso = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProc));
@@ -469,7 +491,7 @@ if (isset($_GET['exportar'])) {
 
 // ---------- Listagem ----------
 $processosDisponiveis = [];
-$resProcessos = mysqli_query($conn, "SELECT processo, status, po, fornecedor, moeda, total FROM processos ORDER BY processo");
+$resProcessos = mysqli_query($conn, "SELECT processo, status, po, fornecedor, moeda, total, componentes FROM (" . SQL_PROCESSO_AGRUPADO . ") pa ORDER BY processo DESC");
 while ($linhaProc = mysqli_fetch_assoc($resProcessos)) {
     $processosDisponiveis[] = $linhaProc;
 }
@@ -502,9 +524,10 @@ $sql = "
            p.po AS po_vivo,
            p.fornecedor AS fornecedor_vivo,
            p.moeda AS moeda_vivo,
-           p.total AS total_vivo
+           p.total AS total_vivo,
+           p.componentes AS componentes_vivo
     FROM pagamento pg
-    LEFT JOIN processos p ON p.processo = pg.processo
+    LEFT JOIN (" . SQL_PROCESSO_AGRUPADO . ") p ON p.processo = pg.processo
     $where
     ORDER BY pg.criado_em DESC
     LIMIT ? OFFSET ?
@@ -527,7 +550,13 @@ while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
 
-$totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_total, SUM(balance) AS soma_balance FROM pagamento"));
+// Total geral = soma do total de cada PROCESSO que tem pagamento (cada processo
+// conta uma vez só, mesmo com várias parcelas de pagamento).
+$totais = mysqli_fetch_assoc(mysqli_query($conn, "
+    SELECT (SELECT SUM(p.total) FROM (SELECT DISTINCT processo FROM pagamento) pgd
+            JOIN (" . SQL_PROCESSO_AGRUPADO . ") p ON p.processo = pgd.processo) AS soma_total,
+           (SELECT SUM(balance) FROM pagamento) AS soma_balance
+"));
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -594,7 +623,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     data-fornecedor="<?php echo h($p['fornecedor'] ?? ''); ?>"
                                     data-moeda="<?php echo h($p['moeda'] ?? ''); ?>"
                                     data-total="<?php echo h($p['total'] !== null ? number_format((float) $p['total'], 2, ',', '.') : ''); ?>">
-                                    <?php echo h($p['processo']); ?><?php echo $p['fornecedor'] ? ' — ' . h($p['fornecedor']) : ''; ?>
+                                    <?php echo h($p['processo']); ?><?php echo $p['fornecedor'] ? ' — ' . h($p['fornecedor']) : ''; ?> (<?php echo (int) $p['componentes']; ?> comp.<?php echo $p['total'] !== null ? ' • ' . h($p['moeda'] ?? '') . ' ' . numeroBr($p['total']) : ''; ?>)
                                 </option>
                             <?php endforeach; ?>
                         </select>
@@ -711,6 +740,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                             <th>Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
+                            <th class="text-end" title="Soma do total de todos os componentes do processo (sem os cancelados)">Total processo</th>
                             <th>Cod. Twin.</th>
                             <th>Data</th>
                             <th>Vencimento</th>
@@ -722,7 +752,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="empty-state">Nenhum pagamento encontrado.</td></tr>
+                            <tr><td colspan="12" class="empty-state">Nenhum pagamento encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -754,6 +784,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(total) AS soma_tota
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
+                                    <td class="text-end text-nowrap" title="<?php echo (int) ($r['componentes_vivo'] ?? 0); ?> componente(s) no processo"><?php echo h($r['moeda'] ?: ''); ?> <?php echo numeroBr($r['total']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="cod_twin" data-valor-bruto="<?php echo h($r['cod_twin'] ?? ''); ?>"><?php echo h($r['cod_twin'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="data_twin" data-valor-bruto="<?php echo $r['data_twin'] ? h(dataBr($r['data_twin'])) : ''; ?>"><?php echo dataBr($r['data_twin']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>

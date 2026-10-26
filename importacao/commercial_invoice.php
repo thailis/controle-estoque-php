@@ -11,6 +11,7 @@
 // é digitado na mão. O Supplier é puxado da tabela "filiais" do banco do MRP
 // (mesma lista usada no Pedido de Compra: YAPP Americana / YAPP Gravataí).
 require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 function h(mixed $valor): string
 {

@@ -8,6 +8,7 @@
 // em vez de gravar "no vácuo" silenciosamente.
 
 require_once 'conexao.php'; // conexão com o PRÓPRIO banco (controle_importacao)
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 function h(mixed $valor): string
 {

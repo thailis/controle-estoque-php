@@ -8,6 +8,7 @@
 // Pedido de Compra do MRP (banco do MRP).
 
 require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 // Ajax: busca os componentes cadastrados em Processos pra um processo.
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo') {

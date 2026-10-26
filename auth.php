@@ -24,6 +24,12 @@ function exigirLogin(): void
         header('Location: login.php');
         exit;
     }
+    // Libera a sessão logo depois de conferir o login. O PHP trava a sessão
+    // enquanto a página roda — sem isso, um 2º clique (ou um AJAX, como o
+    // duplo clique de edição) fica esperando a tela anterior terminar.
+    // $_SESSION continua legível normalmente; só não grava mais nesta página
+    // (nenhuma página que chama exigirLogin() grava na sessão).
+    session_write_close();
 }
 
 function ehComprador(): bool

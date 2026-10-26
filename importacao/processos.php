@@ -1,6 +1,7 @@
 <?php
 // importacao/processos.php
 require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 function h(mixed $valor): string
 {

@@ -14,6 +14,7 @@
 // O agente de menor Total é pintado como sugestão — mas o Escolhido pode ser
 // qualquer um.
 require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 const CARGAS_COMPARATIVO = ['20´', '40 HC', '40 FR', 'AIR'];
 
