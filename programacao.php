@@ -398,7 +398,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
         exit;
     }
 
-    $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido, data FROM programacao WHERE id = ?");
+    $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido, data, planta FROM programacao WHERE id = ?");
     mysqli_stmt_bind_param($stmtBuscaItem, 'i', $idAlternar);
     mysqli_stmt_execute($stmtBuscaItem);
     $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
@@ -441,7 +441,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
             $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
             mysqli_stmt_close($stmtDesc);
 
-            $plantaRecebimento = 'Recebido';
+            $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : 'Recebido'; // planta da programação (sem planta = "Recebido")
             $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
             mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
             mysqli_stmt_execute($stmtInsEstoque);
@@ -512,7 +512,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
     $idAlternar = (int) ($_POST['id'] ?? 0);
 
     if ($idAlternar > 0) {
-        $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido FROM programacao WHERE id = ?");
+        $stmtBuscaItem = mysqli_prepare($conn, "SELECT codigo_componente, quantidade, quantidade_recebida, atendido, planta FROM programacao WHERE id = ?");
         mysqli_stmt_bind_param($stmtBuscaItem, 'i', $idAlternar);
         mysqli_stmt_execute($stmtBuscaItem);
         $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
@@ -551,7 +551,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
                     $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
                     mysqli_stmt_close($stmtDesc);
 
-                    $plantaRecebimento = 'Recebido';
+                    $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : 'Recebido'; // planta da programação (sem planta = "Recebido")
                     $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
                     mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
                     mysqli_stmt_execute($stmtInsEstoque);
@@ -666,7 +666,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
         $atendidoAtual = $marcarAtendido ? 0 : 1; // só mexe em quem está na situação oposta
 
         $stmtLinhasLote = mysqli_prepare($conn, "
-            SELECT id, codigo_componente, quantidade_recebida
+            SELECT id, codigo_componente, quantidade_recebida, planta
             FROM programacao
             WHERE (TRIM(COALESCE(processo, '')) = ? OR TRIM(COALESCE(po, '')) = ?)
               AND COALESCE(atendido, 0) = ?
@@ -695,7 +695,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
                         $descLote = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescLote))['descricao'] ?? '';
                         mysqli_stmt_close($stmtDescLote);
 
-                        $plantaLote = 'Recebido';
+                        $plantaLote = trim((string) ($l['planta'] ?? '')) !== '' ? trim((string) $l['planta']) : 'Recebido'; // planta da programação
                         $stmtInsLote = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
                         mysqli_stmt_bind_param($stmtInsLote, 'ssdsi', $codigoLote, $descLote, $qtdRecebidaLote, $plantaLote, $idLote);
                         mysqli_stmt_execute($stmtInsLote);
