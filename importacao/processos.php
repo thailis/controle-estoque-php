@@ -1112,48 +1112,80 @@ function condicaoStatusProcesso(string $status): ?string {
     }
 }
 
+// ---------- Filtros da listagem (usados na tela e no Exportar CSV) ----------
+// - Busca livre: vários termos separados por ; (ou quebra de linha),
+//   procura em processo, componente, fornecedor, descrição e PROJETO, sem
+//   diferenciar maiúscula/minúscula. Qualquer termo que bater já entra (OR).
+// - Componente: também aceita vários separados por ;
+// - Planta, Categoria e Fornecedor: sem diferenciar maiúscula/minúscula
+//   ("project" e "PROJECT" são a mesma opção).
+function termosBuscaProcessos(string $texto): array
+{
+    return array_values(array_unique(array_filter(array_map('trim', preg_split('/[;\r\n\t]+/', $texto)), fn($t) => $t !== '')));
+}
+
+function montarFiltrosProcessos(array $get): array
+{
+    $condicoes = [];
+    $params = [];
+    $tipos = '';
+
+    $busca = trim((string) ($get['busca'] ?? ''));
+    if ($busca !== '') {
+        $partes = [];
+        foreach (termosBuscaProcessos($busca) as $termo) {
+            $partes[] = "(LOWER(COALESCE(processo, '')) LIKE ? OR LOWER(COALESCE(codigo_componente, '')) LIKE ? OR LOWER(COALESCE(fornecedor, '')) LIKE ? OR LOWER(COALESCE(descricao, '')) LIKE ? OR LOWER(COALESCE(projeto, '')) LIKE ?)";
+            $like = '%' . mb_strtolower($termo, 'UTF-8') . '%';
+            array_push($params, $like, $like, $like, $like, $like);
+            $tipos .= 'sssss';
+        }
+        if ($partes) {
+            $condicoes[] = '(' . implode(' OR ', $partes) . ')';
+        }
+    }
+
+    $componente = trim((string) ($get['componente'] ?? ''));
+    if ($componente !== '') {
+        $partes = [];
+        foreach (termosBuscaProcessos($componente) as $termo) {
+            $partes[] = "LOWER(COALESCE(codigo_componente, '')) LIKE ?";
+            $params[] = '%' . mb_strtolower($termo, 'UTF-8') . '%';
+            $tipos .= 's';
+        }
+        if ($partes) {
+            $condicoes[] = '(' . implode(' OR ', $partes) . ')';
+        }
+    }
+
+    foreach (['planta', 'categoria', 'fornecedor'] as $coluna) {
+        $valor = trim((string) ($get[$coluna] ?? ''));
+        if ($valor !== '') {
+            $condicoes[] = "UPPER(TRIM(COALESCE($coluna, ''))) = ?";
+            $params[] = mb_strtoupper($valor, 'UTF-8');
+            $tipos .= 's';
+        }
+    }
+
+    $condStatus = condicaoStatusProcesso(trim((string) ($get['status'] ?? '')));
+    if ($condStatus !== null) {
+        $condicoes[] = $condStatus;
+    }
+
+    return [$condicoes, $params, $tipos];
+}
+
+// Opções únicas de um dropdown, sem repetir por maiúscula/minúscula
+function opcoesUnicasProcessos(mysqli $conn, string $coluna): array
+{
+    $opcoes = [];
+    $res = mysqli_query($conn, "SELECT UPPER(TRIM($coluna)) AS v FROM processos WHERE $coluna IS NOT NULL AND TRIM($coluna) <> '' GROUP BY UPPER(TRIM($coluna)) ORDER BY v");
+    while ($linha = mysqli_fetch_assoc($res)) { $opcoes[] = $linha['v']; }
+    return $opcoes;
+}
+
 // ---------- Exportação CSV ----------
 if (isset($_GET['exportar'])) {
-    $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-    $filtroPlantaExp = trim($_GET['planta'] ?? '');
-    $filtroComponenteExp = trim($_GET['componente'] ?? '');
-    $filtroCategoriaExp = trim($_GET['categoria'] ?? '');
-    $filtroFornecedorExp = trim($_GET['fornecedor'] ?? '');
-    $filtroStatusExp = trim($_GET['status'] ?? '');
-
-    $condicoesExp = [];
-    $paramsExp = [];
-    $tiposExp = '';
-    if ($busca !== '') {
-        $condicoesExp[] = "(processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ? OR descricao LIKE ?)";
-        $like = '%' . $busca . '%';
-        $paramsExp[] = $like; $paramsExp[] = $like; $paramsExp[] = $like; $paramsExp[] = $like;
-        $tiposExp .= 'ssss';
-    }
-    if ($filtroPlantaExp !== '') {
-        $condicoesExp[] = "planta = ?";
-        $paramsExp[] = $filtroPlantaExp;
-        $tiposExp .= 's';
-    }
-    if ($filtroComponenteExp !== '') {
-        $condicoesExp[] = "codigo_componente LIKE ?";
-        $paramsExp[] = '%' . $filtroComponenteExp . '%';
-        $tiposExp .= 's';
-    }
-    if ($filtroCategoriaExp !== '') {
-        $condicoesExp[] = "categoria = ?";
-        $paramsExp[] = $filtroCategoriaExp;
-        $tiposExp .= 's';
-    }
-    if ($filtroFornecedorExp !== '') {
-        $condicoesExp[] = "fornecedor = ?";
-        $paramsExp[] = $filtroFornecedorExp;
-        $tiposExp .= 's';
-    }
-    $condStatusExp = condicaoStatusProcesso($filtroStatusExp);
-    if ($condStatusExp !== null) {
-        $condicoesExp[] = $condStatusExp;
-    }
+    [$condicoesExp, $paramsExp, $tiposExp] = montarFiltrosProcessos($_GET);
     $where = !empty($condicoesExp) ? ('WHERE ' . implode(' AND ', $condicoesExp)) : '';
 
     $sqlExport = "SELECT * FROM processos $where ORDER BY criado_em DESC";
@@ -1199,53 +1231,11 @@ $filtroStatus = trim($_GET['status'] ?? '');
 if (condicaoStatusProcesso($filtroStatus) === null) { $filtroStatus = ''; }
 
 // Listas pros filtros em dropdown (só valores que já existem de verdade na base)
-$plantasDisponiveis = [];
-$res = mysqli_query($conn, "SELECT DISTINCT planta FROM processos WHERE planta IS NOT NULL AND TRIM(planta) <> '' ORDER BY planta");
-while ($linha = mysqli_fetch_assoc($res)) { $plantasDisponiveis[] = $linha['planta']; }
+$plantasDisponiveis = opcoesUnicasProcessos($conn, 'planta');
+$categoriasDisponiveis = opcoesUnicasProcessos($conn, 'categoria');
+$fornecedoresDisponiveis = opcoesUnicasProcessos($conn, 'fornecedor');
 
-$categoriasDisponiveis = [];
-$res = mysqli_query($conn, "SELECT DISTINCT categoria FROM processos WHERE categoria IS NOT NULL AND TRIM(categoria) <> '' ORDER BY categoria");
-while ($linha = mysqli_fetch_assoc($res)) { $categoriasDisponiveis[] = $linha['categoria']; }
-
-$fornecedoresDisponiveis = [];
-$res = mysqli_query($conn, "SELECT DISTINCT fornecedor FROM processos WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
-while ($linha = mysqli_fetch_assoc($res)) { $fornecedoresDisponiveis[] = $linha['fornecedor']; }
-
-$condicoes = [];
-$params = [];
-$tipos = '';
-if ($busca !== '') {
-    $condicoes[] = "(processo LIKE ? OR codigo_componente LIKE ? OR fornecedor LIKE ? OR descricao LIKE ?)";
-    $like = '%' . $busca . '%';
-    $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
-    $tipos .= 'ssss';
-}
-// Os 5 filtros abaixo são independentes entre si e da busca livre — combinam
-// com AND (cada um restringe mais o resultado), diferente da busca livre
-// (que usa OR entre as colunas pra achar qualquer correspondência).
-if ($filtroPlanta !== '') {
-    $condicoes[] = "planta = ?";
-    $params[] = $filtroPlanta;
-    $tipos .= 's';
-}
-if ($filtroComponente !== '') {
-    $condicoes[] = "codigo_componente LIKE ?";
-    $params[] = '%' . $filtroComponente . '%';
-    $tipos .= 's';
-}
-if ($filtroCategoria !== '') {
-    $condicoes[] = "categoria = ?";
-    $params[] = $filtroCategoria;
-    $tipos .= 's';
-}
-if ($filtroFornecedor !== '') {
-    $condicoes[] = "fornecedor = ?";
-    $params[] = $filtroFornecedor;
-    $tipos .= 's';
-}
-if ($filtroStatus !== '') {
-    $condicoes[] = condicaoStatusProcesso($filtroStatus);
-}
+[$condicoes, $params, $tipos] = montarFiltrosProcessos($_GET);
 
 $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 
@@ -1509,28 +1499,28 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         <section class="filter-panel mb-4">
             <form method="GET" class="row g-3 align-items-end">
                 <div class="col-md-4">
-                    <label class="form-label">Buscar por processo, componente, fornecedor ou descrição</label>
-                    <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>">
+                    <label class="form-label">Buscar por processo, projeto, componente, fornecedor ou descrição</label>
+                    <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Vários: separe com ; (ex.: Y26S3P0010; VWB)">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Planta</label>
                     <select name="planta" class="form-select">
                         <option value="">Todas</option>
                         <?php foreach ($plantasDisponiveis as $pl): ?>
-                            <option value="<?php echo h($pl); ?>" <?php echo $filtroPlanta === $pl ? 'selected' : ''; ?>><?php echo h($pl); ?></option>
+                            <option value="<?php echo h($pl); ?>" <?php echo mb_strtoupper($filtroPlanta, 'UTF-8') === $pl ? 'selected' : ''; ?>><?php echo h($pl); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Componente</label>
-                    <input type="text" name="componente" class="form-control" value="<?php echo h($filtroComponente); ?>" placeholder="Ex.: 11001199">
+                    <input type="text" name="componente" class="form-control" value="<?php echo h($filtroComponente); ?>" placeholder="Ex.: 11001199; 12003225">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Categoria</label>
                     <select name="categoria" class="form-select">
                         <option value="">Todas</option>
                         <?php foreach ($categoriasDisponiveis as $cat): ?>
-                            <option value="<?php echo h($cat); ?>" <?php echo $filtroCategoria === $cat ? 'selected' : ''; ?>><?php echo h($cat); ?></option>
+                            <option value="<?php echo h($cat); ?>" <?php echo mb_strtoupper($filtroCategoria, 'UTF-8') === $cat ? 'selected' : ''; ?>><?php echo h($cat); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -1539,7 +1529,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <select name="fornecedor" class="form-select">
                         <option value="">Todos</option>
                         <?php foreach ($fornecedoresDisponiveis as $forn): ?>
-                            <option value="<?php echo h($forn); ?>" <?php echo $filtroFornecedor === $forn ? 'selected' : ''; ?>><?php echo h($forn); ?></option>
+                            <option value="<?php echo h($forn); ?>" <?php echo mb_strtoupper($filtroFornecedor, 'UTF-8') === $forn ? 'selected' : ''; ?>><?php echo h($forn); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
