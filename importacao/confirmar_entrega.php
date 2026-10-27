@@ -502,36 +502,52 @@ $condicoesLista = [];
 $paramsLista = [];
 $tiposLista = '';
 
+// Uma linha por EMBARQUE (processo), não por componente — os filtros de
+// componente/fornecedor procuram dentro dos componentes daquele processo.
 if ($buscaComponente !== '') {
-    $condicoesLista[] = "p.codigo_componente LIKE ?";
-    $paramsLista[] = "%$buscaComponente%";
+    $condicoesLista[] = "EXISTS (SELECT 1 FROM processos pc WHERE pc.processo = f.processo AND LOWER(pc.codigo_componente) LIKE ?)";
+    $paramsLista[] = '%' . mb_strtolower($buscaComponente, 'UTF-8') . '%';
     $tiposLista .= 's';
 }
 if ($buscaFornecedor !== '') {
-    $condicoesLista[] = "p.fornecedor LIKE ?";
-    $paramsLista[] = "%$buscaFornecedor%";
+    $condicoesLista[] = "EXISTS (SELECT 1 FROM processos pc WHERE pc.processo = f.processo AND LOWER(pc.fornecedor) LIKE ?)";
+    $paramsLista[] = '%' . mb_strtolower($buscaFornecedor, 'UTF-8') . '%';
     $tiposLista .= 's';
 }
 if ($buscaProcesso !== '') {
-    $condicoesLista[] = "f.processo LIKE ?";
-    $paramsLista[] = "%$buscaProcesso%";
+    $condicoesLista[] = "LOWER(f.processo) LIKE ?";
+    $paramsLista[] = '%' . mb_strtolower($buscaProcesso, 'UTF-8') . '%';
     $tiposLista .= 's';
 }
 if ($filtroStatus === 'pendente') {
-    $condicoesLista[] = "f.integrado_mrp = 0 AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')";
+    $condicoesLista[] = "f.integrado_mrp = 0 AND COALESCE(p.cancelados, 0) = 0";
 } elseif ($filtroStatus === 'confirmado') {
     $condicoesLista[] = "f.integrado_mrp = 1";
 } elseif ($filtroStatus === 'cancelado') {
-    $condicoesLista[] = "LOWER(TRIM(p.status)) = 'cancelado'";
+    $condicoesLista[] = "COALESCE(p.cancelados, 0) > 0";
 }
 
 $whereLista = $condicoesLista ? ('WHERE ' . implode(' AND ', $condicoesLista)) : '';
 
 $sqlLista = "
     SELECT f.id, f.processo, f.efetiva, f.prevista, f.status, f.integrado_mrp,
-           p.po, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.status AS status_processo, p.controla_estoque
+           p.po, p.codigo_componente, p.descricao, p.quantidade, p.fornecedor, p.componentes,
+           CASE WHEN COALESCE(p.cancelados, 0) > 0 THEN 'cancelado' ELSE '' END AS status_processo,
+           CASE WHEN COALESCE(p.controla, 0) > 0 THEN 'sim' ELSE 'nao' END AS controla_estoque
     FROM follow f
-    LEFT JOIN processos p ON p.processo = f.processo
+    LEFT JOIN (
+        SELECT processo,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(po), '') ORDER BY TRIM(po) SEPARATOR ', ') AS po,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY TRIM(codigo_componente) SEPARATOR ', ') AS codigo_componente,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY TRIM(descricao) SEPARATOR ' | ') AS descricao,
+               GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedor,
+               SUM(COALESCE(quantidade, 0)) AS quantidade,
+               COUNT(DISTINCT NULLIF(TRIM(codigo_componente), '')) AS componentes,
+               SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'cancelado' THEN 1 ELSE 0 END) AS cancelados,
+               SUM(CASE WHEN LOWER(TRIM(COALESCE(controla_estoque, 'sim'))) <> 'nao' THEN 1 ELSE 0 END) AS controla
+        FROM processos
+        GROUP BY processo
+    ) p ON p.processo = f.processo
     $whereLista
     ORDER BY f.integrado_mrp ASC, f.efetiva IS NULL, f.efetiva ASC, f.prevista IS NULL, f.prevista ASC
 ";
@@ -555,9 +571,8 @@ $totalPendentesReal = 0;
 $resultContagem = mysqli_query($conn, "
     SELECT COUNT(*) AS total
     FROM follow f
-    LEFT JOIN processos p ON p.processo = f.processo
     WHERE f.integrado_mrp = 0
-      AND (p.status IS NULL OR LOWER(TRIM(p.status)) <> 'cancelado')
+      AND NOT EXISTS (SELECT 1 FROM processos pc WHERE pc.processo = f.processo AND LOWER(TRIM(pc.status)) = 'cancelado')
 ");
 if ($resultContagem) {
     $totalPendentesReal = (int) (mysqli_fetch_assoc($resultContagem)['total'] ?? 0);
@@ -744,10 +759,10 @@ if ($resultContagem) {
                             <th>Status</th>
                             <th>Processo</th>
                             <th>PO</th>
-                            <th>Componente</th>
+                            <th>Componentes</th>
                             <th>Fornecedor</th>
                             <th>Descrição</th>
-                            <th>Quantidade</th>
+                            <th title="Soma das quantidades de todos os componentes do processo">Quantidade</th>
                             <th>Efetiva</th>
                             <th>Confirmar</th>
                         </tr>
@@ -789,7 +804,12 @@ if ($resultContagem) {
                                     <td><span class="badge <?php echo $badgeClasseSituacao; ?>"><?php echo h($badgeTextoSituacao); ?></span></td>
                                     <td><span class="component-code"><?php echo h($p['processo']); ?></span></td>
                                     <td><?php echo h(trim((string) ($p['po'] ?? '')) !== '' ? $p['po'] : '—'); ?></td>
-                                    <td><?php echo h($p['codigo_componente'] ?? '—'); ?></td>
+                                    <td title="<?php echo h($p['codigo_componente'] ?? ''); ?>"><?php
+                                        $qtdComp = (int) ($p['componentes'] ?? 0);
+                                        echo $qtdComp > 1
+                                            ? '<strong>' . $qtdComp . ' itens</strong><small class="d-block text-muted text-truncate">' . h($p['codigo_componente'] ?? '') . '</small>'
+                                            : h($p['codigo_componente'] ?? '—');
+                                    ?></td>
                                     <td><?php echo h($p['fornecedor'] ?? '—'); ?></td>
                                     <td class="description-cell" title="<?php echo h($p['descricao'] ?? ''); ?>"><?php echo h($p['descricao'] ?? '—'); ?></td>
                                     <td><?php echo $p['quantidade'] !== null ? number_format((float) $p['quantidade'], 0, ',', '.') : '—'; ?></td>
