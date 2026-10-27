@@ -95,6 +95,8 @@ try {
             MAX(COALESCE(NULLIF(TRIM(b.descricao), ''), 'Sem descrição')) AS descricao,
             GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.fornecedor), '') ORDER BY TRIM(b.fornecedor) SEPARATOR ', ') AS fornecedores,
             GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.projeto), '') ORDER BY TRIM(b.projeto) SEPARATOR ', ') AS projetos,
+            COUNT(DISTINCT NULLIF(TRIM(b.planta), '')) AS qtd_plantas,
+            MAX(NULLIF(TRIM(b.planta), '')) AS planta,
             COALESCE(MAX(est.estoque_atual), 0) AS estoque_atual,
             MAX(p.moq) AS moq,
             MAX(p.frozen_zone_dias) AS frozen_zone_dias,
@@ -274,6 +276,9 @@ try {
                     'descricao' => $comp['descricao'],
                     'fornecedores' => $comp['fornecedores'],
                     'projetos' => $comp['projetos'],
+                    // Planta da BOM só quando o componente é de UMA planta só (com mais
+                    // de uma, fica em branco pra você escolher antes de importar).
+                    'planta' => (int) $comp['qtd_plantas'] === 1 ? (string) $comp['planta'] : '',
                     'estoque_atual' => (float) $comp['estoque_atual'],
                     'antigos' => $antigosPorComponente[$codigo] ?? [],
                     'status' => $p['status'],
@@ -309,39 +314,32 @@ try {
         header('Content-Disposition: attachment; filename="planejamento-compras-' . date('Y-m-d-His') . '.csv"');
         echo "\xEF\xBB\xBF";
         $saida = fopen('php://output', 'w');
-        // Cabeçalho em inglês e nesta ordem (padrão usado pra mandar ao time/fornecedor):
-        // Sap | Description | Supplier | Project name | Parcel | Current Stock |
-        // Suggested QTY | Setup (%) | Original date | Suggested date | Status
-        fputcsv($saida, ['Sap', 'Description', 'Supplier', 'Project name', 'Parcel', 'Current Stock', 'Suggested QTY', 'Setup (%)', 'Original date', 'Suggested date', 'Status'], ';', '"', '');
-        // Monta a linha "na mão" (em vez de fputcsv) só pra a Parcela sair como
-        // ="1/2" SEM aspas em volta — assim o Excel mostra 1/2 como texto, em vez de
-        // converter pra data (01/fev). Os outros campos são escapados normalmente.
-        $campoCsv = function ($valor): string {
-            $valor = (string) $valor;
-            if ($valor === '' || strpbrk($valor, ";\"\r\n") === false) {
-                return $valor;
-            }
-            return '"' . str_replace('"', '""', $valor) . '"';
-        };
+        // Cabeçalho pensado pra REIMPORTAR direto na Programação (Importar CSV),
+        // sem editar nada: "Componente", "Data" e "Quantidade" são exatamente os
+        // nomes que a importação da Programação reconhece. Planta vem da BOM (se o
+        // componente for de uma planta só). PO e Processo vão em
+        // branco — preencha se já souber (a importação aceita as duas colunas).
+        // As demais colunas são só informativas e a importação ignora.
+        // Só pode haver UMA coluna com "Quantidade" no nome (a importação pareia
+        // a quantidade com a coluna "Data").
+        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Current Stock', 'Quantidade', 'Setup (%)', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
-            $parcelaCsv = '="' . $r['parcela'] . '/' . $r['total_parcelas'] . '"';
-            $linhaCsv = [
+            fputcsv($saida, [
                 $r['codigo_componente'],
                 $r['descricao'],
                 $r['fornecedores'],
                 $r['projetos'],
-                '@@PARCELA@@',
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
                 // Original date: só preenchida quando a data foi recalculada (a original já tinha passado)
                 ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
                 $r['data']->format('d/m/Y'),
+                '',
+                '',
+                $r['planta'],
                 $r['status'] === 'urgente' ? 'Urgente' : 'Planejar',
-            ];
-            $partes = array_map($campoCsv, $linhaCsv);
-            $partes[4] = $parcelaCsv;
-            fwrite($saida, implode(';', $partes) . "\r\n");
+            ], ';', '"', '');
         }
         fclose($saida);
         exit;

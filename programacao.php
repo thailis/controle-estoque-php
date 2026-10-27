@@ -201,6 +201,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 if ($indiceMoeda === false) {
                     $indiceMoeda = null;
                 }
+                // Coluna "planta" opcional — onde o material vai ser recebido
+                $indicePlanta = array_search('planta', $cabecalho, true);
+                if ($indicePlanta === false) {
+                    $indicePlanta = null;
+                }
 
                 if ($indiceComponente === null) {
                     $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'componente' ou 'codigo_componente' no cabeçalho.";
@@ -210,7 +215,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 // "Substituir tudo" (apagava a programação inteira) foi removido de propósito
                 // — mesmo que alguém force modo=substituir, nada é apagado aqui.
 
-                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmtInsert = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                // Planta só é atualizada quando o CSV traz o valor (vazio não apaga a gravada)
+                $stmtUpdatePlanta = mysqli_prepare($conn, "UPDATE programacao SET planta = ? WHERE id = ?");
                 // Chave de "já existe": Componente + Data + PO + Processo (vazio = vazio).
                 // Mesmo componente e data, mas com outro PO ou processo, é outro pedido → entra.
                 $stmtVerifica = mysqli_prepare($conn, "
@@ -255,6 +262,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // Sem moeda na planilha -> BRL (padrão). A confirmação de entrega no
                     // site de Importação substitui depois pela moeda do processo.
                     $moedaLinha = $moedaLinha !== '' ? $moedaLinha : 'BRL';
+                    $plantaLinha = $indicePlanta !== null ? trim($linha[$indicePlanta] ?? '') : '';
+                    $plantaLinha = $plantaLinha !== '' ? $plantaLinha : null;
 
                     // Uma linha da planilha pode gerar várias entradas de programação
                     // (Programação 1, Programação 2, Programação 3...).
@@ -323,6 +332,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                                 $sucessoUpdate = mysqli_stmt_execute($stmtUpdate);
                                 $erroUpdate = mysqli_stmt_error($stmtUpdate);
                             }
+                            if ($sucessoUpdate && $plantaLinha !== null) {
+                                mysqli_stmt_bind_param($stmtUpdatePlanta, "si", $plantaLinha, $idExistente);
+                                mysqli_stmt_execute($stmtUpdatePlanta);
+                            }
                             if ($sucessoUpdate) {
                                 $atualizados++;
                             } else {
@@ -332,7 +345,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             continue;
                         }
 
-                        mysqli_stmt_bind_param($stmtInsert, "ssssdds", $codigoComponente, $poLinha, $processoLinha, $data, $quantidade, $preco, $moedaLinha);
+                        mysqli_stmt_bind_param($stmtInsert, "ssssddss", $codigoComponente, $poLinha, $processoLinha, $data, $quantidade, $preco, $moedaLinha, $plantaLinha);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
                         } else {
@@ -764,6 +777,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $sincSemData = [];
     $idsCriadas = [];
     $idsCompletadas = [];
+    $idsAtualizadas = [];
+    $sincSemPo = [];
     $flashSinc = 'sinc_ok';
     try {
         $connImp = conectarImportacaoProgramacao();
@@ -782,7 +797,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
 
         $resProc = mysqli_query($connImp, "
             SELECT TRIM(processo) AS processo, TRIM(COALESCE(po, '')) AS po, TRIM(codigo_componente) AS componente,
-                   SUM(COALESCE(quantidade, 0)) AS quantidade, MAX(preco) AS preco, MAX(NULLIF(TRIM(moeda), '')) AS moeda
+                   SUM(COALESCE(quantidade, 0)) AS quantidade, MAX(preco) AS preco, MAX(NULLIF(TRIM(moeda), '')) AS moeda,
+                   MAX(NULLIF(TRIM(planta), '')) AS planta
             FROM processos
             WHERE processo IS NOT NULL AND TRIM(processo) <> ''
               AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
@@ -797,7 +813,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         mysqli_close($connImp);
 
         $stmtBusca = mysqli_prepare($conn, "
-            SELECT id, TRIM(COALESCE(processo, '')) AS processo, TRIM(COALESCE(po, '')) AS po
+            SELECT id, TRIM(COALESCE(processo, '')) AS processo, TRIM(COALESCE(po, '')) AS po, COALESCE(atendido, 0) AS atendido
             FROM programacao
             WHERE TRIM(codigo_componente) = ?
               AND (
@@ -809,27 +825,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
             LIMIT 1
         ");
         $stmtCompleta = mysqli_prepare($conn, "UPDATE programacao SET processo = ?, po = COALESCE(NULLIF(?, ''), po) WHERE id = ?");
-        $stmtInsere = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        // Linha que já existe: NÃO substitui (não cria outra nem mexe na Data) —
+        // só atualiza com os dados do processo: quantidade, preço, moeda e planta.
+        // Linha já Atendida não é tocada (o estoque já foi lançado com ela).
+        $stmtAtualizaSinc = mysqli_prepare($conn, "
+            UPDATE programacao
+            SET quantidade = ?, preco = COALESCE(?, preco), moeda = COALESCE(?, moeda), planta = COALESCE(?, planta)
+            WHERE id = ? AND COALESCE(atendido, 0) = 0
+        ");
+        // Se o mesmo componente + processo + PO estiver dividido em VÁRIAS linhas
+        // (ex.: 1.076 + 924), a quantidade NÃO é trocada (senão a 1ª viraria o total
+        // e somaria em dobro) — aí só preço, moeda e planta são atualizados em todas.
+        $stmtContaIguais = mysqli_prepare($conn, "
+            SELECT COUNT(*) AS n FROM programacao
+            WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?
+        ");
+        $stmtAtualizaSemQtd = mysqli_prepare($conn, "
+            UPDATE programacao
+            SET preco = COALESCE(?, preco), moeda = COALESCE(?, moeda), planta = COALESCE(?, planta)
+            WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?
+              AND COALESCE(atendido, 0) = 0
+        ");
+        $stmtInsere = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 
         mysqli_begin_transaction($conn);
         foreach ($linhasProc as $l) {
             $proc = (string) $l['processo'];
             $po = (string) $l['po'];
             $comp = (string) $l['componente'];
+            $qtd = (float) $l['quantidade'];
+            $preco = $l['preco'] !== null ? (float) $l['preco'] : null;
+            $moedaSinc = $l['moeda'] !== null ? strtoupper((string) $l['moeda']) : null;
+            $plantaSinc = $l['planta'] !== null ? (string) $l['planta'] : null;
+
+            // PO é obrigatório pra sincronizar (o processo já vem sempre preenchido)
+            if ($po === '') {
+                $sincSemPo[$proc] = true;
+                continue;
+            }
 
             mysqli_stmt_bind_param($stmtBusca, 'ssssssss', $comp, $proc, $po, $proc, $po, $po, $proc, $po);
             mysqli_stmt_execute($stmtBusca);
             $existente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBusca));
 
             if ($existente) {
-                if ($existente['processo'] === $proc && $existente['po'] === $po) {
-                    $sincExistentes++;
-                } else {
-                    $idExistente = (int) $existente['id'];
+                $idExistente = (int) $existente['id'];
+                if ($existente['processo'] !== $proc || $existente['po'] !== $po) {
                     mysqli_stmt_bind_param($stmtCompleta, 'ssi', $proc, $po, $idExistente);
                     mysqli_stmt_execute($stmtCompleta);
                     $sincCompletadas++;
                     $idsCompletadas[] = $idExistente;
+                }
+                mysqli_stmt_bind_param($stmtContaIguais, 'sss', $comp, $proc, $po);
+                mysqli_stmt_execute($stmtContaIguais);
+                $qtdLinhasIguais = (int) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtContaIguais))['n'] ?? 1);
+                if ($qtdLinhasIguais > 1) {
+                    mysqli_stmt_bind_param($stmtAtualizaSemQtd, 'dsssss', $preco, $moedaSinc, $plantaSinc, $comp, $proc, $po);
+                    mysqli_stmt_execute($stmtAtualizaSemQtd);
+                    $sincExistentes++;
+                    $idsAtualizadas[] = $idExistente;
+                } elseif ((int) $existente['atendido'] === 0) {
+                    mysqli_stmt_bind_param($stmtAtualizaSinc, 'ddssi', $qtd, $preco, $moedaSinc, $plantaSinc, $idExistente);
+                    mysqli_stmt_execute($stmtAtualizaSinc);
+                    $sincExistentes++;
+                    $idsAtualizadas[] = $idExistente;
                 }
                 continue;
             }
@@ -839,11 +898,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
                 $sincSemData[$proc] = true;
                 continue;
             }
-            $poGravar = $po !== '' ? $po : null;
-            $qtd = (float) $l['quantidade'];
-            $preco = $l['preco'] !== null ? (float) $l['preco'] : null;
-            $moeda = $l['moeda'] !== null ? strtoupper((string) $l['moeda']) : 'BRL';
-            mysqli_stmt_bind_param($stmtInsere, 'ssssdds', $comp, $poGravar, $proc, $dataEta, $qtd, $preco, $moeda);
+            $moeda = $moedaSinc ?? 'BRL';
+            mysqli_stmt_bind_param($stmtInsere, 'ssssddss', $comp, $po, $proc, $dataEta, $qtd, $preco, $moeda, $plantaSinc);
             mysqli_stmt_execute($stmtInsere);
             $sincCriadas++;
             $idsCriadas[] = (int) mysqli_stmt_insert_id($stmtInsere);
@@ -851,6 +907,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         mysqli_commit($conn);
         mysqli_stmt_close($stmtBusca);
         mysqli_stmt_close($stmtCompleta);
+        mysqli_stmt_close($stmtAtualizaSinc);
+        mysqli_stmt_close($stmtContaIguais);
+        mysqli_stmt_close($stmtAtualizaSemQtd);
         mysqli_stmt_close($stmtInsere);
     } catch (Throwable $erroSinc) {
         try { mysqli_rollback($conn); } catch (Throwable $e) { /* nada a desfazer */ }
@@ -867,6 +926,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         // ids das linhas criadas/completadas, pros links "ver quais" da mensagem
         'sinc_ids_c'   => implode(',', array_slice($idsCriadas, 0, 400)),
         'sinc_ids_u'   => implode(',', array_slice($idsCompletadas, 0, 400)),
+        'sinc_ids_a'   => implode(',', array_slice($idsAtualizadas, 0, 400)),
+        'sinc_sempo'   => implode(', ', array_slice(array_keys($sincSemPo), 0, 30)),
     ]));
     exit;
 }
@@ -888,11 +949,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $precoManual = $precoManualBruto !== '' ? parseQuantidade($precoManualBruto) : null;
     $moedaManual = strtoupper(trim($_POST['moeda_manual'] ?? ''));
     $moedaManual = $moedaManual !== '' ? $moedaManual : 'BRL'; // padrão
+    $plantaManual = trim($_POST['planta_manual'] ?? '');
+    $plantaManual = $plantaManual !== '' ? $plantaManual : null;
 
     $flash = 'erro_dados';
     if ($componenteManual !== '' && $dataManual !== null && $quantidadeManual !== null) {
-        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        mysqli_stmt_bind_param($stmtInsManual, "ssssdds", $componenteManual, $poManual, $processoManual, $dataManual, $quantidadeManual, $precoManual, $moedaManual);
+        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        mysqli_stmt_bind_param($stmtInsManual, "ssssddss", $componenteManual, $poManual, $processoManual, $dataManual, $quantidadeManual, $precoManual, $moedaManual, $plantaManual);
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
         $flash = 'inserido';
@@ -926,7 +989,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    $camposAceitos = ['data', 'quantidade', 'po', 'processo', 'preco', 'moeda', 'data_recebida', 'quantidade_recebida'];
+    $camposAceitos = ['data', 'quantidade', 'po', 'processo', 'preco', 'moeda', 'data_recebida', 'quantidade_recebida', 'planta'];
     if ($id <= 0 || !in_array($campo, $camposAceitos, true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
@@ -958,6 +1021,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
         echo json_encode(['ok' => true, 'exibido' => $poEditado ?? '']);
+        exit;
+    }
+
+    if ($campo === 'planta') {
+        // Onde o material vai ser recebido. Não afeta estoque: editável sempre.
+        $plantaEditada = $valor !== '' ? $valor : null;
+        $stmt = mysqli_prepare($conn, "UPDATE programacao SET planta = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $plantaEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $plantaEditada ?? '']);
         exit;
     }
 
@@ -1186,15 +1260,21 @@ $flashMap = [
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
     'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
     'sinc_ok'       => [
-        trim((string) ($_GET['sinc_semdata'] ?? '')) !== '' ? 'warning' : 'success',
+        (trim((string) ($_GET['sinc_semdata'] ?? '')) !== '' || trim((string) ($_GET['sinc_sempo'] ?? '')) !== '') ? 'warning' : 'success',
         '🔄 Sincronização com os Processos: ' . (int) ($_GET['sinc_criadas'] ?? 0) . ' linha(s) criada(s), '
             . (int) ($_GET['sinc_compl'] ?? 0) . ' completada(s) com processo/PO, '
-            . (int) ($_GET['sinc_exist'] ?? 0) . ' já existiam (não duplicadas).'
+            . (int) ($_GET['sinc_exist'] ?? 0) . ' já existiam e foram atualizadas (quantidade, preço, moeda e planta — sem duplicar).'
             . (trim((string) ($_GET['sinc_ids_c'] ?? '')) !== ''
                 ? ' <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_c']), ENT_QUOTES, 'UTF-8') . '">Ver as criadas</a>'
                 : '')
             . (trim((string) ($_GET['sinc_ids_u'] ?? '')) !== ''
                 ? ' • <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_u']), ENT_QUOTES, 'UTF-8') . '">Ver as completadas</a>'
+                : '')
+            . (trim((string) ($_GET['sinc_ids_a'] ?? '')) !== ''
+                ? ' • <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_a']), ENT_QUOTES, 'UTF-8') . '">Ver as atualizadas</a>'
+                : '')
+            . (trim((string) ($_GET['sinc_sempo'] ?? '')) !== ''
+                ? '<br>⚠️ Ficaram de fora por não ter PO no processo: <strong>' . htmlspecialchars((string) $_GET['sinc_sempo'], ENT_QUOTES, 'UTF-8') . '</strong> — preencha o PO em Processos e sincronize de novo.'
                 : '')
             . (trim((string) ($_GET['sinc_semdata'] ?? '')) !== ''
                 ? '<br>⚠️ Ficaram de fora por não ter ETA prevista no Follow: <strong>' . htmlspecialchars((string) $_GET['sinc_semdata'], ENT_QUOTES, 'UTF-8') . '</strong> — preencha a data prevista no Follow e sincronize de novo.'
@@ -1324,7 +1404,7 @@ $somaProgramacao = (float) (mysqli_fetch_assoc($resultSoma)['soma'] ?? 0);
 
 // Exportação CSV: traz TODOS os registros filtrados
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT p.codigo_componente, p.po, p.processo, p.data, p.quantidade, p.importado, p.atendido,
+    $sqlExport = "SELECT p.codigo_componente, p.po, p.processo, p.planta, p.data, p.quantidade, p.importado, p.atendido,
                          p.preco, p.moeda, p.data_recebida, p.quantidade_recebida, bg.pn
                   FROM programacao p
                   LEFT JOIN (
@@ -1346,7 +1426,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'PN', 'PO', 'Processo', 'Preço', 'Moeda', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'PN', 'PO', 'Processo', 'Planta', 'Preço', 'Moeda', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
         $dataRecebidaExportada = $linha['data_recebida'] ? (new DateTimeImmutable($linha['data_recebida']))->format('d/m/Y') : '';
@@ -1372,7 +1452,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         fputcsv(
             $saida,
             [
-                $linha['codigo_componente'], $linha['pn'] ?? '', $linha['po'] ?? '', $linha['processo'] ?? '', $precoExportado, $linha['moeda'] ?? '', $data,
+                $linha['codigo_componente'], $linha['pn'] ?? '', $linha['po'] ?? '', $linha['processo'] ?? '', $linha['planta'] ?? '', $precoExportado, $linha['moeda'] ?? '', $data,
                 $quantidadeExportada, $importadoExportado, $totalPedidoExportado, $dataRecebidaExportada,
                 $quantidadeRecebidaExportada, $saldoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
             ],
@@ -1385,7 +1465,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.data, p.quantidade, p.importado, p.atendido,
+$sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.planta, p.data, p.quantidade, p.importado, p.atendido,
                p.preco, p.moeda, p.data_recebida, p.quantidade_recebida,
                bg.descricao, bg.fornecedores, bg.pn
         FROM programacao p
@@ -1602,6 +1682,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <input type="text" name="processo_manual" class="form-control form-control-sm" placeholder="Opcional (ex.: Y26A3P0011)">
                 </div>
                 <div class="col-auto">
+                    <label class="form-label small mb-1">Planta</label>
+                    <input type="text" name="planta_manual" class="form-control form-control-sm" placeholder="Ex.: 2401" style="width: 100px;">
+                </div>
+                <div class="col-auto">
                     <label class="form-label small mb-1">Data</label>
                     <input type="text" name="data_manual" class="form-control form-control-sm" placeholder="dd/mm/aaaa" required>
                 </div>
@@ -1626,11 +1710,11 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <div class="card p-3 mb-4">
             <div class="d-flex flex-wrap align-items-center gap-3">
-                <form method="POST" class="m-0" onsubmit="return confirm('Sincronizar com os Processos em aberto (Estoque = Sim)? Linhas que já existem (mesmo componente + processo + PO) não são duplicadas.');">
+                <form method="POST" class="m-0" onsubmit="return confirm('Sincronizar com os Processos em aberto (Estoque = Sim)? Linhas que já existem (mesmo componente + processo + PO) não são duplicadas — só atualizadas.');">
                     <input type="hidden" name="acao" value="sincronizar_processos">
                     <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com Processos</button>
                 </form>
-                <small class="text-muted">Traz da Importação os processos <strong>em aberto</strong> com <strong>Estoque = Sim</strong>. Mesmo componente + processo + PO já na Programação = não duplica. Componente em outro processo/PO = cria linha nova (quantidade, preço e moeda do processo; data = ETA prevista no Follow).</small>
+                <small class="text-muted">Traz da Importação os processos <strong>em aberto</strong> com <strong>Estoque = Sim</strong>. Precisa ter <strong>Processo e PO</strong>. Mesmo componente + processo + PO já na Programação = <strong>não duplica, só atualiza</strong> quantidade, preço, moeda e planta (linha Atendida não muda). Componente em outro processo/PO = cria linha nova (data = ETA prevista no Follow).</small>
             </div>
         </div>
 
@@ -1709,6 +1793,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Situação</th>
                             <th>PO</th>
                             <th title="Processo do site de Importação (ex.: Y26A3P0011)">Processo</th>
+                            <th title="Onde o material vai ser recebido">Planta</th>
                             <th>Componente</th>
                             <th>PN</th>
                             <th>Descrição</th>
@@ -1727,7 +1812,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="17" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="18" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1770,6 +1855,11 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                         <?php endif; ?>
                                     ><?php echo h($row['processo'] ?? ''); ?></td>
+                                    <td class="celula-editavel"
+                                        data-id="<?php echo $idLinha; ?>" data-campo="planta"
+                                        data-valor-bruto="<?php echo h($row['planta'] ?? ''); ?>"
+                                        title="Duplo clique para editar"
+                                    ><?php echo h($row['planta'] ?? ''); ?></td>
                                     <td><strong><?php echo h($row['codigo_componente'] ?? ''); ?></strong></td>
                                     <td class="text-muted" title="PN cadastrado na BOM para este componente"><?php echo h($row['pn'] ?? ''); ?></td>
                                     <td title="<?php echo h($row['descricao'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['descricao'] ?? ''); ?></span></td>
