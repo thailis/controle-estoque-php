@@ -27,3 +27,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !ehComprador()) {
 
 // Mesma otimização do MRP: libera a sessão pra outros cliques não ficarem na fila.
 session_write_close();
+
+// MRP e Importação agora ficam no MESMO cluster (Oregon). As telas da Importação
+// que leem/gravam no MRP (Confirmar entrega, Processos, Commercial Invoice,
+// Packing List) usam as variáveis MRP_DB_*, que no Render ainda apontavam pro
+// cluster antigo. Aqui elas passam a usar as mesmas credenciais do MRP (DB_*),
+// sem precisar criar nem mudar nada no Render.
+foreach (['HOST', 'PORT', 'NAME', 'USER', 'PASSWORD', 'SSL_CA'] as $sufixoDb) {
+    $valorDb = getenv('DB_' . $sufixoDb);
+    if ($valorDb !== false && $valorDb !== '') {
+        putenv('MRP_DB_' . $sufixoDb . '=' . $valorDb);
+    }
+}
