@@ -1587,7 +1587,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>PO</th>
                             <th>Modal</th>
                             <th>Projeto</th>
-                            <th>Material</th>
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
@@ -1605,7 +1604,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="23" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="22" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -1665,7 +1664,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="po" data-valor-bruto="<?php echo h($r['po'] ?? ''); ?>"><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="modal" data-valor-bruto="<?php echo h($r['modal'] ?? ''); ?>"><?php echo h($r['modal'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="projeto" data-valor-bruto="<?php echo h($r['projeto'] ?? ''); ?>"><?php echo h($r['projeto'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="material" data-valor-bruto="<?php echo h($r['material'] ?? ''); ?>"><?php echo h($r['material'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="codigo_componente" data-valor-bruto="<?php echo h($r['codigo_componente'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
                                     <td class="celula-editavel description-cell" data-id="<?php echo $id; ?>" data-campo="descricao" data-valor-bruto="<?php echo h($r['descricao'] ?? ''); ?>" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
                                     <td class="celula-editavel col-quantidade" data-id="<?php echo $id; ?>" data-campo="quantidade" data-valor-bruto="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>"><?php echo numeroBr($r['quantidade'], 0); ?></td>
