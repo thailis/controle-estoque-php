@@ -1435,6 +1435,8 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
                 <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
                 <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
+                <a class="btn btn-outline-light btn-sm" href="release.php">🚚 Release</a>
+                <a class="btn btn-outline-light btn-sm" href="parametros_importacao.php">⚙️ Parâmetros</a>
             </nav>
         </div>
     </header>
@@ -1560,10 +1562,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <div class="col-md-2">
                         <label class="form-label">Quantidade</label>
                         <input type="text" name="quantidade_manual" id="quantidade_manual" class="form-control" oninput="calcularTotalProcesso()">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">HS Code</label>
-                        <input type="text" name="hscode_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">NCM</label>
@@ -1769,7 +1767,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Componente</th>
                             <th>Descrição</th>
                             <th>Quantidade</th>
-                            <th>HS Code</th>
                             <th>NCM</th>
                             <th>Fornecedor</th>
                             <th>Preço</th>
@@ -1783,7 +1780,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="22" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="21" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -1846,7 +1843,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="codigo_componente" data-valor-bruto="<?php echo h($r['codigo_componente'] ?? ''); ?>"><?php echo h($r['codigo_componente'] ?: '—'); ?></td>
                                     <td class="celula-editavel description-cell" data-id="<?php echo $id; ?>" data-campo="descricao" data-valor-bruto="<?php echo h($r['descricao'] ?? ''); ?>" title="<?php echo h($r['descricao'] ?? ''); ?>"><?php echo h($r['descricao'] ?: '—'); ?></td>
                                     <td class="celula-editavel col-quantidade" data-id="<?php echo $id; ?>" data-campo="quantidade" data-valor-bruto="<?php echo $r['quantidade'] !== null ? numeroBr($r['quantidade'], 0) : ''; ?>"><?php echo numeroBr($r['quantidade'], 0); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="hscode" data-valor-bruto="<?php echo h($r['hscode'] ?? ''); ?>"><?php echo h($r['hscode'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="ncm" data-valor-bruto="<?php echo h($r['ncm'] ?? ''); ?>"><?php echo h($r['ncm'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="fornecedor" data-valor-bruto="<?php echo h($r['fornecedor'] ?? ''); ?>"><?php echo h($r['fornecedor'] ?: '—'); ?></td>
                                     <td class="celula-editavel col-preco" data-id="<?php echo $id; ?>" data-campo="preco" data-valor-bruto="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>"><?php echo numeroBr($r['preco']); ?></td>
