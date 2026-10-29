@@ -201,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo', 'substitui'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo', 'substitui', 'ncm'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -762,14 +762,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     if ($componenteNovo !== null && !$invalido) {
         $stmtNovo = mysqli_prepare($conn, "
             INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao,
-                                 consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, ncm)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $valoresNovo = [
             $txt('m_planta'), $txt('m_projeto'), $txt('m_material'), $txt('m_tipo'), $txt('m_fornecedor'),
             $componenteNovo, $txt('m_pn'), $txt('m_modelo'), $txt('m_descricao'),
             $consumoNovo, $txt('m_um'), $netNovo, $ipiNovo, $pisNovo, $cofinsNovo, $icmsNovo,
-            $moedaNovo, $mrpNovo, $planNovo,
+            $moedaNovo, $mrpNovo, $planNovo, $txt('m_ncm'),
         ];
         mysqli_stmt_bind_param($stmtNovo, str_repeat('s', count($valoresNovo)), ...$valoresNovo);
         try {
@@ -837,7 +837,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, modelo, mrp, planejamento) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, modelo, mrp, planejamento, ncm) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -913,6 +913,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // equivalência material -> modelo, ou por duplo clique).
                     $modelo = trim((string) ($pegar('modelo') ?? ''));
                     $modelo = $modelo !== '' ? $modelo : null;
+                    // NCM opcional no CSV
+                    $ncm = trim((string) ($pegar('ncm') ?? ''));
+                    $ncm = $ncm !== '' ? $ncm : null;
                     $mrp = $pegar('mrp');
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
@@ -930,7 +933,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $planejamento = 'S';
                     }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $modelo, $mrp, $planejamento];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $modelo, $mrp, $planejamento, $ncm];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -1048,6 +1051,24 @@ if ($resSugestoes) {
         $dadosPorMaterial[$l['material']] = ['planta' => $l['planta'] ?? '', 'projeto' => $l['projeto'] ?? '', 'tipo' => $l['tipo'] ?? '', 'modelo' => $l['modelo'] ?? ''];
     }
 }
+// Componente -> descrição (prefere linhas MRP ≠ N) e NCM já cadastrados, pra
+// sugerir na inclusão manual quando o mesmo componente já existir na BOM.
+$dadosPorComponente = [];
+try {
+    $resComp = mysqli_query($conn, "
+        SELECT TRIM(codigo_componente) AS codigo,
+               COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), ''))) AS descricao,
+               MAX(NULLIF(TRIM(ncm), '')) AS ncm
+        FROM bomnova
+        WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+        GROUP BY TRIM(codigo_componente)
+    ");
+    while ($resComp && ($l = mysqli_fetch_assoc($resComp))) {
+        $dadosPorComponente[$l['codigo']] = ['descricao' => $l['descricao'] ?? '', 'ncm' => $l['ncm'] ?? ''];
+    }
+} catch (Throwable $e) {
+    error_log('BOM: sugestões de componente indisponíveis: ' . $e->getMessage());
+}
 foreach ([['planta', 'plantasDisponiveis'], ['tipo', 'tiposDisponiveis'], ['um', 'unidadesDisponiveis']] as [$col, $var]) {
     $res = mysqli_query($conn, "SELECT DISTINCT TRIM($col) AS v FROM bomnova WHERE $col IS NOT NULL AND TRIM($col) <> '' ORDER BY v");
     if ($res) {
@@ -1095,7 +1116,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($temFiltro) {
@@ -1111,7 +1132,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -1120,7 +1141,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         );
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
-            $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['modelo'] ?? '', $linhaExport['descricao'],
+            $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['modelo'] ?? '', $linhaExport['descricao'], $linhaExport['ncm'] ?? '',
             $linhaExport['consumo'], $linhaExport['um'],
             formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
@@ -1144,7 +1165,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
+$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -1302,9 +1323,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <div class="col-6 col-md-2"><label class="form-label small mb-1">Modelo</label><input type="text" name="m_modelo" id="m_modelo" class="form-control form-control-sm"></div>
                     <div class="col-6 col-md-2"><label class="form-label small mb-1">Fornecedor</label><input type="text" name="m_fornecedor" list="lista_bom_fornecedores" class="form-control form-control-sm" autocomplete="off"></div>
 
-                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Componente *</label><input type="text" name="m_codigo_componente" class="form-control form-control-sm" required></div>
+                    <div class="col-6 col-md-2"><label class="form-label small mb-1">Componente *</label><input type="text" name="m_codigo_componente" id="m_codigo_componente" list="lista_bom_componentes" class="form-control form-control-sm" autocomplete="off" required></div>
                     <div class="col-6 col-md-2"><label class="form-label small mb-1">PN</label><input type="text" name="m_pn" class="form-control form-control-sm"></div>
-                    <div class="col-12 col-md-4"><label class="form-label small mb-1">Descrição</label><input type="text" name="m_descricao" class="form-control form-control-sm"></div>
+                    <div class="col-12 col-md-3"><label class="form-label small mb-1">Descrição</label><input type="text" name="m_descricao" id="m_descricao" class="form-control form-control-sm"></div>
+                    <div class="col-6 col-md-1"><label class="form-label small mb-1">NCM</label><input type="text" name="m_ncm" id="m_ncm" class="form-control form-control-sm"></div>
                     <div class="col-4 col-md-1"><label class="form-label small mb-1">Consumo</label><input type="text" name="m_consumo" class="form-control form-control-sm text-end" placeholder="1"></div>
                     <div class="col-4 col-md-1"><label class="form-label small mb-1">U.M.</label><input type="text" name="m_um" list="lista_bom_unidades" class="form-control form-control-sm" placeholder="PC"></div>
                     <div class="col-4 col-md-2"><label class="form-label small mb-1">Net Price</label><input type="text" name="m_net_price" class="form-control form-control-sm text-end" placeholder="0,0000"></div>
@@ -1318,7 +1340,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <div class="col-4 col-md-1"><label class="form-label small mb-1">Plan</label><select name="m_planejamento" id="m_planejamento" class="form-select form-select-sm"><option value="S">S</option><option value="N">N</option></select></div>
                     <div class="col-12 col-md-2"><button type="submit" class="btn btn-primary btn-sm w-100">Incluir na BOM</button></div>
                 </form>
-                <small class="text-muted d-block mt-2">Só o Componente é obrigatório. Ao escolher um Material já existente, Planta, Projeto, Tipo e Modelo são sugeridos (dá pra trocar). Moeda vazia = BRL; PIS/COFINS vazios seguem o padrão da tela. MRP = N força Plan = N.</small>
+                <small class="text-muted d-block mt-2">Só o Componente é obrigatório. Ao escolher um Material já existente, Planta, Projeto, Tipo e Modelo são sugeridos; ao digitar um Componente que já existe na BOM, Descrição e NCM são sugeridos (dá pra trocar). Moeda vazia = BRL; PIS/COFINS vazios seguem o padrão da tela. MRP = N força Plan = N.</small>
+                <datalist id="lista_bom_componentes"><?php foreach (array_keys($dadosPorComponente) as $v): ?><option value="<?php echo htmlspecialchars((string) $v); ?>"><?php endforeach; ?></datalist>
                 <datalist id="lista_bom_materiais"><?php foreach (array_keys($dadosPorMaterial) as $v): ?><option value="<?php echo htmlspecialchars((string) $v); ?>"><?php endforeach; ?></datalist>
                 <datalist id="lista_bom_plantas"><?php foreach ($plantasDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
                 <datalist id="lista_bom_projetos"><?php foreach ($projetosDisponiveis as $v): ?><option value="<?php echo htmlspecialchars($v); ?>"><?php endforeach; ?></datalist>
@@ -1338,6 +1361,19 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 if (campo && campo.value.trim() === '' && d[chave]) campo.value = d[chave];
                             });
                         });
+                        // Componente que já existe na BOM: sugere Descrição e NCM (só nos campos vazios)
+                        const dadosComp = <?php echo json_encode($dadosPorComponente, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+                        const compo = document.getElementById('m_codigo_componente');
+                        const sugerirComponente = function () {
+                            const d = dadosComp[compo.value.trim()];
+                            if (!d) return;
+                            [['m_descricao', 'descricao'], ['m_ncm', 'ncm']].forEach(function ([id, chave]) {
+                                const campo = document.getElementById(id);
+                                if (campo && campo.value.trim() === '' && d[chave]) campo.value = d[chave];
+                            });
+                        };
+                        compo.addEventListener('change', sugerirComponente);
+                        compo.addEventListener('blur', sugerirComponente);
                         const mrp = document.getElementById('m_mrp');
                         const plan = document.getElementById('m_planejamento');
                         mrp.addEventListener('change', function () {
@@ -1383,7 +1419,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, consumo, um, mrp</code><br>
+                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, mrp</code><br>
+                        A coluna <code>ncm</code> é opcional.<br>
                         A coluna <code>modelo</code> é opcional — se vier no CSV, é importada junto; se não vier (ou estiver vazia), fica em branco e dá pra preencher depois com duplo clique.<br>
                         A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
                         A coluna <code>moeda</code> é opcional — sem ela, entra <strong>BRL</strong> (dá pra trocar depois com duplo clique).<br>
@@ -1540,6 +1577,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th title="Código antigo que este componente substitui (duplo clique pra editar). O antigo para de gerar compra e o estoque dele é consumido primeiro.">Substitui</th>
                             <th>PN</th>
                             <th>Descrição</th>
+                            <th>NCM</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
                             <th class="text-end">Net Price</th>
@@ -1556,7 +1594,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="23" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="24" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1614,6 +1652,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="substitui" data-valor-bruto="<?php echo htmlspecialchars($row['substitui'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Código antigo que este componente substitui — duplo clique para editar"><?php echo htmlspecialchars($row['substitui'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="ncm" data-valor-bruto="<?php echo htmlspecialchars($row['ncm'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['ncm'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
                                     <?php
