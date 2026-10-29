@@ -254,9 +254,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     return strtolower(trim($c));
                 }, $cabecalho);
 
+                // "Substituir pendentes": apaga só os eventos PENDENTES e importa o
+                // arquivo no lugar. Os já Atendidos (que já baixaram estoque) ficam,
+                // e linha do arquivo igual a um Atendido (Material+Semana+Evento) é
+                // ignorada — pra não lançar de novo uma demanda que já foi consumida.
                 if ($modo === 'substituir') {
-                    mysqli_query($conn, "TRUNCATE TABLE edi");
-                    $mensagens[] = "🗑️ Tabela 'edi' esvaziada antes da importação.";
+                    mysqli_query($conn, "DELETE FROM edi WHERE COALESCE(atendido, 0) = 0");
+                    $mensagens[] = "🗑️ " . mysqli_affected_rows($conn) . " evento(s) pendente(s) apagado(s) antes da importação (os Atendidos foram mantidos).";
                 }
 
                 $cacheDadosBom = [];
@@ -344,14 +348,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $dados['data_fim'] = $data_fim;
 
                     $existe = false;
-                    if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
+                    if ($modo === 'sem_duplicar' || $modo === 'atualizar' || $modo === 'substituir') {
                         mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $semana, $evento);
                         mysqli_stmt_execute($stmtVerifica);
                         $resVerifica = mysqli_stmt_get_result($stmtVerifica);
                         $existe = mysqli_fetch_assoc($resVerifica)['existe'] > 0;
                     }
 
-                    if ($modo === 'sem_duplicar' && $existe) {
+                    if (($modo === 'sem_duplicar' || $modo === 'substituir') && $existe) {
                         $ignorados++;
                         registrarLinhaProcessada(
                             $linhasProcessadas,
@@ -1551,7 +1555,7 @@ unset($r);
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="modo" id="modo_substituir" value="substituir">
                             <label class="form-check-label" for="modo_substituir">
-                                <strong>Substituir tudo</strong> — apaga todos os dados atuais e importa somente o que está no arquivo
+                                <strong>Substituir pendentes</strong> — apaga os eventos <strong>pendentes</strong> e importa o arquivo no lugar; os já Atendidos ficam (e linha igual a um Atendido é ignorada)
                             </label>
                         </div>
 
