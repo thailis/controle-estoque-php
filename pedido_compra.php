@@ -107,7 +107,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
     $itens = [];
     if ($processo !== '') {
         $stmt = mysqli_prepare($conn, "
-            SELECT p.codigo_componente, p.quantidade, p.preco, p.data,
+            SELECT p.codigo_componente, p.quantidade, p.preco, p.data, p.processo,
                 (
                     SELECT COALESCE(
                         MAX(CASE WHEN b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N' THEN NULLIF(TRIM(b.descricao), '') END),
@@ -128,6 +128,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
             $paramsRelease = parametrosReleasePo($conn, trim((string) ($linha['codigo_componente'] ?? '')));
             $itens[] = $paramsRelease + [
                 'part' => (string) ($linha['codigo_componente'] ?? ''),
+                'processo' => trim((string) ($linha['processo'] ?? '')),
                 'desc' => (string) ($linha['descricao'] ?? ''),
                 'qtd' => $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 0, ',', '') : '',
                 'preco' => $linha['preco'] !== null ? number_format((float) $linha['preco'], 4, ',', '') : '',
@@ -899,7 +900,8 @@ if ($resProcessosProgramacao) {
             }
             // Parâmetros do componente pro modo Release (Pick up e Status)
             aplicarParametrosRelease(tr, dados);
-            tr.querySelector('.f-order').value = document.getElementById('select_processo').value || '';
+            // Order = Processo da linha na Programação (ex.: Y26S3P0010)
+            tr.querySelector('.f-order').value = (dados && dados.processo) ? dados.processo : '';
 
             if (dados) { recalcularLinha(idx); }
             recalcularRelease(idx);
