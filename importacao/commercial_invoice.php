@@ -7,8 +7,8 @@
 //
 // Diferente do Pedido de Compra, aqui os itens (Part Number, Description,
 // NCM, Qty) são puxados ao vivo da tabela "processos" (deste próprio banco,
-// controle_importacao) ao escolher um Processo no dropdown — só o Net Price
-// é digitado na mão. O Supplier é puxado da tabela "filiais" do banco do MRP
+// controle_importacao) ao escolher um Processo no dropdown — o Net Price
+// também vem de Processos (coluna preco), mas continua editável. O Supplier é puxado da tabela "filiais" do banco do MRP
 // (mesma lista usada no Pedido de Compra: YAPP Americana / YAPP Gravataí).
 require_once 'conexao.php';
 require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
@@ -25,7 +25,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo') {
     $processo = trim($_GET['processo'] ?? '');
     $itens = [];
     if ($processo !== '') {
-        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, ncm, quantidade FROM processos WHERE processo = ? ORDER BY id");
+        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, ncm, quantidade, preco, moeda FROM processos WHERE processo = ? ORDER BY id");
         mysqli_stmt_bind_param($stmt, 's', $processo);
         mysqli_stmt_execute($stmt);
         $res = mysqli_stmt_get_result($stmt);
@@ -35,6 +35,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo') {
                 'desc' => (string) ($linha['descricao'] ?? ''),
                 'hscode' => (string) ($linha['ncm'] ?? ''),
                 'qtd' => $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 0, ',', '') : '',
+                // Net Price já vem do preço cadastrado em Processos (continua editável)
+                'preco' => ($linha['preco'] !== null && (float) $linha['preco'] > 0) ? number_format((float) $linha['preco'], 4, ',', '') : '',
+                'moeda' => trim((string) ($linha['moeda'] ?? '')),
             ];
         }
         mysqli_stmt_close($stmt);
@@ -398,7 +401,7 @@ try {
                             <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address" placeholder="Endereço"></td></tr>
                             <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep" placeholder="00.000-000"></td></tr>
                             <tr><td class="lbl">Contact Person:</td><td><input type="text" id="exp_contato" value="Maria Lima"></td></tr>
-                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" placeholder="email@fornecedor.com"></td></tr>
+                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" value="marialima.br@yapp.com"></td></tr>
                         </table>
                     </td>
                     <td class="doc-logo-cell">
@@ -435,7 +438,7 @@ try {
                     <th>Part Number</th>
                     <th>Material Description</th>
                     <th>HS Code</th>
-                    <th>UnM</th>
+                    <th>UN</th>
                     <th>Qty</th>
                     <th>Net Price</th>
                     <th>Total Price</th>
@@ -446,7 +449,7 @@ try {
         </table>
         <div class="p-2 no-print">
             <button type="button" class="btn btn-outline-secondary btn-add-linha" onclick="adicionarLinha()">➕ Adicionar linha</button>
-            <small class="text-muted d-block mt-1">Part Number, Material Description, HS Code e Qty vêm de Processos — dê <strong>duplo clique</strong> pra editar se precisar corrigir algo. Net Price é sempre digitado na mão.</small>
+            <small class="text-muted d-block mt-1">Part Number, Material Description, HS Code e Qty vêm de Processos — dê <strong>duplo clique</strong> pra editar se precisar corrigir algo. Net Price vem do preço cadastrado em Processos e pode ser alterado direto. UN vem preenchido e também pode ser trocado.</small>
         </div>
 
         <div class="doc-pagamento-titulo">Freight and Payment Terms</div>
@@ -513,6 +516,8 @@ try {
     <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <script>
         let contadorLinhas = 0;
+        // E-mail do Exporter: sempre o mesmo pra Americana e Gravataí (editável na tela)
+        const EMAIL_EXPORTER = 'marialima.br@yapp.com';
 
         function parseNumeroBrDoc(texto) {
             if (!texto) return 0;
@@ -576,7 +581,7 @@ try {
                 <td class="f-part"></td>
                 <td class="f-desc"></td>
                 <td class="center f-hscode"></td>
-                <td class="center"><input type="text" class="f-unm" placeholder="UN"></td>
+                <td class="center"><input type="text" class="f-unm" value="UN"></td>
                 <td class="num f-qtd"></td>
                 <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
                 <td class="num"><input type="text" class="f-total" readonly></td>
@@ -599,6 +604,9 @@ try {
             tornarPull(celHscode);
             tornarPull(celQtd, () => recalcularLinha(idx));
 
+            if (item && item.preco) {
+                tr.querySelector('.f-preco').value = item.preco;
+            }
             if (item) { recalcularLinha(idx); }
         }
 
@@ -655,7 +663,7 @@ try {
             document.getElementById('exp_cnpj').value = opcao.dataset.cnpj || '';
             document.getElementById('exp_address').value = opcao.dataset.endereco || '';
             document.getElementById('exp_cep').value = opcao.dataset.cep || '';
-            document.getElementById('exp_email').value = opcao.dataset.email || '';
+            document.getElementById('exp_email').value = EMAIL_EXPORTER;
             document.getElementById('exp_contato').value = 'Maria Lima';
         }
 
@@ -671,6 +679,9 @@ try {
                     contadorLinhas = 0;
                     if (dados.itens && dados.itens.length) {
                         dados.itens.forEach(item => adicionarLinha(item));
+                        // Currency: se todas as linhas do processo têm a mesma moeda, usa ela
+                        const moedas = [...new Set(dados.itens.map(i => (i.moeda || '').toUpperCase()).filter(m => m !== ''))];
+                        if (moedas.length === 1) document.getElementById('moeda').value = moedas[0];
                     } else {
                         adicionarLinha();
                         alert('Esse processo não tem componentes cadastrados em Processos ainda.');
