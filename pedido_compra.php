@@ -44,6 +44,27 @@ try {
     error_log('Tabela fornecedores indisponível: ' . $erroFornecedores->getMessage());
 }
 
+// Parâmetros de compra de um componente, usados no modo "Release":
+//   lead_total   = Lead Time (frozen_zone_dias) + Transit Time → Pick up = ETA − lead_total
+//   congelamento = Frozen Zone (dias) → Status F (congelado) / P (pode alterar)
+function parametrosReleasePo(mysqli $conn, string $codigo): array
+{
+    $stmt = mysqli_prepare($conn, "
+        SELECT MAX(COALESCE(frozen_zone_dias, 0) + COALESCE(transit_time_dias, 0)) AS lead_total,
+               MAX(congelamento_dias) AS congelamento
+        FROM parametros_compra
+        WHERE TRIM(codigo_componente) = ?
+    ");
+    mysqli_stmt_bind_param($stmt, 's', $codigo);
+    mysqli_stmt_execute($stmt);
+    $l = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt)) ?: [];
+    mysqli_stmt_close($stmt);
+    return [
+        'lead_total' => isset($l['lead_total']) ? (int) $l['lead_total'] : null,
+        'congelamento' => isset($l['congelamento']) ? (int) $l['congelamento'] : null,
+    ];
+}
+
 // Endpoint chamado via JS (fetch) quando o usuário digita/sai do campo "Part
 // Number" — busca a descrição do componente na BOM, se existir. Se não
 // encontrar, devolve null e o campo Description continua livre pra digitar
@@ -68,7 +89,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_descricao') {
         $descricao = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))['descricao'] ?? null;
         mysqli_stmt_close($stmt);
     }
-    echo json_encode(['descricao' => $descricao]);
+    $paramsRelease = $codigo !== '' ? parametrosReleasePo($conn, $codigo) : ['lead_total' => null, 'congelamento' => null];
+    echo json_encode(['descricao' => $descricao] + $paramsRelease);
     exit;
 }
 
@@ -103,7 +125,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
         mysqli_stmt_execute($stmt);
         $res = mysqli_stmt_get_result($stmt);
         while ($linha = mysqli_fetch_assoc($res)) {
-            $itens[] = [
+            $paramsRelease = parametrosReleasePo($conn, trim((string) ($linha['codigo_componente'] ?? '')));
+            $itens[] = $paramsRelease + [
                 'part' => (string) ($linha['codigo_componente'] ?? ''),
                 'desc' => (string) ($linha['descricao'] ?? ''),
                 'qtd' => $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 0, ',', '') : '',
@@ -253,6 +276,24 @@ if ($resProcessosProgramacao) {
             display: flex; align-items: center; gap: 5px; cursor: pointer; margin: 0;
         }
         .po-formato-intl input { cursor: pointer; }
+        .po-release { left: 12px; right: auto; }
+        /* Modo Release: troca Net Price/Total por Pick up / Order / Status */
+        table.po-tabela .col-release { display: none; }
+        table.po-tabela.modo-release .col-release { display: table-cell; }
+        table.po-tabela.modo-release .col-normal { display: none; }
+        table.po-tabela th.w-part { width: 12%; }
+        table.po-tabela th.w-desc { width: 23%; }
+        table.po-tabela th.w-data { width: 13%; }
+        table.po-tabela th.w-unm { width: 6%; }
+        table.po-tabela th.w-qtd { width: 10%; }
+        table.po-tabela th.w-preco { width: 12%; }
+        table.po-tabela.modo-release th.w-desc { width: 22%; }
+        table.po-tabela.modo-release th.w-data { width: 11%; }
+        table.po-tabela th.w-order { width: 12%; }
+        table.po-tabela th.w-status { width: 7%; }
+        .status-f { color: #1f5fbf; font-weight: 750; }   /* F = azul */
+        .status-p { color: #f4a259; font-weight: 750; }   /* P = laranja claro */
+        .modo-release-sem-preco { display: none !important; }
         table.po-tabela { width: 100%; border-collapse: collapse; font-size: .8rem; table-layout: fixed; }
         table.po-tabela th {
             background: var(--cinza-label);
@@ -484,28 +525,30 @@ if ($resProcessosProgramacao) {
         </div>
 
         <div class="po-material-titulo">
-            Material Detail
+            <label class="po-formato-intl po-release no-print" title="Release: troca Net Price/Total por Pick up (ETA − Lead Time total), Order e Status (F = Frozen Zone / P = pode alterar)">
+                <input type="checkbox" id="modo_release" onchange="alternarRelease()">
+                Release
+            </label>
+            <span id="titulo_material">Material Detail</span>
             <label class="po-formato-intl no-print" title="Desmarcado: 1.000,00 e 05/10/2026 — Marcado: 1,000.00 e 10/05/2026">
                 <input type="checkbox" id="formato_internacional" onchange="alternarFormatoInternacional()">
                 Formato internacional
             </label>
         </div>
         <table class="po-tabela" id="tabela-itens">
-            <colgroup>
-                <col style="width:4%"><col style="width:12%"><col style="width:23%">
-                <col style="width:13%"><col style="width:6%"><col style="width:10%">
-                <col style="width:12%"><col style="width:12%"><col class="col-acao-largura" style="width:8%">
-            </colgroup>
             <thead>
                 <tr>
                     <th class="col-idx">#</th>
-                    <th>Part Number</th>
-                    <th>Description</th>
-                    <th>ETA</th>
-                    <th>UnM</th>
-                    <th>Quantity</th>
-                    <th>Net Price</th>
-                    <th>Total</th>
+                    <th class="w-part">Part Number</th>
+                    <th class="w-desc">Description</th>
+                    <th class="w-data col-release">Pick up</th>
+                    <th class="w-data"><span class="col-normal">ETA</span><span class="col-release">ETA at YAPP</span></th>
+                    <th class="w-unm">UnM</th>
+                    <th class="w-qtd"><span class="col-normal">Quantity</span><span class="col-release">QTY</span></th>
+                    <th class="w-preco col-normal">Net Price</th>
+                    <th class="w-preco col-normal">Total</th>
+                    <th class="w-order col-release">Order</th>
+                    <th class="w-status col-release" title="F = dentro do Frozen Zone (congelado) · P = fora (pode alterar)">Status</th>
                     <th class="col-acao no-print"></th>
                 </tr>
             </thead>
@@ -586,8 +629,8 @@ if ($resProcessosProgramacao) {
         window.addEventListener('beforeprint', () => {
             let numeroVisivel = 0;
             document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
-                const part = linha.querySelector('.f-part')?.value.trim() ?? '';
-                const desc = linha.querySelector('.f-desc')?.value.trim() ?? '';
+                const part = (linha.querySelector('.f-part')?.dataset.valor ?? '').trim();
+                const desc = (linha.querySelector('.f-desc')?.dataset.valor ?? '').trim();
                 const vazia = part === '' && desc === '';
                 linha.classList.toggle('linha-vazia-print', vazia);
 
@@ -758,18 +801,21 @@ if ($resProcessosProgramacao) {
                 if (preco) preco.value = converterNumeroPo(preco.value, antigo, novo);
                 const eta = linha.querySelector('.f-eta');
                 if (eta) eta.value = trocarDiaMesPo(eta.value);
+                const pickup = linha.querySelector('.f-pickup');
+                if (pickup) pickup.value = trocarDiaMesPo(pickup.value);
             });
             ['tax_icms', 'tax_pis', 'tax_cofins', 'tax_ipi', 'valor_adiantamento', 'valor_frete'].forEach((id) => {
                 const campo = document.getElementById(id);
                 if (campo) campo.value = converterNumeroPo(campo.value, antigo, novo);
             });
-            document.querySelectorAll('.f-eta').forEach((campo) => {
+            document.querySelectorAll('.f-eta, .f-pickup').forEach((campo) => {
                 campo.placeholder = novo ? 'mm/dd/yyyy' : 'dd/mm/aaaa';
             });
 
             formatoInternacional = novo;
             document.querySelectorAll('#corpo-itens tr').forEach((linha) => {
                 recalcularLinha(Number(linha.id.replace('linha-', '')));
+                recalcularRelease(Number(linha.id.replace('linha-', '')));
             });
             recalcularNet();
         }
@@ -821,11 +867,14 @@ if ($resProcessosProgramacao) {
                 <td class="col-idx">${idx}</td>
                 <td class="f-part"></td>
                 <td class="f-desc"></td>
-                <td class="center"><input type="text" class="f-eta" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}"></td>
+                <td class="center col-release"><input type="text" class="f-pickup" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}"></td>
+                <td class="center"><input type="text" class="f-eta" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}" oninput="recalcularRelease(${idx})"></td>
                 <td class="center"><input type="text" class="f-unm" value="UN"></td>
                 <td class="num f-qtd"></td>
-                <td class="num"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
-                <td class="num"><input type="text" class="f-total" readonly></td>
+                <td class="num col-normal"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
+                <td class="num col-normal"><input type="text" class="f-total" readonly></td>
+                <td class="center col-release"><input type="text" class="f-order"></td>
+                <td class="center col-release f-status"></td>
                 <td class="col-acao no-print"><button type="button" class="btn-remover-linha" onclick="removerLinha(${idx})" title="Remover linha">✕</button></td>
             `;
             document.getElementById('corpo-itens').appendChild(tr);
@@ -848,8 +897,12 @@ if ($resProcessosProgramacao) {
             if (dados && dados.eta) {
                 tr.querySelector('.f-eta').value = formatoInternacional ? trocarDiaMesPo(dados.eta) : dados.eta;
             }
+            // Parâmetros do componente pro modo Release (Pick up e Status)
+            aplicarParametrosRelease(tr, dados);
+            tr.querySelector('.f-order').value = document.getElementById('select_processo').value || '';
 
             if (dados) { recalcularLinha(idx); }
+            recalcularRelease(idx);
         }
 
         // Disparado ao confirmar (duplo clique + Enter/blur) o Part Number de
@@ -869,6 +922,8 @@ if ($resProcessosProgramacao) {
                     if (dados.descricao) {
                         definirValorPull(linha.querySelector('.f-desc'), dados.descricao);
                     }
+                    aplicarParametrosRelease(linha, dados);
+                    recalcularRelease(idx);
                 })
                 .catch(() => { /* falha de rede — deixa o campo como está, sem travar o preenchimento manual */ });
         }
@@ -969,6 +1024,72 @@ if ($resProcessosProgramacao) {
             const adiantamento = parseNumeroBrPo(document.getElementById('valor_adiantamento').value);
             const total = net + taxes + frete - adiantamento;
             document.getElementById('valor_total').value = formatarNumeroBrPo(total);
+        }
+
+        // ---------- Modo Release ----------
+        // Pick up = ETA − Lead Time total (Lead Time + Transit Time, de Parâmetros).
+        // Status  = "F" se a ETA cair dentro do Frozen Zone contado da data do
+        //           pedido (hoje + Frozen Zone dias) → congelado; senão "P".
+        // Os parâmetros vêm por componente (Parâmetros de Compra). Sem parâmetro
+        // cadastrado, Pick up e Status ficam em branco (dá pra digitar o Pick up).
+        function aplicarParametrosRelease(linha, dados) {
+            if (!linha || !dados) return;
+            if (dados.lead_total !== undefined) linha.dataset.leadTotal = dados.lead_total ?? '';
+            if (dados.congelamento !== undefined) linha.dataset.congelamento = dados.congelamento ?? '';
+        }
+
+        function lerDataPo(texto) {
+            const m = String(texto ?? '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+            if (!m) return null;
+            const dia = parseInt(formatoInternacional ? m[2] : m[1], 10);
+            const mes = parseInt(formatoInternacional ? m[1] : m[2], 10);
+            const d = new Date(parseInt(m[3], 10), mes - 1, dia);
+            return (d.getMonth() === mes - 1 && d.getDate() === dia) ? d : null;
+        }
+
+        function escreverDataPo(d) {
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            return formatoInternacional ? `${mm}/${dd}/${d.getFullYear()}` : `${dd}/${mm}/${d.getFullYear()}`;
+        }
+
+        function recalcularRelease(idx) {
+            const linha = document.getElementById('linha-' + idx);
+            if (!linha) return;
+            const eta = lerDataPo(linha.querySelector('.f-eta').value);
+            const lead = linha.dataset.leadTotal !== undefined && linha.dataset.leadTotal !== '' ? parseInt(linha.dataset.leadTotal, 10) : null;
+            const cong = linha.dataset.congelamento !== undefined && linha.dataset.congelamento !== '' ? parseInt(linha.dataset.congelamento, 10) : null;
+
+            const campoPickup = linha.querySelector('.f-pickup');
+            if (eta && lead !== null && !isNaN(lead)) {
+                const pickup = new Date(eta);
+                pickup.setDate(pickup.getDate() - lead);
+                campoPickup.value = escreverDataPo(pickup);
+                campoPickup.title = 'ETA − ' + lead + ' dias (Lead Time + Transit Time)';
+            }
+
+            const celStatus = linha.querySelector('.f-status');
+            celStatus.classList.remove('status-f', 'status-p');
+            if (eta && cong !== null && !isNaN(cong)) {
+                const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+                const limite = new Date(hoje); limite.setDate(limite.getDate() + cong);
+                const congelado = eta <= limite;
+                celStatus.textContent = congelado ? 'F' : 'P';
+                celStatus.classList.add(congelado ? 'status-f' : 'status-p');
+                celStatus.title = (congelado ? 'Dentro' : 'Fora') + ' do Frozen Zone (' + cong + ' dias a partir de hoje: até ' + escreverDataPo(limite) + ')';
+            } else {
+                celStatus.textContent = '';
+                celStatus.title = 'Sem Frozen Zone cadastrado em Parâmetros ou sem ETA';
+            }
+        }
+
+        function alternarRelease() {
+            const release = document.getElementById('modo_release').checked;
+            document.getElementById('tabela-itens').classList.toggle('modo-release', release);
+            // Release não leva preço: esconde o bloco de pagamento/totais
+            document.querySelectorAll('.po-pagamento-titulo, table.po-totais').forEach((el) => el.classList.toggle('modo-release-sem-preco', release));
+            document.getElementById('titulo_material').textContent = release ? 'Material Release' : 'Material Detail';
+            document.querySelectorAll('#corpo-itens tr').forEach((linha) => recalcularRelease(Number(linha.id.replace('linha-', ''))));
         }
 
         // Começa com 3 linhas em branco, prontas pra preencher
