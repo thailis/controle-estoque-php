@@ -1119,9 +1119,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
     try {
         switch ($operacao) {
             case 'excluir':
-                // Apaga também os lançamentos de estoque gerados por esses eventos
-                $executarEmLotes("DELETE FROM estoque WHERE origem_edi_id", '', [], $ids);
-                $qtdAfetada = $executarEmLotes("DELETE FROM edi WHERE _tidb_rowid", '', [], $ids);
+                // Exclusão em massa só apaga eventos PENDENTES — os já Atendidos
+                // (que já baixaram estoque) ficam intactos e são só contados no aviso.
+                $idsPendentes = array_map(
+                    fn($l) => (int) $l['id'],
+                    array_filter($linhasMassa, fn($l) => (int) ($l['atendido'] ?? 0) !== 1)
+                );
+                $qtdAtendidosMantidos = count($ids) - count($idsPendentes);
+                if (!empty($idsPendentes)) {
+                    $executarEmLotes("DELETE FROM estoque WHERE origem_edi_id", '', [], $idsPendentes);
+                    $qtdAfetada = $executarEmLotes("DELETE FROM edi WHERE _tidb_rowid", '', [], $idsPendentes);
+                }
                 break;
 
             case 'renomear_evento':
@@ -1178,7 +1186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
         $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Erro ao executar a ação em massa: ' . $e->getMessage()]);
     }
 
-    $redirecionar(['flash' => 'massa_ok', 'massa_op' => $operacao, 'massa_qtd' => $qtdAfetada]);
+    $redirecionar(['flash' => 'massa_ok', 'massa_op' => $operacao, 'massa_qtd' => $qtdAfetada, 'massa_mantidos' => $qtdAtendidosMantidos ?? 0]);
 }
 
 $porPagina = 50;
@@ -1207,7 +1215,8 @@ $flashMap = [
         'quantidade'      => 'Quantidade alterada em',
         'atendido'        => 'Marcado(s) como Atendido',
         'pendente'        => 'Marcado(s) como Pendente',
-    ][$_GET['massa_op'] ?? ''] ?? 'Ação aplicada em') . ': ' . (int) ($_GET['massa_qtd'] ?? 0) . ' registro(s).'],
+    ][$_GET['massa_op'] ?? ''] ?? 'Ação aplicada em') . ': ' . (int) ($_GET['massa_qtd'] ?? 0) . ' registro(s).'
+        . ((int) ($_GET['massa_mantidos'] ?? 0) > 0 ? ' ' . (int) $_GET['massa_mantidos'] . ' já Atendido(s) foram mantidos (a exclusão em massa só apaga pendentes).' : '')],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -1709,7 +1718,7 @@ unset($r);
                                 <option value="quantidade">Alterar quantidade</option>
                                 <option value="atendido">Marcar como Atendido</option>
                                 <option value="pendente">Marcar como Pendente</option>
-                                <option value="excluir">🗑️ Excluir</option>
+                                <option value="excluir">🗑️ Excluir (só pendentes)</option>
                             </select>
                         </div>
                         <div class="col-auto" id="massa-valor-box" style="display:none">
@@ -1742,7 +1751,7 @@ unset($r);
                                 const texto = sel.options[sel.selectedIndex].text.replace('🗑️ ', '');
                                 let msg = texto + ' em ' + total + ' registro(s) filtrado(s)?';
                                 if (config[sel.value]) msg += '\nNovo valor: ' + inp.value;
-                                if (sel.value === 'excluir') msg += '\n\nATENÇÃO: a exclusão não pode ser desfeita (os lançamentos de estoque desses eventos também são apagados).';
+                                if (sel.value === 'excluir') msg += '\n\nATENÇÃO: só os eventos PENDENTES serão excluídos (os Atendidos ficam). A exclusão não pode ser desfeita.';
                                 if (!confirm(msg)) e.preventDefault();
                             });
                         })();
