@@ -122,10 +122,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         $exibido = $valorSalvo ?? '—';
     }
 
-    $stmt = mysqli_prepare($conn, "UPDATE follow SET `$campo` = ? WHERE id = ?");
-    mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
-    mysqli_stmt_execute($stmt);
-    mysqli_stmt_close($stmt);
+    // Erro do banco volta como mensagem (em vez de quebrar a resposta e aparecer
+    // só "Erro de conexão ao salvar" na tela, sem dizer o motivo).
+    try {
+        $stmt = mysqli_prepare($conn, "UPDATE follow SET `$campo` = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $valorSalvo, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    } catch (Throwable $erroSalvar) {
+        error_log('Follow: erro ao salvar ' . $campo . ': ' . $erroSalvar->getMessage());
+        echo json_encode(['ok' => false, 'erro' => 'Não foi possível salvar: ' . $erroSalvar->getMessage()]);
+        exit;
+    }
 
     $resposta = ['ok' => true, 'exibido' => $exibido];
 
