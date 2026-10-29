@@ -177,8 +177,14 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
         } else {
             $gravados = 0;
             $erros = [];
+            $limparTudo = !empty($_POST['limpar_tudo']);
             mysqli_begin_transaction($conn);
             try {
+                // "Limpar tudo": apaga todos os parâmetros e deixa só o que vier no CSV.
+                // Tudo na mesma transação — se a importação der erro, nada é apagado.
+                if ($limparTudo) {
+                    mysqli_query($conn, 'DELETE FROM parametros_importacao');
+                }
                 foreach (array_slice($linhas, 1) as $n => $linha) {
                     if (trim($linha) === '') {
                         continue;
@@ -205,7 +211,7 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
                     }
                 }
                 mysqli_commit($conn);
-                $mensagens[] = "✅ CSV importado: $gravados componente(s) gravado(s).";
+                $mensagens[] = "✅ CSV importado: $gravados componente(s) gravado(s)." . ($limparTudo ? ' (parâmetros anteriores apagados)' : '');
                 foreach (array_slice($erros, 0, 10) as $e) {
                     $mensagens[] = '⚠️ ' . $e;
                 }
@@ -337,12 +343,19 @@ if ($tabelaExiste) {
         <section class="filter-panel mb-4">
             <details>
                 <summary class="fw-bold" style="cursor:pointer;">📥 Importar CSV</summary>
-                <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end mt-2">
+                <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end mt-2"
+                      onsubmit="return !this.limpar_tudo.checked || confirm('Limpar tudo: TODOS os parâmetros cadastrados serão apagados e substituídos pelo CSV. Continuar?');">
                     <input type="hidden" name="acao" value="importar_csv">
                     <div class="col-md-4"><input type="file" name="arquivo_csv" accept=".csv,text/csv" class="form-control form-control-sm" required></div>
+                    <div class="col-auto">
+                        <div class="form-check mb-1">
+                            <input class="form-check-input" type="checkbox" name="limpar_tudo" value="1" id="limpar_tudo">
+                            <label class="form-check-label small" for="limpar_tudo">🗑️ Limpar tudo e substituir pelo CSV</label>
+                        </div>
+                    </div>
                     <div class="col-auto"><button type="submit" class="btn btn-primary btn-sm">Importar</button></div>
                 </form>
-                <small class="text-muted d-block mt-2">Cabeçalho (separado por <code>;</code>): <code>componente; unit pack; u price; length; width; height; weight; g weight</code>. Componente que já existe é atualizado. Dá pra mandar só algumas colunas (ex.: componente; length; width; height).</small>
+                <small class="text-muted d-block mt-2">Cabeçalho (separado por <code>;</code>): <code>componente; unit pack; u price; length; width; height; weight; g weight</code>. Sem marcar "Limpar tudo": componente que já existe é atualizado e os outros continuam. Marcando: a tabela fica só com o que está no CSV. Dá pra mandar só algumas colunas (ex.: componente; length; width; height).</small>
             </details>
         </section>
 
