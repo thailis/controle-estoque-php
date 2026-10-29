@@ -395,6 +395,57 @@ $where = !empty($condicoes) ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 // Embarques sem nenhuma data vão pro final.
 $ordemData = "COALESCE(f.`$filtroMesBase`, f.prevista, f.eta, f.etd, f.efetiva, f.pickup)";
 
+// ---------- Exportar CSV (mesmos filtros da tela, todas as páginas) ----------
+if (($_GET['exportar'] ?? '') === 'csv') {
+    $stmtExp = mysqli_prepare($conn, "
+        SELECT f.*,
+            (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo
+        FROM follow f
+        $where
+        ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
+    ");
+    if (!empty($params)) {
+        mysqli_stmt_bind_param($stmtExp, $tipos, ...$params);
+    }
+    mysqli_stmt_execute($stmtExp);
+    $resExp = mysqli_stmt_get_result($stmtExp);
+
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="follow-' . date('Y-m-d-His') . '.csv"');
+    echo "\xEF\xBB\xBF";
+    $saida = fopen('php://output', 'w');
+    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Rastreio (TRK)', 'FT (dias)', 'Transit (dias)', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
+    $dataCsv = fn($d) => ($d === null || $d === '') ? '' : dataBr($d);
+    while ($r = mysqli_fetch_assoc($resExp)) {
+        // Mesmas regras de Status e Condição da tabela
+        $statusFollowCsv = $r['status'] ?: 'aberto';
+        $temEfetivaCsv = !empty($r['efetiva']);
+        if (strtolower(trim((string) ($r['status_processo'] ?? ''))) === 'cancelado') {
+            $statusCsv = 'Cancelado';
+        } elseif ($statusFollowCsv === 'fechado') {
+            $statusCsv = 'Fechado';
+        } elseif ($temEfetivaCsv) {
+            $statusCsv = 'Aguardando confirmação';
+        } else {
+            $statusCsv = 'Aberto';
+        }
+        if ($statusFollowCsv === 'fechado' || $temEfetivaCsv) {
+            $condicaoCsv = 'Finalizada';
+        } else {
+            $condicaoCsv = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][calcularCondicaoFollow($r['prevista'])] ?? '';
+        }
+        fputcsv($saida, [
+            $statusCsv, $r['processo'], $r['origem'] ?? '', $r['destino'] ?? '', $r['armador'] ?? '', $r['trk'] ?? '',
+            $r['ft_dias'] ?? '', $r['transit_dias'] ?? '',
+            $dataCsv($r['pickup'] ?? null), $dataCsv($r['etd'] ?? null), $dataCsv($r['eta'] ?? null),
+            $dataCsv($r['prevista'] ?? null), $dataCsv($r['efetiva'] ?? null),
+            $r['requerente'] ?? '', $condicaoCsv, $r['obs'] ?? '',
+        ], ';', '"', '');
+    }
+    fclose($saida);
+    exit;
+}
+
 // Total pra paginação
 $sqlTotal = "SELECT COUNT(*) AS total FROM follow f $where";
 $stmtTotal = mysqli_prepare($conn, $sqlTotal);
@@ -664,9 +715,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-md-2 d-flex gap-2">
+                <div class="col-md-3 d-flex gap-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
                     <a href="follow.php?status=todos" class="btn btn-outline-secondary">Limpar</a>
+                    <a href="?<?php echo h(http_build_query(['busca' => $busca, 'status' => $filtroStatus, 'condicao' => $filtroCondicao, 'categoria' => $filtroCategoria, 'mes_base' => $filtroMesBase, 'mes' => $filtroMes, 'exportar' => 'csv'])); ?>" class="btn btn-outline-primary text-nowrap" title="Exporta tudo o que está filtrado (todas as páginas)">Exportar CSV</a>
                 </div>
             </form>
         </section>
