@@ -414,6 +414,122 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     exit;
 }
 
+// ---------- Atualização em massa (por Processo ou PO) ----------
+// Age em TODAS as linhas do Processo ou da PO informados (busca exata, sem
+// diferenciar maiúscula/minúscula). Linhas já FINALIZADAS (entrega confirmada)
+// nunca são alteradas nem excluídas — são só contadas no aviso.
+//   excluir  → apaga as linhas (Follow/Pagamento não são mexidos)
+//   data     → troca a Solicitação
+//   po       → preenche/troca o PO
+//   processo → troca o código do Processo. Alvo = Processo: renomeia o
+//              processo inteiro (e leva junto Follow, Pagamento e Comparativos);
+//              bloqueia se tiver linha finalizada ou se o novo código já existir.
+//              Alvo = PO: passa as linhas abertas da PO pro processo informado
+//              (Follow/Pagamento não mudam).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'massa_processos') {
+    $alvoTipo = ($_POST['alvo_tipo'] ?? '') === 'po' ? 'po' : 'processo';
+    $alvoValor = trim((string) ($_POST['alvo_valor'] ?? ''));
+    $operacaoMassa = (string) ($_POST['operacao_massa'] ?? '');
+    $valorMassa = trim((string) ($_POST['valor_massa'] ?? ''));
+    $rotuloAlvo = ($alvoTipo === 'po' ? 'PO' : 'Processo') . " \"$alvoValor\"";
+
+    $erroMassa = null;
+    if ($alvoValor === '' || !in_array($operacaoMassa, ['excluir', 'data', 'po', 'processo'], true)) {
+        $erroMassa = 'Informe o Processo ou a PO e escolha a ação.';
+    } elseif ($operacaoMassa === 'data') {
+        $valorMassa = parseDataProcessos($valorMassa);
+        if ($valorMassa === null) { $erroMassa = 'Data inválida. Use dd/mm/aaaa.'; }
+    } elseif ($operacaoMassa === 'po' && $valorMassa === '') {
+        $erroMassa = 'Informe o PO.';
+    } elseif ($operacaoMassa === 'processo') {
+        $valorMassa = mb_strtoupper($valorMassa, 'UTF-8');
+        if ($valorMassa === '') {
+            $erroMassa = 'Informe o novo Processo.';
+        } elseif ($alvoTipo === 'processo' && $valorMassa === mb_strtoupper($alvoValor, 'UTF-8')) {
+            $erroMassa = 'O novo Processo é igual ao atual.';
+        } else {
+            $stmtDest = mysqli_prepare($conn, "SELECT COUNT(*) AS n, SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('finalizado', 'cancelado') THEN 1 ELSE 0 END) AS fechadas FROM processos WHERE UPPER(TRIM(processo)) = ?");
+            mysqli_stmt_bind_param($stmtDest, 's', $valorMassa);
+            mysqli_stmt_execute($stmtDest);
+            $dest = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDest));
+            mysqli_stmt_close($stmtDest);
+            if ($alvoTipo === 'processo' && (int) $dest['n'] > 0) {
+                $erroMassa = "Já existe o processo \"$valorMassa\" — pra não misturar Follow/Pagamento, a troca foi bloqueada.";
+            } elseif ((int) $dest['n'] > 0 && (int) $dest['fechadas'] > 0) {
+                $erroMassa = "O processo de destino \"$valorMassa\" está finalizado/cancelado.";
+            }
+        }
+    }
+
+    if ($erroMassa !== null) {
+        $mensagens[] = '❌ ' . $erroMassa;
+    } else {
+        $colunaAlvo = $alvoTipo === 'po' ? 'po' : 'processo';
+        $condAlvo = "UPPER(TRIM(COALESCE($colunaAlvo, ''))) = ?";
+        $condAberto = "LOWER(TRIM(COALESCE(status, ''))) <> 'finalizado'";
+        $alvoUpper = mb_strtoupper($alvoValor, 'UTF-8');
+
+        $stmtConta = mysqli_prepare($conn, "SELECT COUNT(*) AS total, SUM(CASE WHEN $condAberto THEN 0 ELSE 1 END) AS finalizadas FROM processos WHERE $condAlvo");
+        mysqli_stmt_bind_param($stmtConta, 's', $alvoUpper);
+        mysqli_stmt_execute($stmtConta);
+        $conta = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtConta));
+        mysqli_stmt_close($stmtConta);
+        $finalizadasMassa = (int) ($conta['finalizadas'] ?? 0);
+
+        if ((int) ($conta['total'] ?? 0) === 0) {
+            $mensagens[] = "❌ Nenhuma linha encontrada para $rotuloAlvo.";
+        } elseif ($operacaoMassa === 'processo' && $alvoTipo === 'processo' && $finalizadasMassa > 0) {
+            $mensagens[] = "❌ $rotuloAlvo tem $finalizadasMassa linha(s) finalizada(s) — não dá pra trocar o código só de parte do processo.";
+        } else {
+            $sqlMassa = [
+                'excluir'  => "DELETE FROM processos WHERE $condAlvo AND $condAberto",
+                'data'     => "UPDATE processos SET solicitacao = ? WHERE $condAlvo AND $condAberto",
+                'po'       => "UPDATE processos SET po = ? WHERE $condAlvo AND $condAberto",
+                'processo' => "UPDATE processos SET processo = ? WHERE $condAlvo AND $condAberto",
+            ][$operacaoMassa];
+            mysqli_begin_transaction($conn);
+            try {
+                $stmtMassa = mysqli_prepare($conn, $sqlMassa);
+                if ($operacaoMassa === 'excluir') {
+                    mysqli_stmt_bind_param($stmtMassa, 's', $alvoUpper);
+                } else {
+                    mysqli_stmt_bind_param($stmtMassa, 'ss', $valorMassa, $alvoUpper);
+                }
+                mysqli_stmt_execute($stmtMassa);
+                $afetadasMassa = mysqli_stmt_affected_rows($stmtMassa);
+                mysqli_stmt_close($stmtMassa);
+
+                // Renomeou o processo inteiro → leva junto Follow, Pagamento e Comparativos
+                if ($operacaoMassa === 'processo' && $alvoTipo === 'processo') {
+                    foreach (['follow', 'pagamento', 'comparativos'] as $tabelaRef) {
+                        try {
+                            $stmtRef = mysqli_prepare($conn, "UPDATE `$tabelaRef` SET processo = ? WHERE UPPER(TRIM(processo)) = ?");
+                            mysqli_stmt_bind_param($stmtRef, 'ss', $valorMassa, $alvoUpper);
+                            mysqli_stmt_execute($stmtRef);
+                            mysqli_stmt_close($stmtRef);
+                        } catch (Throwable $erroRef) {
+                            error_log("Trocar processo em $tabelaRef: " . $erroRef->getMessage());
+                        }
+                    }
+                }
+                mysqli_commit($conn);
+
+                $descricaoAcao = [
+                    'excluir'  => 'linha(s) excluída(s)',
+                    'data'     => 'linha(s) com Solicitação alterada para ' . dataBr($valorMassa),
+                    'po'       => "linha(s) com PO = $valorMassa",
+                    'processo' => "linha(s) passaram para o processo $valorMassa" . ($alvoTipo === 'processo' ? ' (Follow/Pagamento também)' : ''),
+                ][$operacaoMassa];
+                $mensagens[] = "✅ $rotuloAlvo: $afetadasMassa $descricaoAcao."
+                    . ($finalizadasMassa > 0 ? " $finalizadasMassa linha(s) finalizada(s) não foram alteradas." : '');
+            } catch (Throwable $erroExec) {
+                mysqli_rollback($conn);
+                $mensagens[] = '❌ Erro na atualização em massa: ' . $erroExec->getMessage();
+            }
+        }
+    }
+}
+
 // ---------- Edição inline (duplo clique) ----------
 // Identifica a linha por "id". Quantidade e Preço, ao serem editados,
 // recalculam e gravam o Total também (nunca é digitado diretamente).
@@ -1493,6 +1609,69 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <button type="submit" class="btn btn-primary w-100">Salvar</button>
                     </div>
                 </form>
+            </details>
+        </section>
+
+        <section class="filter-panel mb-4">
+            <details <?php echo (($_POST['acao'] ?? '') === 'massa_processos') ? 'open' : ''; ?>>
+                <summary class="fw-bold" style="cursor:pointer;">⚡ Atualização em massa (por Processo ou PO)</summary>
+                <form method="POST" class="row g-2 align-items-end mt-2" id="form-massa-processos">
+                    <input type="hidden" name="acao" value="massa_processos">
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Alvo</label>
+                        <select name="alvo_tipo" id="massa-alvo-tipo" class="form-select form-select-sm">
+                            <option value="processo">Processo</option>
+                            <option value="po">PO</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Processo ou PO</label>
+                        <input type="text" name="alvo_valor" id="massa-alvo-valor" class="form-control form-control-sm" list="massa-lista-processos" autocomplete="off" required style="width:200px">
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Ação</label>
+                        <select name="operacao_massa" id="massa-operacao-proc" class="form-select form-select-sm" required>
+                            <option value="">Escolha...</option>
+                            <option value="data">Alterar Solicitação (data)</option>
+                            <option value="po">Incluir / trocar PO</option>
+                            <option value="processo">Trocar Processo</option>
+                            <option value="excluir">🗑️ Excluir linhas</option>
+                        </select>
+                    </div>
+                    <div class="col-auto" id="massa-valor-proc-box" style="display:none">
+                        <label class="form-label small mb-1" id="massa-valor-proc-label">Novo valor</label>
+                        <input type="text" name="valor_massa" id="massa-valor-proc" class="form-control form-control-sm" style="width:200px">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-warning btn-sm">Aplicar</button>
+                    </div>
+                </form>
+                <small class="text-muted d-block mt-2">Age em <strong>todas as linhas</strong> do Processo ou da PO (sem diferenciar maiúscula/minúscula). Linhas já <strong>finalizadas</strong> nunca são alteradas nem excluídas. Excluir não mexe no Follow nem no Pagamento. Trocar Processo com alvo = Processo leva junto Follow e Pagamento; com alvo = PO, só as linhas da PO mudam.</small>
+                <datalist id="massa-lista-processos">
+                    <?php foreach ($processosAbertos as $codAberto => $_dadosAberto): ?><option value="<?php echo h($codAberto); ?>"><?php endforeach; ?>
+                </datalist>
+                <script>
+                    (function () {
+                        const op = document.getElementById('massa-operacao-proc');
+                        const box = document.getElementById('massa-valor-proc-box');
+                        const lbl = document.getElementById('massa-valor-proc-label');
+                        const inp = document.getElementById('massa-valor-proc');
+                        const alvoTipo = document.getElementById('massa-alvo-tipo');
+                        op.addEventListener('change', function () {
+                            const rotulos = { data: 'Nova Solicitação (dd/mm/aaaa)', po: 'PO', processo: 'Novo Processo' };
+                            box.style.display = rotulos[op.value] ? '' : 'none';
+                            lbl.textContent = rotulos[op.value] || '';
+                            inp.required = !!rotulos[op.value];
+                            inp.value = '';
+                        });
+                        document.getElementById('form-massa-processos').addEventListener('submit', function (e) {
+                            const alvo = (alvoTipo.value === 'po' ? 'PO ' : 'Processo ') + document.getElementById('massa-alvo-valor').value;
+                            let msg = 'Aplicar "' + op.options[op.selectedIndex].text + '" em TODAS as linhas de ' + alvo + '?';
+                            if (op.value === 'excluir') msg += '\n\nATENÇÃO: a exclusão não pode ser desfeita.';
+                            if (!confirm(msg)) e.preventDefault();
+                        });
+                    })();
+                </script>
             </details>
         </section>
 
