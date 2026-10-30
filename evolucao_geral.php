@@ -100,8 +100,9 @@ if (!in_array($porPagina, [10, 20, 50], true)) {
 }
 $pagina = max(1, (int) ($_GET['pagina'] ?? 1));
 
-$dataLimite = new DateTimeImmutable('2027-03-31');
 $hoje = new DateTimeImmutable('today');
+// Projeção sempre de hoje até hoje + 1 ano (antes era fixo em 31/03/2027)
+$dataLimite = $hoje->modify('+1 year');
 
 $erroGeral = null;
 $componentes = [];
