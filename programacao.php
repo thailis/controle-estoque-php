@@ -651,6 +651,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
         }
     }
 
+    // Status Liberado / Bloqueado de TODAS as linhas do Processo/PO (pendentes e
+    // atendidas). Bloqueado só some da Evolução geral e do Detalhe do componente —
+    // não mexe no estoque nem no Planejamento de Compras.
+    if ($chaveLote !== '' && in_array($situacaoLote, ['liberado', 'bloqueado'], true)) {
+        $valorBloqLote = $situacaoLote === 'bloqueado' ? 1 : 0;
+        try {
+            $stmtBloqLote = mysqli_prepare($conn, "
+                UPDATE programacao SET bloqueado = ?
+                WHERE (TRIM(COALESCE(processo, '')) = ? OR TRIM(COALESCE(po, '')) = ?)
+                  AND COALESCE(bloqueado, 0) <> ?
+            ");
+            mysqli_stmt_bind_param($stmtBloqLote, 'issi', $valorBloqLote, $chaveLote, $chaveLote, $valorBloqLote);
+            mysqli_stmt_execute($stmtBloqLote);
+            $qtdLote = max(0, mysqli_stmt_affected_rows($stmtBloqLote));
+            mysqli_stmt_close($stmtBloqLote);
+            $flashLote = $qtdLote > 0 ? ($valorBloqLote ? 'lote_bloqueado' : 'lote_liberado') : 'lote_nada';
+        } catch (Throwable $erroBloqLote) {
+            error_log('Erro ao bloquear/liberar em lote na programação: ' . $erroBloqLote->getMessage());
+            $flashLote = 'lote_erro';
+        }
+    }
+
     // Excluir TODAS as linhas do Processo/PO (pendentes e atendidas). Para as
     // atendidas, apaga antes a entrada de estoque que elas geraram — mesma
     // limpeza da exclusão individual, pra não sobrar estoque órfão.
@@ -1288,6 +1310,8 @@ $flashMap = [
     'lote_atendido' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) marcada(s) como Atendido (somadas no estoque pela Quantidade Recebida).'],
     'lote_pendente' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) reaberta(s) como Pendente (entradas de estoque removidas).'],
     'lote_data'     => ['success', '✅ Data alterada em ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) pendente(s).'],
+    'lote_bloqueado' => ['success', '⛔ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) Bloqueada(s) — não aparecem mais na Evolução geral nem no Detalhe do componente (o Planejamento continua considerando).'],
+    'lote_liberado' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) Liberada(s) — voltam a aparecer na Evolução geral e no Detalhe do componente.'],
     'lote_excluido' => ['success', '🗑️ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) excluída(s) (e as entradas de estoque geradas por elas removidas).'],
     'lote_data_invalida' => ['danger', '❌ Data inválida. Use dd/mm/aaaa.'],
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
@@ -1765,6 +1789,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <option value="atendido">Situação → Atendido</option>
                         <option value="pendente">Situação → Pendente (reabrir)</option>
                         <option value="data">Data (pendentes)</option>
+                        <option value="liberado">Status → ✅ Liberado</option>
+                        <option value="bloqueado">Status → ⛔ Bloqueado</option>
                         <option value="excluir">🗑️ Excluir todas as linhas</option>
                     </select>
                 </div>
@@ -1776,7 +1802,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
                 </div>
             </form>
-            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam). "Excluir" apaga todas as linhas do Processo/PO e as entradas de estoque que elas geraram.</small>
+            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam). "Excluir" apaga todas as linhas do Processo/PO e as entradas de estoque que elas geraram. "Status" Liberado/Bloqueado vale pra todas as linhas (Bloqueado só some da Evolução geral e do Detalhe do componente).</small>
         </div>
 
         <div class="card p-3 mb-4">
