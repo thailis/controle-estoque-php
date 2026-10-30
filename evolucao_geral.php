@@ -197,6 +197,7 @@ try {
             FROM programacao
             WHERE TRIM(codigo_componente) IN ($placeholders)
               AND (atendido = 0 OR atendido IS NULL)
+              AND COALESCE(bloqueado, 0) = 0  -- Bloqueado na Programação não aparece aqui
             GROUP BY TRIM(codigo_componente), data
         ");
         mysqli_stmt_bind_param($stmtProg, $tiposCodigos, ...$codigosCalculo);

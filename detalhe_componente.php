@@ -69,7 +69,9 @@ $estoquePorAntigo = [];
 $erroDetalhe = null;
 $infoComponente = ['descricao' => '', 'fornecedores' => '', 'projetos' => ''];
 $estoqueAtual = 0.0;
-$programacaoPorData = [];
+$programacaoPorData = [];      // só linhas LIBERADAS — usada na tabela de saldo da tela
+$programacaoTodasPorData = []; // liberadas + bloqueadas — usada na simulação de compra (igual ao Planejamento)
+$entradasBloqueadas = 0.0;
 $demandaPorData = [];
 $parametrosCompra = null;
 $parcelasSugeridas = [];
@@ -120,7 +122,9 @@ try {
 
     // Programação de entradas futuras (chegadas previstas), somadas por data
     $stmtProg = mysqli_prepare($conn, "
-        SELECT data, SUM(quantidade) AS quantidade
+        SELECT data,
+               SUM(CASE WHEN COALESCE(bloqueado, 0) = 0 THEN quantidade ELSE 0 END) AS quantidade,
+               SUM(quantidade) AS quantidade_todas
         FROM programacao
         WHERE TRIM(codigo_componente) IN ($phGrupo)
           AND (atendido = 0 OR atendido IS NULL)
@@ -131,6 +135,8 @@ try {
     $resProg = mysqli_stmt_get_result($stmtProg);
     while ($linha = mysqli_fetch_assoc($resProg)) {
         $programacaoPorData[$linha['data']] = (float) $linha['quantidade'];
+        $programacaoTodasPorData[$linha['data']] = (float) $linha['quantidade_todas'];
+        $entradasBloqueadas += (float) $linha['quantidade_todas'] - (float) $linha['quantidade'];
     }
     mysqli_stmt_close($stmtProg);
 
@@ -265,7 +271,7 @@ if ($erroDetalhe === null) {
         $horizontePreview = $hoje->modify('+12 months');
         $resultadoPreview = calcularParcelasCompraPlanejamento(
             $estoqueAtual,
-            $programacaoPorData,
+            $programacaoTodasPorData, // bloqueadas entram: o Planejamento/MRP não muda com o bloqueio
             $demandaPorData,
             $hoje,
             $horizontePreview,
@@ -388,6 +394,13 @@ if ($erroDetalhe === null) {
             <p class="mb-1"><strong>Projeto(s):</strong> <?php echo h($infoComponente['projetos'] ?: '—'); ?></p>
             <p class="mb-0"><strong>Estoque físico atual (hoje):</strong> <?php echo numeroBr($estoqueAtual); ?><?php if (!empty($codigosAntigos)): ?> <small class="text-muted">(inclui <?php echo h(implode(', ', $codigosAntigos)); ?>)</small><?php endif; ?></p>
         </section>
+
+        <?php if ($entradasBloqueadas > 0): ?>
+            <div class="alert alert-danger" role="alert">
+                ⛔ <strong><?php echo numeroBr($entradasBloqueadas, 0); ?></strong> peça(s) de entradas programadas estão <strong>Bloqueadas</strong> na <a href="programacao.php?busca=<?php echo urlencode($codigo); ?>">Programação</a> e não entram no saldo abaixo.
+                A compra sugerida (mesma lógica do Planejamento) continua considerando essas chegadas.
+            </div>
+        <?php endif; ?>
 
         <?php if ($substituidoPor !== null): ?>
             <div class="alert alert-warning" role="alert">

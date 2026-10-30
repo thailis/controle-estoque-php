@@ -384,6 +384,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 // Versão AJAX: mesma lógica de negócio acima, mas responde em JSON pra
 // atualizar o botão e as células editáveis (data/quantidade) sem recarregar
 // a página.
+// ---------- Status Liberado / Bloqueado (AJAX) ----------
+// Bloqueado = a linha some da Evolução geral e do Detalhe do componente (pra ver
+// o estoque "sem esse pedido", ex.: fornecedor atrasando). NÃO muda nada no
+// Planejamento de Compras / MRP, que continua considerando a chegada.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_alternar_bloqueio') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!ehComprador()) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'erro' => 'Você está como Visualizador e não pode editar.']);
+        exit;
+    }
+    $idBloq = (int) ($_POST['id'] ?? 0);
+    try {
+        $stmtBloq = mysqli_prepare($conn, "UPDATE programacao SET bloqueado = 1 - COALESCE(bloqueado, 0) WHERE id = ?");
+        mysqli_stmt_bind_param($stmtBloq, 'i', $idBloq);
+        mysqli_stmt_execute($stmtBloq);
+        mysqli_stmt_close($stmtBloq);
+        $stmtBloqLe = mysqli_prepare($conn, "SELECT COALESCE(bloqueado, 0) AS bloqueado FROM programacao WHERE id = ?");
+        mysqli_stmt_bind_param($stmtBloqLe, 'i', $idBloq);
+        mysqli_stmt_execute($stmtBloqLe);
+        $linhaBloq = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBloqLe));
+        mysqli_stmt_close($stmtBloqLe);
+        if (!$linhaBloq) {
+            echo json_encode(['ok' => false, 'erro' => 'Registro não encontrado.']);
+            exit;
+        }
+        echo json_encode(['ok' => true, 'bloqueado' => (int) $linhaBloq['bloqueado'] === 1]);
+    } catch (Throwable $erroBloq) {
+        echo json_encode(['ok' => false, 'erro' => 'Erro ao alterar o status (a coluna "bloqueado" já foi criada no banco?): ' . $erroBloq->getMessage()]);
+    }
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_alternar_atendido') {
     header('Content-Type: application/json; charset=UTF-8');
     if (!ehComprador()) {
@@ -1465,7 +1498,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.planta, p.data, p.quantidade, p.importado, p.atendido,
+$sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.planta, p.data, p.quantidade, p.importado, p.atendido, COALESCE(p.bloqueado, 0) AS bloqueado,
                p.preco, p.moeda, p.data_recebida, p.quantidade_recebida,
                bg.descricao, bg.fornecedores, bg.pn
         FROM programacao p
@@ -1807,12 +1840,13 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Data Recebida</th>
                             <th class="text-end">Quantidade Recebida</th>
                             <th class="text-end" title="Quantidade Recebida − Quantidade">Saldo</th>
+                            <th title="Liberado = aparece na Evolução geral e no Detalhe do componente · Bloqueado = some dessas telas (o Planejamento de Compras continua considerando)">Status</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="18" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1919,6 +1953,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="text-end text-muted js-saldo" data-saldo-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Quantidade Recebida − Quantidade">
                                         <?php echo number_format($saldoLinha, 2, ',', '.'); ?>
                                     </td>
+                                    <td class="text-center">
+                                        <?php $bloqueadoLinha = (int) ($row['bloqueado'] ?? 0) === 1; ?>
+                                        <button type="button" class="btn btn-sm js-bloqueio <?php echo $bloqueadoLinha ? 'btn-danger' : 'btn-outline-success'; ?>" data-id="<?php echo $idLinha; ?>"
+                                            title="<?php echo $bloqueadoLinha ? 'Bloqueado: não aparece na Evolução geral nem no Detalhe do componente (o Planejamento continua considerando). Clique para liberar.' : 'Liberado: aparece na Evolução geral e no Detalhe do componente. Clique para bloquear.'; ?>"
+                                            style="font-size:.72rem; padding:2px 8px; white-space:nowrap;"><?php echo $bloqueadoLinha ? '⛔ Bloqueado' : '✅ Liberado'; ?></button>
+                                    </td>
                                     <td>
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir esta programação? Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_programacao">
@@ -2005,11 +2045,12 @@ while ($row = mysqli_fetch_assoc($result)) {
                     const idLinha = form.querySelector('input[name="id"]').value;
                     const celulaPo = linha.children[1];
                     const celulaProcesso = linha.children[2];
-                    // Ordem atual das colunas: 0 Situação, 1 PO, 2 Processo, 3 Componente, 4 PN,
-                    // 5 Descrição, 6 Fornecedor, 7 Preço, 8 Moeda, 9 Data, 10 Quantidade, 11 Importado,
-                    // 12 Total Pedido, 13 Data Recebida, 14 Quantidade Recebida, 15 Saldo, 16 Excluir.
-                    const celulaData = linha.children[9];
-                    const celulaQtd = linha.children[10];
+                    // Ordem atual das colunas: 0 Situação, 1 PO, 2 Processo, 3 Planta, 4 Componente,
+                    // 5 PN, 6 Descrição, 7 Fornecedor, 8 Preço, 9 Moeda, 10 Data, 11 Quantidade,
+                    // 12 Importado, 13 Total Pedido, 14 Data Recebida, 15 Quantidade Recebida,
+                    // 16 Saldo, 17 Status, 18 Excluir.
+                    const celulaData = linha.children[10];
+                    const celulaQtd = linha.children[11];
                     if (celulaPo && celulaProcesso && celulaData && celulaQtd) {
                         if (json.atendido) {
                             celulaPo.className = '';
@@ -2057,6 +2098,28 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
                 })
                 .catch(() => alert('Erro de conexão ao atualizar. Tente de novo.'));
+        });
+    </script>
+    <script>
+        // Liberado ⇄ Bloqueado (sem recarregar a página)
+        document.addEventListener('click', function (e) {
+            const botao = e.target.closest('button.js-bloqueio');
+            if (!botao) return;
+            const dados = new URLSearchParams({ acao: 'ajax_alternar_bloqueio', id: botao.dataset.id });
+            botao.disabled = true;
+            fetch('programacao.php', { method: 'POST', body: dados })
+                .then(r => r.json())
+                .then(json => {
+                    if (!json.ok) { alert(json.erro || 'Erro ao alterar o status.'); return; }
+                    botao.classList.toggle('btn-danger', json.bloqueado);
+                    botao.classList.toggle('btn-outline-success', !json.bloqueado);
+                    botao.textContent = json.bloqueado ? '⛔ Bloqueado' : '✅ Liberado';
+                    botao.title = json.bloqueado
+                        ? 'Bloqueado: não aparece na Evolução geral nem no Detalhe do componente (o Planejamento continua considerando). Clique para liberar.'
+                        : 'Liberado: aparece na Evolução geral e no Detalhe do componente. Clique para bloquear.';
+                })
+                .catch(() => alert('Erro de conexão ao alterar o status.'))
+                .finally(() => { botao.disabled = false; });
         });
     </script>
     <script>
