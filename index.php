@@ -1,6 +1,7 @@
 <?php
 require_once 'conexao.php';
 require_once 'mrp_calculo.php';
+require_once 'substituicoes.php';
 
 require_once 'auth.php';
 exigirLogin();
@@ -327,6 +328,54 @@ try {
     }
     mysqli_stmt_close($stmt);
 
+    // ---------- Substituição de código (coluna "Substitui" da BOM) ----------
+    // Mostra SÓ o componente novo: o antigo sai da lista e o estoque dele entra
+    // no novo (é consumido primeiro). A demanda NÃO é somada — o antigo e o novo
+    // atendem o mesmo material na BOM, então somar contaria a mesma demanda duas
+    // vezes; vale a maior das duas. Programação pendente do antigo também entra
+    // no novo (mais abaixo, no cálculo com parâmetros).
+    $subs = carregarSubstituicoes($conn);
+    $indicePorCodigo = [];
+    foreach ($linhas as $i => $l) {
+        $indicePorCodigo[(string) $l['codigo_componente']] = $i;
+    }
+    $antigosPorNovo = [];
+    foreach ($linhas as $i => $l) {
+        $codigoAntigo = (string) $l['codigo_componente'];
+        $codigoNovo = codigoSubstitutoFinal($subs, $codigoAntigo);
+        if ($codigoNovo === null) {
+            continue;
+        }
+        if (isset($indicePorCodigo[$codigoNovo])) {
+            $j = $indicePorCodigo[$codigoNovo];
+            $linhas[$j]['estoque_atual'] += $l['estoque_atual'];
+            $linhas[$j]['estoque_cadastrado'] = $linhas[$j]['estoque_cadastrado'] || $l['estoque_cadastrado'];
+            $linhas[$j]['demanda_total'] = max($linhas[$j]['demanda_total'], $l['demanda_total']);
+            $antigosPorNovo[$codigoNovo][] = $codigoAntigo;
+        }
+        unset($linhas[$i]); // o antigo nunca aparece sozinho
+    }
+    $linhas = array_values($linhas);
+    foreach ($linhas as &$linhaSub) {
+        $linhaSub['antigos'] = $antigosPorNovo[(string) $linhaSub['codigo_componente']] ?? [];
+        if (!$linhaSub['antigos']) {
+            continue;
+        }
+        // Recalcula o status simples com o estoque já somado
+        $linhaSub['saldo_final'] = $linhaSub['estoque_atual'] - $linhaSub['demanda_total'];
+        $linhaSub['necessidade_compra'] = max(0, -$linhaSub['saldo_final']);
+        if ($linhaSub['demanda_total'] <= 0.000001) {
+            $linhaSub['status'] = 'sem_demanda';
+        } elseif ($linhaSub['saldo_final'] < 0) {
+            $linhaSub['status'] = 'critico';
+        } elseif ($linhaSub['estoque_atual'] <= ($linhaSub['demanda_total'] * 1.20)) {
+            $linhaSub['status'] = 'atencao';
+        } else {
+            $linhaSub['status'] = 'ok';
+        }
+    }
+    unset($linhaSub);
+
     // Verifica quais componentes têm os parâmetros de compra completos (MOQ, Frozen Zone,
     // Transit Time, Min/Max). Para esses, o status final vem da simulação precisa (dentro
     // da janela de 90 dias), não mais do cálculo agregado simples feito acima.
@@ -356,7 +405,14 @@ try {
         mysqli_stmt_close($stmtParam);
 
         if (!empty($parametrosCompra)) {
-            $codigosComParametros = array_keys($parametrosCompra);
+            $codigosComParametros = array_map('strval', array_keys($parametrosCompra));
+            // Inclui os códigos antigos (substituídos) pra trazer a programação e a demanda deles
+            foreach ($codigosComParametros as $codigoP) {
+                foreach ($antigosPorNovo[$codigoP] ?? [] as $antigoP) {
+                    $codigosComParametros[] = $antigoP;
+                }
+            }
+            $codigosComParametros = array_values(array_unique($codigosComParametros));
             $placeholdersP = implode(',', array_fill(0, count($codigosComParametros), '?'));
             $tiposCodigosP = str_repeat('s', count($codigosComParametros));
 
@@ -396,6 +452,19 @@ try {
                 $demandaPorComponenteMrp[$linhaDem['codigo_componente']][$linhaDem['data']] = (float) $linhaDem['quantidade'];
             }
             mysqli_stmt_close($stmtDemandaMrp);
+
+            // Junta o antigo no novo: programação SOMADA; demanda = a maior das duas
+            // em cada data (o mesmo material não é contado duas vezes).
+            foreach ($antigosPorNovo as $codigoNovoM => $antigosM) {
+                foreach ($antigosM as $antigoM) {
+                    foreach ($programacaoPorComponenteMrp[$antigoM] ?? [] as $dataM => $qtdM) {
+                        $programacaoPorComponenteMrp[$codigoNovoM][$dataM] = ($programacaoPorComponenteMrp[$codigoNovoM][$dataM] ?? 0.0) + $qtdM;
+                    }
+                    foreach ($demandaPorComponenteMrp[$antigoM] ?? [] as $dataM => $qtdM) {
+                        $demandaPorComponenteMrp[$codigoNovoM][$dataM] = max($demandaPorComponenteMrp[$codigoNovoM][$dataM] ?? 0.0, $qtdM);
+                    }
+                }
+            }
 
             $hojeMrp = new DateTimeImmutable('today');
             $horizonteMrp = $hojeMrp->modify('+12 months'); // horizonte rolante (sempre 12 meses à frente de hoje)
@@ -842,7 +911,10 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                         <?php else: ?>
                             <?php foreach ($linhasPagina as $linha): ?>
                                 <tr class="row-<?php echo h($linha['status']); ?>">
-                                    <td><strong class="component-code"><?php echo h($linha['codigo_componente']); ?></strong></td>
+                                    <td>
+                                        <strong class="component-code"><?php echo h($linha['codigo_componente']); ?></strong>
+                                        <?php if (!empty($linha['antigos'])): ?><span class="badge bg-warning-subtle text-dark border ms-1" title="Substitui <?php echo h(implode(', ', $linha['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui">↺ <?php echo h(implode(', ', $linha['antigos'])); ?></span><?php endif; ?>
+                                    </td>
                                     <td>
                                         <span class="description-cell"><?php echo h($linha['descricao']); ?></span>
                                         <?php if (!empty($linha['projetos'])): ?><small class="d-block text-muted">Projeto: <?php echo h($linha['projetos']); ?></small><?php endif; ?>
