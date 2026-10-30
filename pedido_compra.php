@@ -803,13 +803,13 @@ if ($resProcessosProgramacao) {
                 const eta = linha.querySelector('.f-eta');
                 if (eta) eta.value = trocarDiaMesPo(eta.value);
                 const pickup = linha.querySelector('.f-pickup');
-                if (pickup) pickup.value = trocarDiaMesPo(pickup.value);
+                if (pickup && !pickup.querySelector('input')) definirValorPull(pickup, trocarDiaMesPo(pickup.dataset.valor || ''));
             });
             ['tax_icms', 'tax_pis', 'tax_cofins', 'tax_ipi', 'valor_adiantamento', 'valor_frete'].forEach((id) => {
                 const campo = document.getElementById(id);
                 if (campo) campo.value = converterNumeroPo(campo.value, antigo, novo);
             });
-            document.querySelectorAll('.f-eta, .f-pickup').forEach((campo) => {
+            document.querySelectorAll('.f-eta').forEach((campo) => {
                 campo.placeholder = novo ? 'mm/dd/yyyy' : 'dd/mm/aaaa';
             });
 
@@ -856,7 +856,8 @@ if ($resProcessosProgramacao) {
 
         function definirValorPull(celula, valor) {
             celula.dataset.valor = valor;
-            celula.textContent = valor === '' ? '—' : valor;
+            // Pick up e Status ficam em branco quando vazios (sai limpo no PDF)
+            celula.textContent = valor === '' ? (celula.dataset.vazio ?? '—') : valor;
         }
 
         function adicionarLinha(dados) {
@@ -868,14 +869,14 @@ if ($resProcessosProgramacao) {
                 <td class="col-idx">${idx}</td>
                 <td class="f-part"></td>
                 <td class="f-desc"></td>
-                <td class="center col-release"><input type="text" class="f-pickup" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}"></td>
+                <td class="center col-release f-pickup" data-vazio=""></td>
                 <td class="center"><input type="text" class="f-eta" placeholder="${formatoInternacional ? 'mm/dd/yyyy' : 'dd/mm/aaaa'}" oninput="recalcularRelease(${idx})"></td>
                 <td class="center"><input type="text" class="f-unm" value="UN"></td>
                 <td class="num f-qtd"></td>
                 <td class="num col-normal"><input type="text" class="f-preco" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
                 <td class="num col-normal"><input type="text" class="f-total" readonly></td>
                 <td class="center col-release"><input type="text" class="f-order"></td>
-                <td class="center col-release f-status"></td>
+                <td class="center col-release f-status" data-vazio=""></td>
                 <td class="col-acao no-print"><button type="button" class="btn-remover-linha" onclick="removerLinha(${idx})" title="Remover linha">✕</button></td>
             `;
             document.getElementById('corpo-itens').appendChild(tr);
@@ -891,6 +892,27 @@ if ($resProcessosProgramacao) {
             tornarPull(celPart, () => buscarDescricaoBom(idx));
             tornarPull(celDesc);
             tornarPull(celQtd, () => recalcularLinha(idx));
+
+            // Pick up e Status: calculados, mas dá pra trocar com DUPLO CLIQUE.
+            // O valor digitado fica valendo (não é recalculado depois). Apagando
+            // o campo, volta pro cálculo automático.
+            const celPickup = tr.querySelector('.f-pickup');
+            const celStatus = tr.querySelector('.f-status');
+            definirValorPull(celPickup, '');
+            definirValorPull(celStatus, '');
+            tornarPull(celPickup, (novo) => {
+                celPickup.dataset.manual = novo === '' ? '' : '1';
+                celPickup.title = novo === '' ? '' : 'Alterado manualmente (apague pra voltar ao cálculo)';
+                recalcularRelease(idx);
+            });
+            tornarPull(celStatus, (novo) => {
+                const valor = novo.toUpperCase();
+                celStatus.dataset.manual = valor === '' ? '' : '1';
+                definirValorPull(celStatus, valor);
+                pintarStatus(celStatus);
+                celStatus.title = valor === '' ? '' : 'Alterado manualmente (apague pra voltar ao cálculo)';
+                recalcularRelease(idx);
+            });
 
             if (dados && dados.preco) {
                 tr.querySelector('.f-preco').value = converterNumeroPo(dados.preco, false, formatoInternacional);
@@ -1063,26 +1085,42 @@ if ($resProcessosProgramacao) {
             const cong = linha.dataset.congelamento !== undefined && linha.dataset.congelamento !== '' ? parseInt(linha.dataset.congelamento, 10) : null;
 
             const campoPickup = linha.querySelector('.f-pickup');
-            if (eta && lead !== null && !isNaN(lead)) {
-                const pickup = new Date(eta);
-                pickup.setDate(pickup.getDate() - lead);
-                campoPickup.value = escreverDataPo(pickup);
-                campoPickup.title = 'ETA − ' + lead + ' dias (Lead Time + Transit Time)';
+            if (campoPickup.dataset.manual !== '1' && !campoPickup.querySelector('input')) {
+                if (eta && lead !== null && !isNaN(lead)) {
+                    const pickup = new Date(eta);
+                    pickup.setDate(pickup.getDate() - lead);
+                    definirValorPull(campoPickup, escreverDataPo(pickup));
+                    campoPickup.title = 'ETA − ' + lead + ' dias (Lead Time + Transit Time) — duplo clique pra alterar';
+                } else {
+                    definirValorPull(campoPickup, '');
+                }
             }
 
             const celStatus = linha.querySelector('.f-status');
+            if (celStatus.dataset.manual === '1' || celStatus.querySelector('input')) {
+                pintarStatus(celStatus);
+                return;
+            }
             celStatus.classList.remove('status-f', 'status-p');
             if (eta && cong !== null && !isNaN(cong)) {
                 const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
                 const limite = new Date(hoje); limite.setDate(limite.getDate() + cong);
                 const congelado = eta <= limite;
-                celStatus.textContent = congelado ? 'F' : 'P';
+                definirValorPull(celStatus, congelado ? 'F' : 'P');
                 celStatus.classList.add(congelado ? 'status-f' : 'status-p');
                 celStatus.title = (congelado ? 'Dentro' : 'Fora') + ' do Frozen Zone (' + cong + ' dias a partir de hoje: até ' + escreverDataPo(limite) + ')';
             } else {
-                celStatus.textContent = '';
+                definirValorPull(celStatus, '');
                 celStatus.title = 'Sem Frozen Zone cadastrado em Parâmetros ou sem ETA';
             }
+        }
+
+        // F = azul, P = laranja claro (vale também pro Status digitado à mão)
+        function pintarStatus(cel) {
+            cel.classList.remove('status-f', 'status-p');
+            const v = (cel.dataset.valor || '').toUpperCase();
+            if (v === 'F') cel.classList.add('status-f');
+            if (v === 'P') cel.classList.add('status-p');
         }
 
         function alternarRelease() {
