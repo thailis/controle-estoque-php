@@ -578,11 +578,13 @@ $importers = [
             ws.getColumn(cVol).width = 5.5; ws.getColumn(cPeso).width = 7.91; ws.getColumn(cNw).width = 8; ws.getColumn(cGw).width = 8.54;
 
             // Linhas 1-7: cabeçalho de cada Spot
-            [16.2, 22.2, 16.2, 19.7, 19.7, 19.7, 19.7].forEach((ht, k) => { ws.getRow(k + 1).height = ht; });
+            // Texto vermelho do topo (PICK UP/ETD/ETA/ETA YAPP e as datas) em tamanho 12
+            const TAM_TOPO = 12;
+            [16.2, 22.2, 16.2, 17, 17, 17, 17].forEach((ht, k) => { ws.getRow(k + 1).height = ht; });
             const rotulos = [[4, 'PICK UP', 'pickup'], [5, 'ETD', 'etd'], [6, 'ETA', 'eta'], [7, 'ETA YAPP', 'eta_yapp']];
             rotulos.forEach(([lin, rot]) => {
                 const c = ws.getCell(lin, 2);
-                c.value = rot; c.font = arial(16, true, { color: VERMELHO }); c.alignment = { vertical: 'middle', wrapText: true };
+                c.value = rot; c.font = arial(TAM_TOPO, true, { color: VERMELHO }); c.alignment = { vertical: 'middle', wrapText: true };
             });
             spots.forEach((s, i) => {
                 const c = colSpot(i);
@@ -599,7 +601,7 @@ $importers = [
                     for (let k = 1; k < 4; k++) { ws.getCell(lin, c + k).fill = BRANCO; }
                     const cel = ws.getCell(lin, c);
                     cel.value = comoData(s[campo]); cel.numFmt = 'dd/mm/yyyy';
-                    cel.font = arial(16, false, { color: VERMELHO }); cel.fill = BRANCO;
+                    cel.font = arial(TAM_TOPO, false, { color: VERMELHO }); cel.fill = BRANCO;
                     cel.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
                     cel.border = lin === 4 ? bordaTodas : { left: fino, right: fino, bottom: fino };
                 });
