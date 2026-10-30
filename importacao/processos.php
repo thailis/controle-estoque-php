@@ -1250,10 +1250,10 @@ function montarFiltrosProcessos(array $get): array
     if ($busca !== '') {
         $partes = [];
         foreach (termosBuscaProcessos($busca) as $termo) {
-            $partes[] = "(LOWER(COALESCE(processo, '')) LIKE ? OR LOWER(COALESCE(codigo_componente, '')) LIKE ? OR LOWER(COALESCE(fornecedor, '')) LIKE ? OR LOWER(COALESCE(descricao, '')) LIKE ? OR LOWER(COALESCE(projeto, '')) LIKE ?)";
+            $partes[] = "(LOWER(COALESCE(processo, '')) LIKE ? OR LOWER(COALESCE(codigo_componente, '')) LIKE ? OR LOWER(COALESCE(fornecedor, '')) LIKE ? OR LOWER(COALESCE(descricao, '')) LIKE ? OR LOWER(COALESCE(projeto, '')) LIKE ? OR LOWER(COALESCE(po, '')) LIKE ?)";
             $like = '%' . mb_strtolower($termo, 'UTF-8') . '%';
-            array_push($params, $like, $like, $like, $like, $like);
-            $tipos .= 'sssss';
+            array_push($params, $like, $like, $like, $like, $like, $like);
+            $tipos .= 'ssssss';
         }
         if ($partes) {
             $condicoes[] = '(' . implode(' OR ', $partes) . ')';
@@ -1676,7 +1676,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         <section class="filter-panel mb-4">
             <form method="GET" class="row g-3 align-items-end">
                 <div class="col-md-4">
-                    <label class="form-label">Buscar por processo, projeto, componente, fornecedor ou descrição</label>
+                    <label class="form-label">Buscar por processo, PO, projeto, componente, fornecedor ou descrição</label>
                     <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Vários: separe com ; (ex.: Y26S3P0010; VWB)">
                 </div>
                 <div class="col-md-2">
