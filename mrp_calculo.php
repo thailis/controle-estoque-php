@@ -1,4 +1,12 @@
 <?php
+
+// Folga entre o RECEBIMENTO do material e o dia da DEMANDA (receber, conferir e
+// disponibilizar): data de necessidade = data da demanda − este número de dias.
+// Era 30; passou pra 20. (Os comentários abaixo que falam em "30 dias" se referem a esta folga.)
+if (!defined('MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA')) {
+    define('MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA', 20);
+}
+
 // Funções de cálculo do MRP compartilhadas entre telas (Planejamento de Compras e
 // Evolução do Estoque). Ficam num arquivo só pra qualquer ajuste na lógica (piso,
 // MOQ, Estoque Máximo, timing de disponibilização etc.) valer pras duas telas ao
@@ -166,7 +174,7 @@ function calcularParcelasCompraPlanejamento(
         // janela cortava o evento antes do ponto em que a DECISÃO de compra (data sugerida)
         // ainda cairia dentro do prazo desta revisão, deixando a necessidade escapar pra
         // revisão seguinte mesmo quando já era hora de agir.
-        $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days")->modify('+30 days'));
+        $fimUrgencia = min($horizonteFim, $checkpoint->modify('+1 month')->modify("+{$leadDias} days")->modify('+' . MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA . ' days'));
         $iFimUrgencia = $indicePorData[$fimUrgencia->format('Y-m-d')] ?? ($n - 1);
 
         // Piso do Estoque Mínimo calculado DIA A DIA, olhando pra frente a partir de CADA
@@ -250,7 +258,7 @@ function calcularParcelasCompraPlanejamento(
         if ($iEvento > $limiteBuscaEvento || $iEvento >= $n) {
             $iEvento = $iPrimeiroDeficit; // furo por erosão de segurança, sem demanda real associada
         }
-        $dataNecessidade = $dias[$iEvento]->modify('-30 days');
+        $dataNecessidade = $dias[$iEvento]->modify('-' . MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA . ' days');
         $dataSugerida = $dataNecessidade->modify("-{$leadDias} days");
 
         // $iEvento é o dia da DEMANDA, não o dia em que o material fica disponível — a
@@ -263,7 +271,7 @@ function calcularParcelasCompraPlanejamento(
         // injeção no saldo ficavam 30 dias atrasados em relação à data de necessidade já
         // calculada, deixando o saldo simulado artificialmente baixo durante esse período
         // (o material já estaria fisicamente disponível, mas a simulação não "sabia" disso).
-        $iDisponibilidade = max(0, $iEvento - 30);
+        $iDisponibilidade = max(0, $iEvento - MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA);
 
         // DATA RETROATIVA: se a data sugerida de pedido já passou (ex.: era pra pedir
         // em agosto com chegada em 18/09 e nada foi programado), não adianta mostrar
