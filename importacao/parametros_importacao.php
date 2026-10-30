@@ -71,6 +71,64 @@ try {
     $tabelaExiste = false;
 }
 
+// ---------- Siglas de fornecedor (código dos processos de categoria Release) ----------
+// Ex.: KURARAY → KR, então o processo fica Y26S1KR01. Tabela: siglas_fornecedor.
+$siglasExiste = true;
+try {
+    mysqli_query($conn, 'SELECT 1 FROM siglas_fornecedor LIMIT 1');
+} catch (Throwable $e) {
+    $siglasExiste = false;
+}
+if ($siglasExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar_sigla') {
+    $fornSigla = trim((string) ($_POST['fornecedor_sigla'] ?? ''));
+    $sigla = strtoupper(trim((string) ($_POST['sigla'] ?? '')));
+    $siglaAntiga = trim((string) ($_POST['fornecedor_original'] ?? ''));
+    if ($fornSigla === '' || !preg_match('/^[A-Z]{2,3}$/', $sigla)) {
+        $mensagens[] = '❌ Informe o fornecedor e uma sigla de 2 (ou 3) letras.';
+    } else {
+        try {
+            // sigla não pode repetir em outro fornecedor (o código ficaria ambíguo)
+            $stmtDup = mysqli_prepare($conn, 'SELECT fornecedor FROM siglas_fornecedor WHERE UPPER(sigla) = ? AND UPPER(fornecedor) <> UPPER(?) AND UPPER(fornecedor) <> UPPER(?)');
+            mysqli_stmt_bind_param($stmtDup, 'sss', $sigla, $fornSigla, $siglaAntiga);
+            mysqli_stmt_execute($stmtDup);
+            $dup = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDup));
+            mysqli_stmt_close($stmtDup);
+            if ($dup) {
+                $mensagens[] = "❌ A sigla $sigla já é do fornecedor {$dup['fornecedor']}.";
+            } else {
+                if ($siglaAntiga !== '' && strcasecmp($siglaAntiga, $fornSigla) !== 0) {
+                    $stmtDel = mysqli_prepare($conn, 'DELETE FROM siglas_fornecedor WHERE fornecedor = ?');
+                    mysqli_stmt_bind_param($stmtDel, 's', $siglaAntiga);
+                    mysqli_stmt_execute($stmtDel);
+                    mysqli_stmt_close($stmtDel);
+                }
+                $stmtS = mysqli_prepare($conn, 'INSERT INTO siglas_fornecedor (fornecedor, sigla) VALUES (?, ?) ON DUPLICATE KEY UPDATE sigla = VALUES(sigla)');
+                mysqli_stmt_bind_param($stmtS, 'ss', $fornSigla, $sigla);
+                mysqli_stmt_execute($stmtS);
+                mysqli_stmt_close($stmtS);
+                $mensagens[] = "✅ $fornSigla = $sigla salvo.";
+            }
+        } catch (Throwable $e) {
+            $mensagens[] = '❌ Erro ao salvar a sigla: ' . $e->getMessage();
+        }
+    }
+}
+if ($siglasExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir_sigla') {
+    $fornSigla = trim((string) ($_POST['fornecedor_sigla'] ?? ''));
+    $stmtDel = mysqli_prepare($conn, 'DELETE FROM siglas_fornecedor WHERE fornecedor = ?');
+    mysqli_stmt_bind_param($stmtDel, 's', $fornSigla);
+    mysqli_stmt_execute($stmtDel);
+    mysqli_stmt_close($stmtDel);
+    $mensagens[] = "✅ Sigla de $fornSigla excluída.";
+}
+$siglas = [];
+if ($siglasExiste) {
+    $resSig = mysqli_query($conn, 'SELECT fornecedor, sigla FROM siglas_fornecedor ORDER BY fornecedor');
+    while ($rs = mysqli_fetch_assoc($resSig)) {
+        $siglas[] = $rs;
+    }
+}
+
 // ---------- AJAX: edição inline (duplo clique) ----------
 if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_editar') {
     header('Content-Type: application/json; charset=utf-8');
@@ -295,7 +353,7 @@ if ($tabelaExiste) {
             <div>
                 <span class="eyebrow">Controle de Importação • Parâmetros</span>
                 <h1>Parâmetros da Importação</h1>
-                <p class="mb-0">Unit pack, preço, medidas e pesos por componente — usados na Release</p>
+                <p class="mb-0">Unit pack, preço, medidas e pesos por componente (Release) e siglas de fornecedor</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
@@ -317,6 +375,43 @@ if ($tabelaExiste) {
         <?php if ($mensagens): ?>
             <div class="alert alert-info"><?php foreach ($mensagens as $m): ?><div><?php echo h($m); ?></div><?php endforeach; ?></div>
         <?php endif; ?>
+
+        <section class="filter-panel mb-4">
+            <details <?php echo in_array($_POST['acao'] ?? '', ['salvar_sigla', 'excluir_sigla'], true) ? 'open' : ''; ?>>
+                <summary class="fw-bold" style="cursor:pointer;">🏷️ Siglas de fornecedor (código dos processos Release)</summary>
+                <?php if (!$siglasExiste): ?>
+                    <div class="alert alert-warning mt-2 mb-0">A tabela <code>siglas_fornecedor</code> ainda não existe. Rode o SQL de criação no DBeaver e recarregue.</div>
+                <?php else: ?>
+                    <p class="small text-muted mt-2 mb-2">Categoria <strong>Release</strong> gera o processo como <strong>Y + ano + modal + planta + SIGLA + sequencial</strong> (ex.: Y26S1KR01). O sequencial conta por fornecedor no ano. O nome aqui precisa bater com o campo Fornecedor de Processos (ou estar contido nele — "KURARAY CO., LTD." acha KURARAY).</p>
+                    <form method="POST" class="row g-2 align-items-end mb-3">
+                        <input type="hidden" name="acao" value="salvar_sigla">
+                        <div class="col-md-4"><label class="form-label small mb-1">Fornecedor</label><input type="text" name="fornecedor_sigla" class="form-control form-control-sm" required></div>
+                        <div class="col-md-1" style="min-width:90px"><label class="form-label small mb-1">Sigla</label><input type="text" name="sigla" maxlength="3" class="form-control form-control-sm text-uppercase" required></div>
+                        <div class="col-auto"><button class="btn btn-primary btn-sm">Salvar</button></div>
+                    </form>
+                    <table class="table table-sm mb-0" style="max-width:520px">
+                        <thead><tr><th>Fornecedor</th><th>Sigla</th><th></th></tr></thead>
+                        <tbody>
+                            <?php foreach ($siglas as $sg): ?>
+                                <tr>
+                                    <td><?php echo h($sg['fornecedor']); ?></td>
+                                    <td><strong><?php echo h($sg['sigla']); ?></strong></td>
+                                    <td class="text-end">
+                                        <form method="POST" class="d-inline" onsubmit="return confirm('Excluir a sigla de <?php echo h($sg['fornecedor']); ?>?');">
+                                            <input type="hidden" name="acao" value="excluir_sigla">
+                                            <input type="hidden" name="fornecedor_sigla" value="<?php echo h($sg['fornecedor']); ?>">
+                                            <button class="btn-remover-linha" title="Excluir">✕</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <?php if (!$siglas): ?><tr><td colspan="3" class="text-muted">Nenhuma sigla cadastrada.</td></tr><?php endif; ?>
+                        </tbody>
+                    </table>
+                    <small class="text-muted d-block mt-1">Pra trocar a sigla de um fornecedor, salve de novo com o mesmo nome.</small>
+                <?php endif; ?>
+            </details>
+        </section>
 
         <?php if ($tabelaExiste): ?>
         <section class="filter-panel mb-4">

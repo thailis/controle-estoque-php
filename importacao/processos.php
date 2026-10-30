@@ -97,7 +97,52 @@ function normalizarTextoProcessos(string $texto): string
 // 1000, 1001...) — cresce sozinho sem zero à esquerda quando passar de 4
 // dígitos, e a busca abaixo aceita qualquer quantidade de dígitos no final
 // (não só 4), então continua contando certo mesmo depois de passar de 9999.
-function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string $categoria): array
+// Sigla do fornecedor pra categoria RELEASE (tabela siglas_fornecedor, cadastrada
+// em ⚙️ Parâmetros). Procura o nome exato; se não achar, aceita o fornecedor que
+// CONTÉM o nome cadastrado (ex.: "KURARAY CO., LTD." → KURARAY → KR). Também
+// aceita a própria sigla digitada no campo Fornecedor.
+function siglaFornecedorRelease(mysqli $conn, string $fornecedor): ?string
+{
+    $fornecedor = trim($fornecedor);
+    if ($fornecedor === '') {
+        return null;
+    }
+    try {
+        $stmt = mysqli_prepare($conn, "
+            SELECT sigla FROM siglas_fornecedor
+            WHERE UPPER(TRIM(fornecedor)) = UPPER(?) OR UPPER(TRIM(sigla)) = UPPER(?)
+               OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(fornecedor)), '%')
+            ORDER BY (UPPER(TRIM(fornecedor)) = UPPER(?)) DESC, CHAR_LENGTH(fornecedor) DESC
+            LIMIT 1
+        ");
+        mysqli_stmt_bind_param($stmt, 'ssss', $fornecedor, $fornecedor, $fornecedor, $fornecedor);
+        mysqli_stmt_execute($stmt);
+        $linha = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+        mysqli_stmt_close($stmt);
+        return $linha ? strtoupper(trim((string) $linha['sigla'])) : null;
+    } catch (Throwable $e) {
+        return null; // tabela ainda não criada
+    }
+}
+
+// Formato RELEASE (produtivo): Y + ano(2) + modal(1) + planta(1) + SIGLA do
+// fornecedor (2 letras) + sequencial de 2 dígitos — ex.: Y26S1KR01.
+// O sequencial conta POR FORNECEDOR NO ANO (KR01, KR02... e YP01, YP02...),
+// independente de modal/planta, e passa pra 3 dígitos depois do 99.
+function gerarCodigoRelease(mysqli $conn, string $modalLetra, string $plantaDigito, string $sigla): string
+{
+    $ano = date('y');
+    $padrao = '^Y' . $ano . '[A-Z][0-9]' . $sigla . '[0-9]+$';
+    $inicioSeq = 6 + strlen($sigla); // Y + 2 do ano + modal + planta = 5 caracteres
+    $stmt = mysqli_prepare($conn, "SELECT MAX(CAST(SUBSTRING(processo, $inicioSeq) AS UNSIGNED)) AS max_seq FROM processos WHERE processo REGEXP ?");
+    mysqli_stmt_bind_param($stmt, 's', $padrao);
+    mysqli_stmt_execute($stmt);
+    $maxSeq = (int) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))['max_seq'] ?? 0);
+    mysqli_stmt_close($stmt);
+    return 'Y' . $ano . $modalLetra . $plantaDigito . $sigla . str_pad((string) ($maxSeq + 1), 2, '0', STR_PAD_LEFT);
+}
+
+function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string $categoria, string $fornecedor = ''): array
 {
     $modalMapa = [
         'aereo' => 'A', 'aéreo' => 'A', 'air' => 'A',
@@ -121,8 +166,18 @@ function gerarCodigoProcesso(mysqli $conn, string $modal, string $planta, string
         'tooling' => 'T', 'project' => 'P', 'other' => 'O',
     ];
     $categoriaChave = mb_strtolower(trim($categoria), 'UTF-8');
+    if ($categoriaChave === 'release') {
+        $sigla = siglaFornecedorRelease($conn, $fornecedor);
+        if (trim($fornecedor) === '') {
+            return ['codigo' => null, 'erro' => 'Release: preencha o Fornecedor (o código usa a sigla dele).'];
+        }
+        if ($sigla === null) {
+            return ['codigo' => null, 'erro' => "Release: o fornecedor \"$fornecedor\" não tem sigla cadastrada em ⚙️ Parâmetros (Siglas de fornecedor)."];
+        }
+        return ['codigo' => gerarCodigoRelease($conn, $modalLetra, $plantaDigito, $sigla), 'erro' => null];
+    }
     if (!isset($categoriaMapa[$categoriaChave])) {
-        return ['codigo' => null, 'erro' => "Categoria \"$categoria\" não reconhecida. Use: tooling, project ou other."];
+        return ['codigo' => null, 'erro' => "Categoria \"$categoria\" não reconhecida. Use: tooling, project, other ou release."];
     }
     $categoriaLetra = $categoriaMapa[$categoriaChave];
 
@@ -161,13 +216,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_pr
     $modalPreview = trim($_POST['modal'] ?? '');
     $plantaPreview = trim($_POST['planta'] ?? '');
     $categoriaPreview = trim($_POST['categoria'] ?? '');
+    $fornecedorPreview = trim($_POST['fornecedor'] ?? '');
 
     if ($modalPreview === '' || $plantaPreview === '' || $categoriaPreview === '') {
         echo json_encode(['ok' => false, 'erro' => 'Preencha Categoria, Planta e Modal pra ver o código.']);
         exit;
     }
 
-    $geracaoPreview = gerarCodigoProcesso($conn, $modalPreview, $plantaPreview, $categoriaPreview);
+    $geracaoPreview = gerarCodigoProcesso($conn, $modalPreview, $plantaPreview, $categoriaPreview, $fornecedorPreview);
     if ($geracaoPreview['codigo'] === null) {
         echo json_encode(['ok' => false, 'erro' => $geracaoPreview['erro']]);
         exit;
@@ -629,7 +685,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         $codigoAtual = trim((string) ($linhaCod['processo'] ?? ''));
         $valorSalvo = $valor === '' ? null : $valor;
 
-        if (preg_match('/^Y(\d{2})[A-Z]\d[A-Z](\d+)$/', $codigoAtual, $partesCod)) {
+        $ehRelease = (bool) preg_match('/^Y(\d{2})[A-Z]\d([A-Z]{2,3})(\d+)$/', $codigoAtual, $partesRelease);
+        $vaiPraRelease = $campo === 'categoria' && mb_strtolower(trim((string) $valor), 'UTF-8') === 'release';
+        if ($campo === 'categoria' && ($ehRelease xor $vaiPraRelease)) {
+            echo json_encode(['ok' => false, 'erro' => 'Não dá pra trocar entre Release e Tooling/Project/Other num processo já criado (o formato do código é diferente). Cadastre um processo novo.']);
+            exit;
+        }
+        if ($ehRelease && in_array($campo, ['modal', 'planta'], true)) {
+            // Release: refaz só modal/planta, mantendo ano + sigla + sequencial
+            $mapaModalR = ['aereo' => 'A', 'aéreo' => 'A', 'air' => 'A', 'sea' => 'S', 'maritimo' => 'S', 'marítimo' => 'S', 'road' => 'R', 'rodoviario' => 'R', 'rodoviário' => 'R', 'courrier' => 'C', 'courier' => 'C'];
+            $letraModalR = $campo === 'modal' ? ($mapaModalR[mb_strtolower(trim((string) $valor), 'UTF-8')] ?? null) : substr($codigoAtual, 3, 1);
+            $plantaR = $campo === 'planta' ? trim((string) $valor) : '';
+            $digitoPlantaR = $campo === 'planta' ? (($plantaR !== '' && ctype_digit(substr($plantaR, -1))) ? substr($plantaR, -1) : null) : substr($codigoAtual, 4, 1);
+            if ($letraModalR === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Modal não reconhecido. Use: aereo/air, sea/maritimo, road ou courrier.']);
+                exit;
+            }
+            if ($digitoPlantaR === null) {
+                echo json_encode(['ok' => false, 'erro' => 'Planta inválida — precisa terminar com um número (ex.: 2401).']);
+                exit;
+            }
+            $codigoRefeitoRelease = 'Y' . $partesRelease[1] . $letraModalR . $digitoPlantaR . $partesRelease[2] . $partesRelease[3];
+            // reaproveita o fluxo abaixo (checagem de duplicado + renomear em todas as tabelas)
+            $partesCod = null;
+        }
+        if ($ehRelease && in_array($campo, ['modal', 'planta'], true) || preg_match('/^Y(\d{2})[A-Z]\d[A-Z](\d+)$/', $codigoAtual, $partesCod)) {
             $novos = [
                 'modal' => (string) ($linhaCod['modal'] ?? ''),
                 'planta' => (string) ($linhaCod['planta'] ?? ''),
@@ -657,7 +737,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
             }
 
             $novoCodigo = $codigoAtual;
-            if ($letraModal !== null && $letraCategoria !== null && $digitoPlanta !== null) {
+            if (isset($codigoRefeitoRelease)) {
+                $novoCodigo = $codigoRefeitoRelease;
+            } elseif ($letraModal !== null && $letraCategoria !== null && $digitoPlanta !== null) {
                 $novoCodigo = 'Y' . $partesCod[1] . $letraModal . $digitoPlanta . $letraCategoria . $partesCod[2];
             }
 
@@ -1007,6 +1089,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'recalcu
         }
         $renomeados[] = "$cod → $novo";
     }
+
+    // Release (Y + ano + modal + planta + SIGLA + seq): mesma correção de modal/planta,
+    // mantendo ano, sigla do fornecedor e sequencial.
+    $resRcRel = mysqli_query($conn, "
+        SELECT processo, MAX(modal) AS modal, MAX(planta) AS planta
+        FROM processos
+        WHERE processo REGEXP '^Y[0-9]{2}[A-Z][0-9][A-Z]{2,3}[0-9]+$'
+        GROUP BY processo
+        HAVING SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'finalizado' THEN 1 ELSE 0 END) = 0
+    ");
+    while ($pr = mysqli_fetch_assoc($resRcRel)) {
+        $cod = $pr['processo'];
+        $lm = $mapaModalRc[mb_strtolower(trim((string) $pr['modal']), 'UTF-8')] ?? null;
+        $pl = trim((string) $pr['planta']);
+        $dp = ($pl !== '' && ctype_digit(substr($pl, -1))) ? substr($pl, -1) : null;
+        if ($lm === null || $dp === null) {
+            continue;
+        }
+        $novo = 'Y' . substr($cod, 1, 2) . $lm . $dp . substr($cod, 5);
+        if ($novo === $cod) {
+            continue;
+        }
+        $stmtEx = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos WHERE processo = ?");
+        mysqli_stmt_bind_param($stmtEx, 's', $novo);
+        mysqli_stmt_execute($stmtEx);
+        $existe = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtEx))['total'] > 0;
+        mysqli_stmt_close($stmtEx);
+        if ($existe) {
+            $conflitos[] = "$cod → $novo";
+            continue;
+        }
+        foreach (['processos', 'follow', 'pagamento', 'comparativos'] as $tabelaRc) {
+            try {
+                $stmtUp = mysqli_prepare($conn, "UPDATE `$tabelaRc` SET processo = ? WHERE processo = ?");
+                mysqli_stmt_bind_param($stmtUp, 'ss', $novo, $cod);
+                mysqli_stmt_execute($stmtUp);
+                mysqli_stmt_close($stmtUp);
+            } catch (Throwable $erroRc) {
+                error_log("Recalcular código (release) em $tabelaRc: " . $erroRc->getMessage());
+            }
+        }
+        $renomeados[] = "$cod → $novo";
+    }
     $mensagens[] = empty($renomeados)
         ? '🔧 Nenhum código precisava ser atualizado.'
         : '🔧 ' . count($renomeados) . ' código(s) atualizado(s): ' . implode(', ', $renomeados) . '.';
@@ -1153,7 +1278,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         if (!empty($faltando)) {
             $mensagens[] = '❌ Preencha os campos obrigatórios antes de salvar: ' . implode(', ', $faltando) . '.';
         } else {
-            $geracao = gerarCodigoProcesso($conn, $modal, $planta, $categoria);
+            $geracao = gerarCodigoProcesso($conn, $modal, $planta, $categoria, (string) $fornecedor);
             if ($geracao['codigo'] === null) {
                 $mensagens[] = '❌ ' . $geracao['erro'];
             } else {
@@ -1528,7 +1653,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Categoria *</label>
-                        <input type="text" name="categoria_manual" id="categoria_manual" class="form-control" placeholder="tooling / project / other" required oninput="aplicarPadraoControlaEstoqueTooling(); atualizarPreviewCodigoProcesso();">
+                        <input type="text" name="categoria_manual" id="categoria_manual" class="form-control" placeholder="tooling / project / other / release" required oninput="aplicarPadraoControlaEstoqueTooling(); atualizarPreviewCodigoProcesso();">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Planta *</label>
@@ -1569,7 +1694,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Fornecedor</label>
-                        <input type="text" name="fornecedor_manual" class="form-control">
+                        <input type="text" name="fornecedor_manual" id="fornecedor_manual" class="form-control" oninput="atualizarPreviewCodigoProcesso();" title="Na categoria Release, o código usa a sigla deste fornecedor">
                     </div>
                     <div class="col-md-2">
                         <label class="form-label">Preço</label>
@@ -1983,6 +2108,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 categoria: categoria,
                 planta: planta,
                 modal: modal,
+                fornecedor: (document.getElementById('fornecedor_manual').value || '').trim(),
             });
 
             fetch('processos.php', {
