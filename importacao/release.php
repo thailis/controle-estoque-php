@@ -44,7 +44,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     $processo = trim((string) ($_GET['processo'] ?? ''));
 
     $sqlBase = "
-        SELECT p.codigo_componente, p.descricao, p.quantidade, p.po, p.planta %s
+        SELECT p.codigo_componente, p.descricao, p.quantidade, p.po, p.planta, p.status %s
         FROM processos p %s
         WHERE TRIM(p.processo) = ?
           AND COALESCE(TRIM(p.projeto), '') = ?
@@ -67,7 +67,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     $itens = [];
     $pos = [];
     $plantas = [];
+    $finalizado = false;
     while ($l = mysqli_fetch_assoc($res)) {
+        if (strtolower(trim((string) $l['status'])) === 'finalizado') { $finalizado = true; }
         if (trim((string) $l['po']) !== '') { $pos[trim($l['po'])] = true; }
         if (trim((string) $l['planta']) !== '') { $plantas[trim($l['planta'])] = true; }
         $itens[] = [
@@ -96,6 +98,20 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
         $follow = null;
     }
 
+    // Status do embarque (vai no cabeçalho da coluna de quantidade, como na planilha):
+    // finalizado → ARRIVED AT YAPP · ETD já passou → ON SEA · ETD futuro → WAITING SHIPMENT · sem ETD → FORECAST
+    $hojeYmd = date('Y-m-d');
+    $etdYmd = $follow && !empty($follow['etd']) ? substr($follow['etd'], 0, 10) : '';
+    if ($finalizado) {
+        $statusEmbarque = 'ARRIVED AT YAPP';
+    } elseif ($etdYmd === '') {
+        $statusEmbarque = 'FORECAST';
+    } elseif ($etdYmd <= $hojeYmd) {
+        $statusEmbarque = 'ON SEA';
+    } else {
+        $statusEmbarque = 'WAITING SHIPMENT';
+    }
+
     $pickup = '';
     if ($follow && !empty($follow['etd'])) {
         $etdObj = DateTimeImmutable::createFromFormat('!Y-m-d', substr($follow['etd'], 0, 10));
@@ -112,6 +128,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
         'eta' => dataBrRelease($follow['eta'] ?? null),
         'eta_yapp' => dataBrRelease($follow['prevista'] ?? null),
         'pickup' => $pickup,
+        'status_embarque' => $statusEmbarque,
         'tem_follow' => $follow !== null,
         'tem_parametros' => $comParametros,
     ]);
@@ -233,6 +250,14 @@ $importers = [
                     <td class="lbl">ETA</td><td><input type="text" id="cab_eta" placeholder="dd/mm/aaaa"></td>
                     <td class="lbl">ETA YAPP</td><td><input type="text" id="cab_eta_yapp" placeholder="dd/mm/aaaa"></td>
                 </tr>
+                <tr>
+                    <td class="lbl">Status</td>
+                    <td colspan="3">
+                        <select id="cab_status" class="form-select form-select-sm" style="width:200px">
+                            <option>ARRIVED AT YAPP</option><option>ON SEA</option><option>WAITING SHIPMENT</option><option>FORECAST</option>
+                        </select>
+                    </td>
+                </tr>
             </table>
 
             <div class="table-responsive">
@@ -258,7 +283,7 @@ $importers = [
                     </tfoot>
                 </table>
             </div>
-            <small class="text-muted d-block mt-2">Pack = Qty ÷ Unit pack · T Price = Qty × U Price · CBM = Pack × L × W × H ÷ 1.000.000 · N Weight = Qty × Weight. Valores em <span class="falta-param">vermelho</span> = sem cadastro em Parâmetros. Tudo é editável aqui antes de exportar (não altera o banco).</small>
+            <small class="text-muted d-block mt-2">Pack = Qty ÷ Unit pack · T Price = Qty × U Price · CBM = Pack × L × W × H ÷ 1.000.000 · N Weight = Qty × Weight · G Weight = N Weight + 25 × Pack (ou o valor cadastrado em Parâmetros). Valores em <span class="falta-param">vermelho</span> = sem cadastro em Parâmetros. Tudo é editável aqui antes de exportar (não altera o banco).</small>
         </div>
     </main>
 
@@ -330,6 +355,7 @@ $importers = [
                     document.getElementById('cab_eta').value = d.eta || '';
                     document.getElementById('cab_eta_yapp').value = d.eta_yapp || '';
                     document.getElementById('cab_pickup').value = d.pickup || '';
+                    if (d.status_embarque) document.getElementById('cab_status').value = d.status_embarque;
                     // Planta → Importer (final 1 = Gravataí; senão Americana)
                     if (/1$/.test((d.planta || '').trim())) document.getElementById('sel_importer').value = 'gravatai';
                     else if (d.planta) document.getElementById('sel_importer').value = 'americana';
@@ -360,7 +386,8 @@ $importers = [
                             <td class="num calc c-cbm"></td>
                             ${inp('peso', it.peso, it.peso === '')}
                             <td class="num calc c-nweight"></td>
-                            ${inp('g_weight', it.g_weight, false)}
+                            <td class="num calc c-gweight" title="G Weight = N Weight + 25 kg por pack (fórmula da planilha). Se tiver G Weight em Parâmetros, usa o cadastrado."></td>
+                            <td class="d-none"><input class="f-g_weight" value="${esc(it.g_weight)}"></td>
                         `;
                         corpo.appendChild(tr);
                     });
@@ -382,6 +409,8 @@ $importers = [
             v.tprice = (v.qtd !== null && v.u_price !== null) ? v.qtd * v.u_price : null;
             v.cbm = (v.pack !== null && v.length !== null && v.width !== null && v.height !== null) ? v.pack * v.length * v.width * v.height / 1000000 : null;
             v.nweight = (v.qtd !== null && v.peso !== null) ? v.qtd * v.peso : null;
+            // G WEIGHT: cadastrado em Parâmetros, senão a fórmula da planilha (N WEIGHT + 25 × PACK)
+            v.gweight = v.g_weight !== null ? v.g_weight : ((v.nweight !== null && v.pack !== null) ? v.nweight + 25 * v.pack : null);
             return v;
         }
 
@@ -397,7 +426,8 @@ $importers = [
                 tr.querySelector('.c-tprice').textContent = fmt(v.tprice, 2);
                 tr.querySelector('.c-cbm').textContent = fmt(v.cbm, 3);
                 tr.querySelector('.c-nweight').textContent = fmt(v.nweight, 2);
-                Object.keys(tot).forEach(k => { if (v[k] !== null) tot[k] += v[k]; });
+                tr.querySelector('.c-gweight').textContent = fmt(v.gweight, 2);
+                Object.keys(tot).forEach(k => { const val = k === 'g_weight' ? v.gweight : v[k]; if (val !== null) tot[k] += val; });
             });
             document.getElementById('tot_qtd').textContent = fmt(tot.qtd, 2);
             document.getElementById('tot_pack').textContent = fmt(tot.pack, 2);
@@ -407,92 +437,149 @@ $importers = [
             document.getElementById('tot_gweight').textContent = fmt(tot.g_weight, 2);
         }
 
-        // ---------- Exportar .xlsx (com fórmulas, igual à planilha) ----------
+        // ---------- Exportar .xlsx no MESMO layout da planilha
+        // "PO between YAPP HQ and YAPP Subsidiaries" (aba de projeto):
+        //   linha 1 = planta · linha 2 = processo · linhas 3-5 = PICK UP / ETA BR / ETA YAPP
+        //   (rótulos em vermelho, Arial 16, datas m/d/yyyy em fundo cinza) · linha 6 = cabeçalho
+        //   · itens a partir da linha 7 · Total · bloco do Importer embaixo.
+        //   Fórmulas iguais às da planilha: PACK = QTY/unit pack, T PRICE = QTY*U PRICE,
+        //   volume = PACK*L*W*H/1000000, N WEIGHT = QTY*weight, G WEIGHT = N WEIGHT + 25*PACK.
         function exportarRelease() {
             if (typeof ExcelJS === 'undefined') { alert('Biblioteca de planilha não carregou. Recarregue a página.'); return; }
             const linhas = linhasRelease();
             if (!linhas.length) { alert('Escolha um processo com itens antes de exportar.'); return; }
             const processo = document.getElementById('sel_processo').value;
             const projeto = document.getElementById('sel_projeto').value;
+            const po = document.getElementById('cab_po').value.trim();
 
             const wb = new ExcelJS.Workbook();
-            const ws = wb.addWorksheet((projeto || 'Release').substring(0, 31));
-            ws.columns = [5, 30, 13, 10, 11, 9, 10, 12, 9, 9, 9, 11, 12, 12, 12].map(w => ({ width: w }));
-            const azul = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF12304A' } };
-            const cinza = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F6F9' } };
-            const borda = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-            const comoData = t => { const d = lerData(t); return d ? new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) : (t || ''); };
+            wb.calcProperties.fullCalcOnLoad = true; // Excel recalcula as fórmulas ao abrir
+            const ws = wb.addWorksheet((projeto || 'Release').replace(/[\\\/\?\*\[\]:]/g, ' ').substring(0, 31), {
+                views: [{ showGridLines: false }],
+            });
 
-            ws.mergeCells('A1:O1');
-            ws.getCell('A1').value = 'RELEASE' + (projeto ? ' - ' + projeto : '') + ' - ' + processo;
-            ws.getCell('A1').font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
-            ws.getCell('A1').fill = azul;
-            ws.getCell('A1').alignment = { horizontal: 'center' };
+            // Colunas: A # | B DESCRIPTION | C SAP | D (código alternativo, vazio) | E unit pack |
+            // F QTY (status) | G PACK | H U PRICE | I T PRICE | J LENGTH | K WIDTH | L HEIGHT |
+            // M volume | N weight of component | O N WEIGHT | P G WEIGHT
+            ws.columns = [4, 30, 12, 6, 9, 18, 8, 9, 11, 8, 8, 8, 9, 11, 11, 11].map(w => ({ width: w }));
+            ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
-            const cab = [
-                ['PLANTA', document.getElementById('cab_planta').value],
-                ['PROCESSO', processo],
-                ['PO', document.getElementById('cab_po').value],
-                ['PICK UP', comoData(document.getElementById('cab_pickup').value)],
-                ['ETD', comoData(document.getElementById('cab_etd').value)],
-                ['ETA', comoData(document.getElementById('cab_eta').value)],
-                ['ETA YAPP', comoData(document.getElementById('cab_eta_yapp').value)],
+            const CINZA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+            const AMARELO = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+            const fino = { style: 'thin' };
+            const borda = { top: fino, left: fino, bottom: fino, right: fino };
+            const fonteTopo = { name: '微软雅黑', size: 11, bold: true };
+            const fonteRotulo = { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFF0000' } };
+            const fonteData = { name: 'Arial', size: 16, color: { argb: 'FFFF0000' } };
+            const fonteCab = { name: 'Arial', size: 8, bold: true };
+            const fonteCabNormal = { name: 'Arial', size: 8 };
+            const fonteItem = { name: 'Arial', size: 11 };
+            const comoData = t => { const d = lerData(t); return d ? new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) : (t || null); };
+            const COLS_AMARELAS = [9, 13, 15, 16]; // T PRICE, volume, N WEIGHT, G WEIGHT
+
+            // Linhas 1-2: planta e processo (sobre a coluna de quantidade, como na planilha)
+            const topo = [[1, document.getElementById('cab_planta').value], [2, processo]];
+            topo.forEach(([lin, valor]) => {
+                const c = ws.getCell(lin, 6);
+                c.value = valor; c.font = fonteTopo; c.fill = CINZA; c.border = borda;
+                c.alignment = { horizontal: 'center', vertical: 'middle' };
+            });
+            if (po) {
+                const cPo = ws.getCell(2, 2);
+                cPo.value = 'PO ' + po; cPo.font = fonteTopo;
+            }
+            ws.getRow(1).height = 22.2;
+            ws.getRow(2).height = 16.2;
+
+            // Linhas 3-5: PICK UP / ETA BR / ETA YAPP
+            const datas = [
+                [3, 'PICK UP', document.getElementById('cab_pickup').value],
+                [4, 'ETA BR', document.getElementById('cab_eta').value],
+                [5, 'ETA YAPP', document.getElementById('cab_eta_yapp').value],
             ];
-            cab.forEach((c, i) => {
-                const r = ws.getRow(2 + i);
-                r.getCell(2).value = c[0];
-                r.getCell(2).font = { bold: true };
-                r.getCell(3).value = c[1];
-                if (c[1] instanceof Date) r.getCell(3).numFmt = 'dd/mm/yyyy';
-                r.getCell(3).alignment = { horizontal: 'left' };
+            datas.forEach(([lin, rotulo, valor]) => {
+                const cr = ws.getCell(lin, 2);
+                cr.value = rotulo; cr.font = fonteRotulo; cr.alignment = { wrapText: true };
+                const cd = ws.getCell(lin, 6);
+                cd.value = comoData(valor); cd.font = fonteData; cd.fill = CINZA; cd.border = borda;
+                cd.numFmt = 'm/d/yyyy'; cd.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                ws.getRow(lin).height = 22.05;
             });
 
-            const linhaCab = 10;
-            const titulos = ['#', 'DESCRIPTION', 'SAP', 'unit pack', 'QTY', 'PACK', 'U PRICE', 'T PRICE', 'LENGTH', 'WIDTH', 'HEIGHT', 'CBM', 'weight of component (kg)', 'N WEIGHT', 'G WEIGHT'];
-            const rCab = ws.getRow(linhaCab);
-            titulos.forEach((t, i) => {
-                const c = rCab.getCell(i + 1);
-                c.value = t; c.font = { bold: true }; c.fill = cinza; c.border = borda;
-                c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+            // Linha 6: cabeçalho
+            const titulos = ['', 'DESCRIPTION', 'SAP', '', 'unit pack', document.getElementById('cab_status').value, 'PACK',
+                'U  PRICE', 'T PRICE', 'LENGTH', 'WIDTH', 'HEIGHT', 'volume', 'weight of component（kg）', 'N WEIGHT', 'G WEIGHT'];
+            titulos.forEach((t, k) => {
+                const c = ws.getCell(6, k + 1);
+                c.value = t || null;
+                c.font = COLS_AMARELAS.includes(k + 1) || k + 1 === 14 ? fonteCabNormal : fonteCab;
+                c.border = borda;
+                c.alignment = { horizontal: k + 1 === 7 ? 'center' : (k + 1 === 3 ? 'left' : undefined), vertical: 'middle', wrapText: true };
+                if (k + 1 === 6) c.fill = CINZA;
+                if (COLS_AMARELAS.includes(k + 1)) c.fill = AMARELO;
             });
-            rCab.height = 30;
+            ws.getRow(6).height = 33;
 
-            const primeira = linhaCab + 1;
+            // Itens
+            const primeira = 7;
             linhas.forEach((tr, i) => {
                 const v = lerLinha(tr);
                 const n = primeira + i;
-                const r = ws.getRow(n);
                 const sapNum = /^\d+$/.test(v.sap.trim()) ? Number(v.sap.trim()) : v.sap;
-                r.values = [i + 1, v.desc, sapNum, v.unit_pack, v.qtd, null, v.u_price, null, v.length, v.width, v.height, null, v.peso, null, v.g_weight];
-                r.getCell(6).value = { formula: `IF(AND(ISNUMBER(D${n}),D${n}<>0),E${n}/D${n},"")`, result: v.pack ?? '' };
-                r.getCell(8).value = { formula: `IF(ISNUMBER(G${n}),E${n}*G${n},"")`, result: v.tprice ?? '' };
-                r.getCell(12).value = { formula: `IF(AND(ISNUMBER(F${n}),ISNUMBER(I${n}),ISNUMBER(J${n}),ISNUMBER(K${n})),F${n}*I${n}*J${n}*K${n}/1000000,"")`, result: v.cbm ?? '' };
-                r.getCell(14).value = { formula: `IF(ISNUMBER(M${n}),E${n}*M${n},"")`, result: v.nweight ?? '' };
-                for (let c = 1; c <= 15; c++) r.getCell(c).border = borda;
-                r.getCell(6).numFmt = '#,##0.00';
-                r.getCell(7).numFmt = '#,##0.00##';
-                r.getCell(8).numFmt = '#,##0.00';
-                r.getCell(12).numFmt = '#,##0.000';
-                r.getCell(14).numFmt = '#,##0.00';
-                r.getCell(15).numFmt = '#,##0.00';
+                const valores = {
+                    1: i + 1, 2: v.desc, 3: sapNum, 5: v.unit_pack, 6: v.qtd,
+                    7: { formula: `IF(AND(ISNUMBER(E${n}),E${n}<>0),F${n}/E${n},"")`, result: v.pack ?? '' },
+                    8: v.u_price,
+                    9: { formula: `IF(ISNUMBER(H${n}),F${n}*H${n},"")`, result: v.tprice ?? '' },
+                    10: v.length, 11: v.width, 12: v.height,
+                    13: { formula: `IF(AND(ISNUMBER(G${n}),ISNUMBER(J${n}),ISNUMBER(K${n}),ISNUMBER(L${n})),G${n}*J${n}*K${n}*L${n}/1000000,"")`, result: v.cbm ?? '' },
+                    14: v.peso,
+                    15: { formula: `IF(ISNUMBER(N${n}),F${n}*N${n},"")`, result: v.nweight ?? '' },
+                    16: v.g_weight !== null ? v.g_weight
+                        : { formula: `IF(AND(ISNUMBER(O${n}),ISNUMBER(G${n})),O${n}+25*G${n},"")`, result: v.gweight ?? '' },
+                };
+                for (let c = 1; c <= 16; c++) {
+                    const cel = ws.getCell(n, c);
+                    cel.value = valores[c] ?? null;
+                    cel.font = c === 8 ? { ...fonteItem, bold: true } : fonteItem;
+                    cel.border = borda;
+                    cel.alignment = { horizontal: c === 1 || c === 3 ? 'left' : (c === 7 ? 'center' : undefined), wrapText: c === 2 };
+                    if (c === 6) cel.fill = CINZA;
+                    if (COLS_AMARELAS.includes(c)) cel.fill = AMARELO;
+                }
+                ws.getCell(n, 7).numFmt = '0.0';
+                ws.getCell(n, 9).numFmt = '#,##0.00';
+                ws.getCell(n, 13).numFmt = '0.000';
+                ws.getCell(n, 15).numFmt = '#,##0.00';
+                ws.getCell(n, 16).numFmt = '#,##0.00';
+                ws.getRow(n).height = 15;
             });
 
+            // Total
             const ultima = primeira + linhas.length - 1;
             const nt = ultima + 1;
-            const rt = ws.getRow(nt);
-            rt.getCell(2).value = 'Total';
-            [5, 6, 8, 12, 14, 15].forEach(c => {
-                const col = String.fromCharCode(64 + c);
-                rt.getCell(c).value = { formula: `SUM(${col}${primeira}:${col}${ultima})` };
-                rt.getCell(c).numFmt = c === 12 ? '#,##0.000' : '#,##0.00';
+            ws.getCell(nt, 1).value = ' ';
+            const cTot = ws.getCell(nt, 2);
+            cTot.value = 'Total'; cTot.font = { ...fonteItem, bold: true };
+            const colLetra = c => String.fromCharCode(64 + c);
+            [6, 7, 9, 13, 15, 16].forEach(c => {
+                const cel = ws.getCell(nt, c);
+                cel.value = { formula: `SUM(${colLetra(c)}${primeira}:${colLetra(c)}${ultima})` };
+                cel.font = { ...fonteItem, bold: true };
+                cel.numFmt = c === 13 ? '0.000' : (c === 7 ? '0.0' : '#,##0.00');
+                if (COLS_AMARELAS.includes(c)) cel.fill = AMARELO;
             });
-            for (let c = 1; c <= 15; c++) { rt.getCell(c).font = { bold: true }; rt.getCell(c).fill = cinza; rt.getCell(c).border = borda; }
+            ws.getCell(nt, 6).numFmt = '#,##0';
+            for (let c = 1; c <= 16; c++) ws.getCell(nt, c).border = borda;
 
-            const ni = nt + 2;
-            ws.mergeCells(`B${ni}:H${ni + 4}`);
-            const ci = ws.getCell(`B${ni}`);
+            // Bloco do Importer (mesclado, igual à planilha)
+            const ni = nt + 3;
+            ws.mergeCells(ni, 2, ni + 5, 16);
+            const ci = ws.getCell(ni, 2);
             ci.value = document.getElementById('importer_texto').value;
-            ci.alignment = { wrapText: true, vertical: 'top' };
+            ci.font = { name: '微软雅黑', size: 11, bold: true };
+            ci.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
+            for (let r = nt + 1; r <= ni + 5; r++) ws.getRow(r).height = 16.2;
 
             wb.xlsx.writeBuffer().then(buf => {
                 const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
