@@ -18,6 +18,8 @@ require_once 'conexao.php';
 require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
 const PICKUP_DIAS_ANTES_ETD = 20;
+// Na BOM completa só entram os componentes deste fornecedor (os que vêm da China)
+const FORNECEDOR_BOM_RELEASE = 'YAPP CN';
 
 function h(mixed $valor): string
 {
@@ -153,7 +155,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     }
     mysqli_stmt_close($stmt);
 
-    // Todos os itens da BOM do projeto (MRP ≠ N): quem não está em nenhum dos
+    // Todos os itens da BOM do projeto (MRP ≠ N) do fornecedor YAPP CN: quem não está em nenhum dos
     // processos escolhidos entra com FORECAST 0. Ordem = ordem da BOM; itens que
     // estão no processo mas não na BOM do projeto vão no final.
     $bomStatus = 'desligado';
@@ -169,6 +171,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
                 WHERE LOWER(TRIM(projeto)) IN (" . implode(',', array_fill(0, count($projetosBom), 'LOWER(?)')) . ")
                   AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
                   AND (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
+                  AND UPPER(TRIM(fornecedor)) = ?
                 GROUP BY TRIM(codigo_componente)
                 ORDER BY %s
             ";
@@ -177,7 +180,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
             } catch (Throwable $e) {
                 $stmtBom = mysqli_prepare($connMrp, sprintf($sqlBom, 'sap'));
             }
-            mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($projetosBom)), ...$projetosBom);
+            $paramsBom = array_merge($projetosBom, [FORNECEDOR_BOM_RELEASE]);
+            mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($paramsBom)), ...$paramsBom);
             mysqli_stmt_execute($stmtBom);
             $resBom = mysqli_stmt_get_result($stmtBom);
             $itensBom = [];
@@ -355,7 +359,7 @@ $importers = [
                     <div id="lista-processos-rel"><span class="text-muted small">Escolha o projeto primeiro.</span></div>
                     <div class="d-flex align-items-center gap-3 mt-1">
                         <button type="button" class="btn btn-primary btn-sm" onclick="carregarRelease()">Carregar</button>
-                        <label class="small mb-0"><input type="checkbox" id="chk_bom" checked> Todos os itens da BOM do projeto (sem processo = 0)</label>
+                        <label class="small mb-0"><input type="checkbox" id="chk_bom" checked> Todos os itens <?php echo h(FORNECEDOR_BOM_RELEASE); ?> da BOM do projeto (sem processo = 0)</label>
                     </div>
                 </div>
                 <div class="col-md-5">
