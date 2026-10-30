@@ -61,6 +61,30 @@ function cidadePlanta(string $planta): string
     return str_ends_with($planta, '1') ? 'GRAVATAÍ' : 'AMERICANA';
 }
 
+// Conexão (só leitura) com o banco do MRP, pra puxar os itens da BOM do projeto.
+// Usa as mesmas credenciais MRP_DB_* da Confirmar entrega / Commercial Invoice.
+function conectarMrpRelease(): ?mysqli
+{
+    try {
+        $host = getenv('MRP_DB_HOST') ?: '';
+        $user = getenv('MRP_DB_USER') ?: '';
+        $pass = getenv('MRP_DB_PASSWORD') ?: '';
+        if ($host === '' || $user === '' || $pass === '') {
+            return null;
+        }
+        $c = mysqli_init();
+        mysqli_options($c, MYSQLI_OPT_CONNECT_TIMEOUT, 5);
+        mysqli_ssl_set($c, null, null, getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt', null, null);
+        if (!@mysqli_real_connect($c, $host, $user, $pass, getenv('MRP_DB_NAME') ?: 'controle_mrp', (int) (getenv('MRP_DB_PORT') ?: 4000), null, MYSQLI_CLIENT_SSL)) {
+            return null;
+        }
+        mysqli_set_charset($c, 'utf8mb4');
+        return $c;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
 // ---------- AJAX: monta os Spots e os itens ----------
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     header('Content-Type: application/json; charset=utf-8');
@@ -127,6 +151,73 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     }
     mysqli_stmt_close($stmt);
 
+    // Todos os itens da BOM do projeto (MRP ≠ N): quem não está em nenhum dos
+    // processos escolhidos entra com FORECAST 0. Ordem = ordem da BOM; itens que
+    // estão no processo mas não na BOM do projeto vão no final.
+    $bomStatus = 'desligado';
+    if (($_GET['bom'] ?? '1') === '1' && $projeto !== '') {
+        $bomStatus = 'sem_conexao';
+        $connMrp = conectarMrpRelease();
+        if ($connMrp) {
+            $sqlBom = "
+                SELECT TRIM(codigo_componente) AS sap,
+                       COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), ''))) AS descricao
+                FROM bomnova
+                WHERE LOWER(TRIM(projeto)) = LOWER(?)
+                  AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+                  AND (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
+                GROUP BY TRIM(codigo_componente)
+                ORDER BY %s
+            ";
+            try {
+                $stmtBom = mysqli_prepare($connMrp, sprintf($sqlBom, 'MIN(id)'));
+            } catch (Throwable $e) {
+                $stmtBom = mysqli_prepare($connMrp, sprintf($sqlBom, 'sap'));
+            }
+            mysqli_stmt_bind_param($stmtBom, 's', $projeto);
+            mysqli_stmt_execute($stmtBom);
+            $resBom = mysqli_stmt_get_result($stmtBom);
+            $itensBom = [];
+            while ($b = mysqli_fetch_assoc($resBom)) {
+                $sapBom = (string) $b['sap'];
+                $itensBom[$sapBom] = $itens[$sapBom] ?? [
+                    'sap' => $sapBom, 'desc' => '', 'unit_pack' => '', 'u_price' => '', 'length' => '', 'width' => '',
+                    'height' => '', 'peso' => '', 'g_weight' => '', 'qtd' => [], 'so_bom' => true,
+                ];
+                if ($itensBom[$sapBom]['desc'] === '') {
+                    $itensBom[$sapBom]['desc'] = (string) ($b['descricao'] ?? '');
+                }
+            }
+            mysqli_stmt_close($stmtBom);
+            mysqli_close($connMrp);
+            $bomStatus = $itensBom ? 'ok' : 'projeto_nao_achado';
+            // BOM primeiro, depois o que só existe nos processos
+            $itens = $itensBom + $itens;
+
+            // Parâmetros dos itens que vieram só da BOM
+            $semParam = array_keys(array_filter($itens, fn($it) => !empty($it['so_bom'])));
+            if ($comParametros && $semParam) {
+                $phP = implode(',', array_fill(0, count($semParam), '?'));
+                $stmtP = mysqli_prepare($conn, "SELECT TRIM(codigo_componente) AS sap, unit_pack, u_price, length_cm, width_cm, height_cm, peso_unitario, g_weight FROM parametros_importacao WHERE TRIM(codigo_componente) IN ($phP)");
+                mysqli_stmt_bind_param($stmtP, str_repeat('s', count($semParam)), ...$semParam);
+                mysqli_stmt_execute($stmtP);
+                $resP = mysqli_stmt_get_result($stmtP);
+                while ($pr = mysqli_fetch_assoc($resP)) {
+                    $sp = (string) $pr['sap'];
+                    if (!isset($itens[$sp])) { continue; }
+                    $itens[$sp]['unit_pack'] = numJs($pr['unit_pack']);
+                    $itens[$sp]['u_price'] = numJs($pr['u_price']);
+                    $itens[$sp]['length'] = numJs($pr['length_cm']);
+                    $itens[$sp]['width'] = numJs($pr['width_cm']);
+                    $itens[$sp]['height'] = numJs($pr['height_cm']);
+                    $itens[$sp]['peso'] = numJs($pr['peso_unitario']);
+                    $itens[$sp]['g_weight'] = numJs($pr['g_weight']);
+                }
+                mysqli_stmt_close($stmtP);
+            }
+        }
+    }
+
     // Datas do Follow (registro mais recente de cada processo)
     foreach ($spots as $proc => &$spot) {
         $follow = null;
@@ -165,6 +256,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
         'spots' => $spots,
         'itens' => array_values($itens),
         'tem_parametros' => $comParametros,
+        'bom_status' => $bomStatus,
     ]);
     exit;
 }
@@ -257,7 +349,10 @@ $importers = [
                 <div class="col-md-4">
                     <label class="form-label small fw-bold mb-1">Processos (cada um = 1 Spot)</label>
                     <div id="lista-processos-rel"><span class="text-muted small">Escolha o projeto primeiro.</span></div>
-                    <button type="button" class="btn btn-primary btn-sm mt-1" onclick="carregarRelease()">Carregar</button>
+                    <div class="d-flex align-items-center gap-3 mt-1">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="carregarRelease()">Carregar</button>
+                        <label class="small mb-0"><input type="checkbox" id="chk_bom" checked> Todos os itens da BOM do projeto (sem processo = 0)</label>
+                    </div>
                 </div>
                 <div class="col-md-5">
                     <label class="form-label small fw-bold mb-1">Importer</label>
@@ -331,13 +426,15 @@ $importers = [
             const processos = Array.from(document.querySelectorAll('.chk-proc:checked')).map(c => c.value);
             if (!processos.length) { alert('Marque pelo menos um processo.'); return; }
             document.title = 'Release_' + (projeto || 'projeto');
-            fetch('release.php?ajax=buscar&projeto=' + encodeURIComponent(projeto) + '&processos=' + encodeURIComponent(processos.join(',')))
+            fetch('release.php?ajax=buscar&projeto=' + encodeURIComponent(projeto) + '&processos=' + encodeURIComponent(processos.join(',')) + '&bom=' + (document.getElementById('chk_bom').checked ? '1' : '0'))
                 .then(r => r.json())
                 .then(d => {
                     SPOTS = d.spots || [];
                     const avisos = [];
                     SPOTS.filter(s => !s.tem_follow).forEach(s => avisos.push(s.processo + ' ainda não está no Follow — datas em branco (dá pra digitar).'));
                     if (d.tem_parametros === false) avisos.push('A tabela de Parâmetros da Importação ainda não existe no banco.');
+                    if (d.bom_status === 'sem_conexao') avisos.push('Não consegui acessar a BOM do MRP agora — saíram só os itens dos processos.');
+                    if (d.bom_status === 'projeto_nao_achado') avisos.push('Não achei o projeto "' + projeto + '" na BOM (o nome precisa ser igual ao da BOM) — saíram só os itens dos processos.');
                     document.getElementById('avisos').innerHTML = avisos.map(a => '<div class="alert alert-warning py-2">' + esc(a) + '</div>').join('');
                     // Importer pela planta do 1º spot
                     if (SPOTS[0] && SPOTS[0].cidade === 'GRAVATAÍ') document.getElementById('sel_importer').value = 'gravatai';
