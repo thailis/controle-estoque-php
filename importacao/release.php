@@ -88,9 +88,11 @@ function conectarMrpRelease(): ?mysqli
 // ---------- AJAX: monta os Spots e os itens ----------
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     header('Content-Type: application/json; charset=utf-8');
-    $projeto = trim((string) ($_GET['projeto'] ?? ''));
+    // Vários projetos (ex.: VW427 Diesel + VW427 PHEV) — chegam como lista JSON
+    $projetos = json_decode((string) ($_GET['projetos'] ?? '[]'), true);
+    $projetos = is_array($projetos) ? array_values(array_unique(array_map(fn($p) => trim((string) $p), $projetos))) : [];
     $processos = array_values(array_filter(array_map('trim', explode(',', (string) ($_GET['processos'] ?? ''))), fn($p) => $p !== ''));
-    if (!$processos) {
+    if (!$processos || !$projetos) {
         echo json_encode(['spots' => [], 'itens' => []]);
         exit;
     }
@@ -100,7 +102,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
         SELECT TRIM(p.processo) AS processo, p.codigo_componente, p.descricao, p.quantidade, p.po, p.planta, p.modal, p.status %s
         FROM processos p %s
         WHERE TRIM(p.processo) IN ($ph)
-          AND COALESCE(TRIM(p.projeto), '') = ?
+          AND COALESCE(TRIM(p.projeto), '') IN (" . implode(',', array_fill(0, count($projetos), '?')) . ")
           AND LOWER(TRIM(COALESCE(p.status, ''))) <> 'cancelado'
         ORDER BY p.id
     ";
@@ -113,7 +115,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
         $comParametros = false; // tabela de parâmetros ainda não criada — segue sem ela
         $stmt = mysqli_prepare($conn, sprintf($sqlBase, '', ''));
     }
-    $params = array_merge($processos, [$projeto]);
+    $params = array_merge($processos, $projetos);
     mysqli_stmt_bind_param($stmt, str_repeat('s', count($params)), ...$params);
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
@@ -155,7 +157,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     // processos escolhidos entra com FORECAST 0. Ordem = ordem da BOM; itens que
     // estão no processo mas não na BOM do projeto vão no final.
     $bomStatus = 'desligado';
-    if (($_GET['bom'] ?? '1') === '1' && $projeto !== '') {
+    $projetosBom = array_values(array_filter($projetos, fn($p) => $p !== ''));
+    if (($_GET['bom'] ?? '1') === '1' && $projetosBom) {
         $bomStatus = 'sem_conexao';
         $connMrp = conectarMrpRelease();
         if ($connMrp) {
@@ -163,7 +166,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
                 SELECT TRIM(codigo_componente) AS sap,
                        COALESCE(MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END), MAX(NULLIF(TRIM(descricao), ''))) AS descricao
                 FROM bomnova
-                WHERE LOWER(TRIM(projeto)) = LOWER(?)
+                WHERE LOWER(TRIM(projeto)) IN (" . implode(',', array_fill(0, count($projetosBom), 'LOWER(?)')) . ")
                   AND codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
                   AND (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
                 GROUP BY TRIM(codigo_componente)
@@ -174,7 +177,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
             } catch (Throwable $e) {
                 $stmtBom = mysqli_prepare($connMrp, sprintf($sqlBom, 'sap'));
             }
-            mysqli_stmt_bind_param($stmtBom, 's', $projeto);
+            mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($projetosBom)), ...$projetosBom);
             mysqli_stmt_execute($stmtBom);
             $resBom = mysqli_stmt_get_result($stmtBom);
             $itensBom = [];
@@ -298,6 +301,8 @@ $importers = [
     <style>
         .dashboard-container { max-width: 98vw; }
         .rel-sheet { background: #fff; border: 1px solid #dce4ec; box-shadow: 0 6px 20px rgba(18,48,74,.10); padding: 16px; }
+        .lista-rel { max-height: 160px; overflow: auto; border: 1px solid #dce4ec; border-radius: 6px; padding: 6px 10px; }
+        .lista-rel label { display: block; font-size: .82rem; }
         #lista-processos-rel { max-height: 160px; overflow: auto; border: 1px solid #dce4ec; border-radius: 6px; padding: 6px 10px; }
         #lista-processos-rel label { display: inline-block; min-width: 150px; font-size: .82rem; }
         .tab-rel { font-size: .8rem; }
@@ -338,13 +343,12 @@ $importers = [
         <div class="rel-sheet">
             <div class="row g-3 mb-3">
                 <div class="col-md-3">
-                    <label class="form-label small fw-bold mb-1">Projeto</label>
-                    <select id="sel_projeto" class="form-select form-select-sm" onchange="preencherProcessos()">
-                        <option value="">Selecione...</option>
+                    <label class="form-label small fw-bold mb-1">Projeto(s) — pode marcar mais de um</label>
+                    <div id="lista-projetos-rel" class="lista-rel">
                         <?php foreach (array_keys($processosPorProjeto) as $proj): ?>
-                            <option value="<?php echo h($proj); ?>"><?php echo h($proj === '' ? '(sem projeto)' : $proj); ?></option>
+                            <label><input type="checkbox" class="chk-proj" value="<?php echo h($proj); ?>" onchange="preencherProcessos()"> <?php echo h($proj === '' ? '(sem projeto)' : $proj); ?></label>
                         <?php endforeach; ?>
-                    </select>
+                    </div>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label small fw-bold mb-1">Processos (cada um = 1 Spot)</label>
@@ -411,22 +415,39 @@ $importers = [
             document.getElementById('importer_texto').value = IMPORTERS[document.getElementById('sel_importer').value].texto;
         }
 
-        // Lista os processos do projeto com checkbox — abertos já vêm marcados
+        function projetosMarcados() {
+            return Array.from(document.querySelectorAll('.chk-proj:checked')).map(c => c.value);
+        }
+        function nomeProjetos() {
+            return projetosMarcados().filter(p => p !== '').join(' + ') || 'projeto';
+        }
+
+        // Lista os processos dos projetos marcados — abertos já vêm marcados.
+        // Mantém a marcação de quem já estava na lista.
         function preencherProcessos() {
-            const proj = document.getElementById('sel_projeto').value;
             const caixa = document.getElementById('lista-processos-rel');
-            const lista = PROCESSOS_POR_PROJETO[proj] || [];
-            caixa.innerHTML = lista.length ? lista.map(p =>
-                `<label><input type="checkbox" class="chk-proc" value="${esc(p.processo)}" ${p.finalizado ? '' : 'checked'}> ${esc(p.processo)}${p.finalizado ? ' <small class="text-muted">(finalizado)</small>' : ''}</label>`
-            ).join('') : '<span class="text-muted small">Nenhum processo nesse projeto.</span>';
+            const antes = {};
+            document.querySelectorAll('.chk-proc').forEach(c => { antes[c.value] = c.checked; });
+            const vistos = new Set();
+            let html = '';
+            projetosMarcados().forEach(proj => {
+                (PROCESSOS_POR_PROJETO[proj] || []).forEach(p => {
+                    if (vistos.has(p.processo)) return;
+                    vistos.add(p.processo);
+                    const marcado = p.processo in antes ? antes[p.processo] : !p.finalizado;
+                    html += `<label><input type="checkbox" class="chk-proc" value="${esc(p.processo)}" ${marcado ? 'checked' : ''}> ${esc(p.processo)} <small class="text-muted">${esc(proj)}${p.finalizado ? ' · finalizado' : ''}</small></label>`;
+                });
+            });
+            caixa.innerHTML = html || '<span class="text-muted small">Marque um ou mais projetos.</span>';
         }
 
         function carregarRelease() {
-            const projeto = document.getElementById('sel_projeto').value;
+            const projeto = nomeProjetos();
             const processos = Array.from(document.querySelectorAll('.chk-proc:checked')).map(c => c.value);
+            if (!projetosMarcados().length) { alert('Marque pelo menos um projeto.'); return; }
             if (!processos.length) { alert('Marque pelo menos um processo.'); return; }
-            document.title = 'Release_' + (projeto || 'projeto');
-            fetch('release.php?ajax=buscar&projeto=' + encodeURIComponent(projeto) + '&processos=' + encodeURIComponent(processos.join(',')) + '&bom=' + (document.getElementById('chk_bom').checked ? '1' : '0'))
+            document.title = 'Release_' + projeto;
+            fetch('release.php?ajax=buscar&projetos=' + encodeURIComponent(JSON.stringify(projetosMarcados())) + '&processos=' + encodeURIComponent(processos.join(',')) + '&bom=' + (document.getElementById('chk_bom').checked ? '1' : '0'))
                 .then(r => r.json())
                 .then(d => {
                     SPOTS = d.spots || [];
@@ -434,7 +455,7 @@ $importers = [
                     SPOTS.filter(s => !s.tem_follow).forEach(s => avisos.push(s.processo + ' ainda não está no Follow — datas em branco (dá pra digitar).'));
                     if (d.tem_parametros === false) avisos.push('A tabela de Parâmetros da Importação ainda não existe no banco.');
                     if (d.bom_status === 'sem_conexao') avisos.push('Não consegui acessar a BOM do MRP agora — saíram só os itens dos processos.');
-                    if (d.bom_status === 'projeto_nao_achado') avisos.push('Não achei o projeto "' + projeto + '" na BOM (o nome precisa ser igual ao da BOM) — saíram só os itens dos processos.');
+                    if (d.bom_status === 'projeto_nao_achado') avisos.push('Não achei "' + projeto + '" na BOM (o nome precisa ser igual ao da BOM) — saíram só os itens dos processos.');
                     document.getElementById('avisos').innerHTML = avisos.map(a => '<div class="alert alert-warning py-2">' + esc(a) + '</div>').join('');
                     // Importer pela planta do 1º spot
                     if (SPOTS[0] && SPOTS[0].cidade === 'GRAVATAÍ') document.getElementById('sel_importer').value = 'gravatai';
@@ -514,7 +535,7 @@ $importers = [
             const itens = lerItens();
             if (!itens.length || !SPOTS.length) { alert('Carregue o projeto e os processos antes de exportar.'); return; }
             const spots = lerSpots();
-            const projeto = document.getElementById('sel_projeto').value;
+            const projeto = nomeProjetos();
 
             const wb = new ExcelJS.Workbook();
             wb.calcProperties.fullCalcOnLoad = true;
