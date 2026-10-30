@@ -1,13 +1,19 @@
 <?php
 // importacao/release.php
-// Release de embarque: escolhe Projeto + Processo e monta a tabela no layout
-// da planilha "PO between YAPP HQ and YAPP Subsidiaries", exportando .xlsx.
-//   SAP / Description / Qtd / PO / Planta → Processos
-//   ETD / ETA / ETA YAPP (Prevista)       → Follow (registro mais recente do processo)
-//   Pick up                               → ETD − 20 dias
-//   unit pack, U PRICE, L/W/H, weight, G WEIGHT → Parâmetros da Importação
-//   PACK, T PRICE, CBM, N WEIGHT          → fórmulas (iguais às da planilha)
-// Nada é salvo no banco por aqui — os valores podem ser ajustados na tela antes de exportar.
+// Release de embarque no MESMO layout da planilha "PO between YAPP HQ and YAPP
+// Subsidiaries" (aba de projeto, ex.: VW427): um bloco "Spot" por embarque
+// (FORECAST / PACK / CBM / PRICE) lado a lado e, à direita, o quadro
+// U PRICE / LENGTH / WIDTH / HEIGHT / volume / weight / N WEIGHT / G WEIGHT.
+//
+// Escolhe o Projeto e marca os Processos que entram — cada Processo vira um
+// Spot (ordenados pela ETA YAPP). Assim, embarques com datas de recebimento
+// diferentes saem como Spot 1, Spot 2, Spot 3...
+//   SAP / Description / FORECAST (qtd) / Planta / Modal → Processos
+//   ETD / ETA / ETA YAPP (Prevista)                    → Follow
+//   PICK UP                                            → ETD − 20 dias
+//   unit pack, U PRICE, L/W/H, weight, G WEIGHT        → Parâmetros da Importação
+//   PACK, CBM, PRICE, volume, N WEIGHT                 → fórmulas da planilha
+// Nada é salvo no banco por aqui — tudo pode ser ajustado na tela antes de exportar.
 require_once 'conexao.php';
 require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
@@ -37,16 +43,39 @@ function numJs($valor): string
     return rtrim(rtrim($txt, '0'), ',');
 }
 
-// ---------- AJAX: itens do processo ----------
+function modalPlanilha(string $modal): string
+{
+    $m = mb_strtolower(trim($modal), 'UTF-8');
+    if (in_array($m, ['sea', 'maritimo', 'marítimo'], true)) { return 'SEA SHIP'; }
+    if (in_array($m, ['air', 'aereo', 'aéreo'], true)) { return 'AIR SHIP'; }
+    if (in_array($m, ['road', 'rodoviario', 'rodoviário'], true)) { return 'ROAD'; }
+    if (in_array($m, ['courrier', 'courier'], true)) { return 'COURIER'; }
+    return mb_strtoupper(trim($modal), 'UTF-8');
+}
+
+function cidadePlanta(string $planta): string
+{
+    // Planta terminando em 1 = Gravataí; as demais = Americana (mesma regra do Importer)
+    $planta = trim($planta);
+    if ($planta === '') { return ''; }
+    return str_ends_with($planta, '1') ? 'GRAVATAÍ' : 'AMERICANA';
+}
+
+// ---------- AJAX: monta os Spots e os itens ----------
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
     header('Content-Type: application/json; charset=utf-8');
     $projeto = trim((string) ($_GET['projeto'] ?? ''));
-    $processo = trim((string) ($_GET['processo'] ?? ''));
+    $processos = array_values(array_filter(array_map('trim', explode(',', (string) ($_GET['processos'] ?? ''))), fn($p) => $p !== ''));
+    if (!$processos) {
+        echo json_encode(['spots' => [], 'itens' => []]);
+        exit;
+    }
+    $ph = implode(',', array_fill(0, count($processos), '?'));
 
     $sqlBase = "
-        SELECT p.codigo_componente, p.descricao, p.quantidade, p.po, p.planta, p.status %s
+        SELECT TRIM(p.processo) AS processo, p.codigo_componente, p.descricao, p.quantidade, p.po, p.planta, p.modal, p.status %s
         FROM processos p %s
-        WHERE TRIM(p.processo) = ?
+        WHERE TRIM(p.processo) IN ($ph)
           AND COALESCE(TRIM(p.projeto), '') = ?
           AND LOWER(TRIM(COALESCE(p.status, ''))) <> 'cancelado'
         ORDER BY p.id
@@ -57,106 +86,112 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar') {
             ', pi.unit_pack, pi.u_price, pi.length_cm, pi.width_cm, pi.height_cm, pi.peso_unitario, pi.g_weight',
             'LEFT JOIN parametros_importacao pi ON TRIM(pi.codigo_componente) = TRIM(p.codigo_componente)'));
     } catch (Throwable $e) {
-        // tabela de parâmetros ainda não criada — segue sem ela
-        $comParametros = false;
+        $comParametros = false; // tabela de parâmetros ainda não criada — segue sem ela
         $stmt = mysqli_prepare($conn, sprintf($sqlBase, '', ''));
     }
-    mysqli_stmt_bind_param($stmt, 'ss', $processo, $projeto);
+    $params = array_merge($processos, [$projeto]);
+    mysqli_stmt_bind_param($stmt, str_repeat('s', count($params)), ...$params);
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
+
+    $spots = [];
     $itens = [];
-    $pos = [];
-    $plantas = [];
-    $finalizado = false;
     while ($l = mysqli_fetch_assoc($res)) {
-        if (strtolower(trim((string) $l['status'])) === 'finalizado') { $finalizado = true; }
-        if (trim((string) $l['po']) !== '') { $pos[trim($l['po'])] = true; }
-        if (trim((string) $l['planta']) !== '') { $plantas[trim($l['planta'])] = true; }
-        $itens[] = [
-            'sap' => trim((string) $l['codigo_componente']),
-            'desc' => (string) ($l['descricao'] ?? ''),
-            'qtd' => numJs($l['quantidade']),
-            'unit_pack' => numJs($l['unit_pack'] ?? null),
-            'u_price' => numJs($l['u_price'] ?? null),
-            'length' => numJs($l['length_cm'] ?? null),
-            'width' => numJs($l['width_cm'] ?? null),
-            'height' => numJs($l['height_cm'] ?? null),
-            'peso' => numJs($l['peso_unitario'] ?? null),
-            'g_weight' => numJs($l['g_weight'] ?? null),
-        ];
+        $proc = (string) $l['processo'];
+        if (!isset($spots[$proc])) {
+            $spots[$proc] = ['processo' => $proc, 'pos' => [], 'planta' => '', 'modal' => '', 'finalizado' => false];
+        }
+        if (trim((string) $l['po']) !== '') { $spots[$proc]['pos'][trim($l['po'])] = true; }
+        if ($spots[$proc]['planta'] === '' && trim((string) $l['planta']) !== '') { $spots[$proc]['planta'] = trim($l['planta']); }
+        if ($spots[$proc]['modal'] === '' && trim((string) $l['modal']) !== '') { $spots[$proc]['modal'] = trim($l['modal']); }
+        if (strtolower(trim((string) $l['status'])) === 'finalizado') { $spots[$proc]['finalizado'] = true; }
+
+        $sap = trim((string) $l['codigo_componente']);
+        if (!isset($itens[$sap])) {
+            $itens[$sap] = [
+                'sap' => $sap,
+                'desc' => (string) ($l['descricao'] ?? ''),
+                'unit_pack' => numJs($l['unit_pack'] ?? null),
+                'u_price' => numJs($l['u_price'] ?? null),
+                'length' => numJs($l['length_cm'] ?? null),
+                'width' => numJs($l['width_cm'] ?? null),
+                'height' => numJs($l['height_cm'] ?? null),
+                'peso' => numJs($l['peso_unitario'] ?? null),
+                'g_weight' => numJs($l['g_weight'] ?? null),
+                'qtd' => [],
+            ];
+        } elseif ($itens[$sap]['desc'] === '' && trim((string) $l['descricao']) !== '') {
+            $itens[$sap]['desc'] = (string) $l['descricao'];
+        }
+        $itens[$sap]['qtd'][$proc] = ($itens[$sap]['qtd'][$proc] ?? 0) + (float) $l['quantidade'];
     }
     mysqli_stmt_close($stmt);
 
-    $follow = null;
-    try {
-        $stmtF = mysqli_prepare($conn, "SELECT etd, eta, prevista FROM follow WHERE TRIM(processo) = ? ORDER BY id DESC LIMIT 1");
-        mysqli_stmt_bind_param($stmtF, 's', $processo);
-        mysqli_stmt_execute($stmtF);
-        $follow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtF)) ?: null;
-        mysqli_stmt_close($stmtF);
-    } catch (Throwable $e) {
+    // Datas do Follow (registro mais recente de cada processo)
+    foreach ($spots as $proc => &$spot) {
         $follow = null;
-    }
-
-    // Status do embarque (vai no cabeçalho da coluna de quantidade, como na planilha):
-    // finalizado → ARRIVED AT YAPP · ETD já passou → ON SEA · ETD futuro → WAITING SHIPMENT · sem ETD → FORECAST
-    $hojeYmd = date('Y-m-d');
-    $etdYmd = $follow && !empty($follow['etd']) ? substr($follow['etd'], 0, 10) : '';
-    if ($finalizado) {
-        $statusEmbarque = 'ARRIVED AT YAPP';
-    } elseif ($etdYmd === '') {
-        $statusEmbarque = 'FORECAST';
-    } elseif ($etdYmd <= $hojeYmd) {
-        $statusEmbarque = 'ON SEA';
-    } else {
-        $statusEmbarque = 'WAITING SHIPMENT';
-    }
-
-    $pickup = '';
-    if ($follow && !empty($follow['etd'])) {
-        $etdObj = DateTimeImmutable::createFromFormat('!Y-m-d', substr($follow['etd'], 0, 10));
-        if ($etdObj) {
-            $pickup = $etdObj->modify('-' . PICKUP_DIAS_ANTES_ETD . ' days')->format('d/m/Y');
+        try {
+            $stmtF = mysqli_prepare($conn, "SELECT etd, eta, prevista FROM follow WHERE TRIM(processo) = ? ORDER BY id DESC LIMIT 1");
+            mysqli_stmt_bind_param($stmtF, 's', $proc);
+            mysqli_stmt_execute($stmtF);
+            $follow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtF)) ?: null;
+            mysqli_stmt_close($stmtF);
+        } catch (Throwable $e) {
+            $follow = null;
         }
+        $pickup = '';
+        if ($follow && !empty($follow['etd'])) {
+            $etdObj = DateTimeImmutable::createFromFormat('!Y-m-d', substr($follow['etd'], 0, 10));
+            if ($etdObj) {
+                $pickup = $etdObj->modify('-' . PICKUP_DIAS_ANTES_ETD . ' days')->format('d/m/Y');
+            }
+        }
+        $spot['po'] = implode(' / ', array_keys($spot['pos']));
+        unset($spot['pos']);
+        $spot['cidade'] = cidadePlanta($spot['planta']);
+        $spot['modal_txt'] = modalPlanilha($spot['modal']);
+        $spot['pickup'] = $pickup;
+        $spot['etd'] = dataBrRelease($follow['etd'] ?? null);
+        $spot['eta'] = dataBrRelease($follow['eta'] ?? null);
+        $spot['eta_yapp'] = dataBrRelease($follow['prevista'] ?? null);
+        $spot['ordem'] = substr((string) ($follow['prevista'] ?? $follow['eta'] ?? '9999-12-31'), 0, 10) . $proc;
+        $spot['tem_follow'] = $follow !== null;
     }
+    unset($spot);
+    $spots = array_values($spots);
+    usort($spots, fn($a, $b) => strcmp($a['ordem'], $b['ordem']));
 
     echo json_encode([
-        'itens' => $itens,
-        'po' => implode(' / ', array_keys($pos)),
-        'planta' => implode(' / ', array_keys($plantas)),
-        'etd' => dataBrRelease($follow['etd'] ?? null),
-        'eta' => dataBrRelease($follow['eta'] ?? null),
-        'eta_yapp' => dataBrRelease($follow['prevista'] ?? null),
-        'pickup' => $pickup,
-        'status_embarque' => $statusEmbarque,
-        'tem_follow' => $follow !== null,
+        'spots' => $spots,
+        'itens' => array_values($itens),
         'tem_parametros' => $comParametros,
     ]);
     exit;
 }
 
-// ---------- Dropdowns: Projeto → Processos ----------
+// ---------- Projetos → Processos (abertos primeiro) ----------
 $processosPorProjeto = [];
 $res = mysqli_query($conn, "
-    SELECT COALESCE(TRIM(projeto), '') AS projeto, TRIM(processo) AS processo
+    SELECT COALESCE(TRIM(projeto), '') AS projeto, TRIM(processo) AS processo,
+           MAX(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'finalizado' THEN 1 ELSE 0 END) AS finalizado
     FROM processos
     WHERE processo IS NOT NULL AND TRIM(processo) <> ''
       AND LOWER(TRIM(COALESCE(status, ''))) <> 'cancelado'
     GROUP BY COALESCE(TRIM(projeto), ''), TRIM(processo)
-    ORDER BY projeto, processo DESC
+    ORDER BY projeto, finalizado, processo
 ");
 while ($l = mysqli_fetch_assoc($res)) {
-    $processosPorProjeto[$l['projeto']][] = $l['processo'];
+    $processosPorProjeto[$l['projeto']][] = ['processo' => $l['processo'], 'finalizado' => (int) $l['finalizado'] === 1];
 }
 
 $importers = [
     'americana' => [
         'nome' => 'YAPP Americana',
-        'texto' => "Importer:  YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA.\nID TAX: 27.690.132/0003-00\nR. Doosan, 777 - Parque Sao Jeronimo, Americana - SP, Brasil\nZIP 13469-765",
+        'texto' => "IMPORTER:  YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA.\nID TAX: 27.690.132/0003-00\nR. Doosan, 777 - Parque Sao Jeronimo, Americana - SP, Brasil\nZIP 13469-765",
     ],
     'gravatai' => [
         'nome' => 'YAPP Gravataí',
-        'texto' => "Importer:  YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA.\nID TAX: 27.690.132/0001-49\nRS-118, 12701 - Galpão 3, Neópolis, Gravataí - Rio Grande do Sul - Brasil\nZIP 94100-420",
+        'texto' => "IMPORTER:  YAPP BRASIL FABRICACAO DE TANQUES E RESERVATORIOS PARA VEICULOS AUTOMOTORES LTDA.\nID TAX: 27.690.132/0001-49\nRS-118, 12701 - Galpão 3, Neópolis, Gravataí - Rio Grande do Sul - Brasil\nZIP 94100-420",
     ],
 ];
 ?>
@@ -171,17 +206,16 @@ $importers = [
     <style>
         .dashboard-container { max-width: 98vw; }
         .rel-sheet { background: #fff; border: 1px solid #dce4ec; box-shadow: 0 6px 20px rgba(18,48,74,.10); padding: 16px; }
-        .rel-cab td { padding: 3px 8px; font-size: .85rem; vertical-align: middle; }
-        .rel-cab td.lbl { font-weight: 700; color: #3c4c5c; white-space: nowrap; }
-        .rel-cab input { border: none; border-bottom: 1px solid #dce4ec; background: transparent; width: 130px; font-size: .85rem; }
-        .rel-cab input:focus, #tabela-release input:focus { outline: none; background: #f0f6ff; }
-        #tabela-release { font-size: .8rem; min-width: 1400px; }
-        #tabela-release th { background: #f3f6f9; font-size: .7rem; text-transform: uppercase; text-align: center; padding: 6px; white-space: nowrap; }
-        #tabela-release td { padding: 3px 6px; vertical-align: middle; }
-        #tabela-release td.num, #tabela-release td.num input { text-align: right; }
-        #tabela-release input { border: none; background: transparent; width: 100%; font-size: .8rem; padding: 2px; }
-        #tabela-release .calc { background: #f7f9fb; font-weight: 600; }
-        #tabela-release tfoot td { font-weight: 750; background: #eef1f5; }
+        #lista-processos-rel { max-height: 160px; overflow: auto; border: 1px solid #dce4ec; border-radius: 6px; padding: 6px 10px; }
+        #lista-processos-rel label { display: inline-block; min-width: 150px; font-size: .82rem; }
+        .tab-rel { font-size: .8rem; }
+        .tab-rel th { background: #f3f6f9; font-size: .7rem; text-transform: uppercase; text-align: center; padding: 5px; white-space: nowrap; }
+        .tab-rel td { padding: 2px 5px; vertical-align: middle; }
+        .tab-rel input { border: none; background: transparent; width: 100%; font-size: .8rem; padding: 2px; }
+        .tab-rel input:focus { outline: none; background: #f0f6ff; }
+        .tab-rel td.num input { text-align: right; }
+        .tab-rel th.spot { background: #44546a; color: #fff; }
+        .tab-rel td.forecast { background: #f0f0f0; }
         .falta-param { color: #c0504d; }
         #importer_texto { font-size: .82rem; white-space: pre; }
     </style>
@@ -192,7 +226,7 @@ $importers = [
             <div>
                 <span class="eyebrow">Controle de Importação • Documentos</span>
                 <h1>Release</h1>
-                <p class="mb-0">Escolha Projeto e Processo, confira e exporte a planilha</p>
+                <p class="mb-0">Escolha o Projeto e os Processos (cada um vira um Spot), confira e exporte</p>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
@@ -220,13 +254,12 @@ $importers = [
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-bold mb-1">Processo</label>
-                    <select id="sel_processo" class="form-select form-select-sm" onchange="carregarRelease()">
-                        <option value="">Escolha o projeto primeiro</option>
-                    </select>
+                <div class="col-md-4">
+                    <label class="form-label small fw-bold mb-1">Processos (cada um = 1 Spot)</label>
+                    <div id="lista-processos-rel"><span class="text-muted small">Escolha o projeto primeiro.</span></div>
+                    <button type="button" class="btn btn-primary btn-sm mt-1" onclick="carregarRelease()">Carregar</button>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-5">
                     <label class="form-label small fw-bold mb-1">Importer</label>
                     <select id="sel_importer" class="form-select form-select-sm mb-1" onchange="aplicarImporter()">
                         <?php foreach ($importers as $chave => $imp): ?>
@@ -237,53 +270,13 @@ $importers = [
                 </div>
             </div>
 
-            <table class="rel-cab mb-3">
-                <tr>
-                    <td class="lbl">Planta</td><td><input type="text" id="cab_planta"></td>
-                    <td class="lbl">PO</td><td><input type="text" id="cab_po" style="width:200px"></td>
-                </tr>
-                <tr>
-                    <td class="lbl">PICK UP</td><td><input type="text" id="cab_pickup" placeholder="dd/mm/aaaa" title="ETD − <?php echo PICKUP_DIAS_ANTES_ETD; ?> dias"></td>
-                    <td class="lbl">ETD</td><td><input type="text" id="cab_etd" placeholder="dd/mm/aaaa" oninput="recalcularPickup()"></td>
-                </tr>
-                <tr>
-                    <td class="lbl">ETA</td><td><input type="text" id="cab_eta" placeholder="dd/mm/aaaa"></td>
-                    <td class="lbl">ETA YAPP</td><td><input type="text" id="cab_eta_yapp" placeholder="dd/mm/aaaa"></td>
-                </tr>
-                <tr>
-                    <td class="lbl">Status</td>
-                    <td colspan="3">
-                        <select id="cab_status" class="form-select form-select-sm" style="width:200px">
-                            <option>ARRIVED AT YAPP</option><option>ON SEA</option><option>WAITING SHIPMENT</option><option>FORECAST</option>
-                        </select>
-                    </td>
-                </tr>
-            </table>
-
-            <div class="table-responsive">
-                <table class="table table-sm mb-0" id="tabela-release">
-                    <thead>
-                        <tr>
-                            <th>#</th><th>Description</th><th>SAP</th><th>Unit pack</th><th>Qty</th><th>Pack</th>
-                            <th>U Price</th><th>T Price</th><th>Length</th><th>Width</th><th>Height</th>
-                            <th>CBM</th><th>Weight of component (kg)</th><th>N Weight</th><th>G Weight</th>
-                        </tr>
-                    </thead>
-                    <tbody id="corpo-release">
-                        <tr><td colspan="15" class="text-center text-muted py-4">Escolha Projeto e Processo.</td></tr>
-                    </tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="4" class="text-end">Total</td>
-                            <td class="num" id="tot_qtd"></td><td class="num" id="tot_pack"></td><td></td>
-                            <td class="num" id="tot_tprice"></td><td colspan="3"></td>
-                            <td class="num" id="tot_cbm"></td><td></td>
-                            <td class="num" id="tot_nweight"></td><td class="num" id="tot_gweight"></td>
-                        </tr>
-                    </tfoot>
-                </table>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm table-bordered tab-rel mb-0" id="tabela-spots"></table>
             </div>
-            <small class="text-muted d-block mt-2">Pack = Qty ÷ Unit pack · T Price = Qty × U Price · CBM = Pack × L × W × H ÷ 1.000.000 · N Weight = Qty × Weight · G Weight = N Weight + 25 × Pack (ou o valor cadastrado em Parâmetros). Valores em <span class="falta-param">vermelho</span> = sem cadastro em Parâmetros. Tudo é editável aqui antes de exportar (não altera o banco).</small>
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered tab-rel mb-0" id="tabela-itens-rel"></table>
+            </div>
+            <small class="text-muted d-block mt-2">Na planilha exportada: PACK = FORECAST ÷ unit pack · CBM = volume × PACK · PRICE = FORECAST × U PRICE · volume = L × W × H ÷ 1.000.000 · N WEIGHT = weight × unit pack. Valores em <span class="falta-param">vermelho</span> = sem cadastro em Parâmetros. Tudo é editável aqui antes de exportar (não altera o banco).</small>
         </div>
     </main>
 
@@ -292,7 +285,8 @@ $importers = [
         const PROCESSOS_POR_PROJETO = <?php echo json_encode($processosPorProjeto, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
         const IMPORTERS = <?php echo json_encode($importers, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
         const PICKUP_DIAS = <?php echo PICKUP_DIAS_ANTES_ETD; ?>;
-        const CAMPOS_EDIT = ['unit_pack', 'qtd', 'u_price', 'length', 'width', 'height', 'peso', 'g_weight'];
+        const CAMPOS_PARAM = ['unit_pack', 'u_price', 'length', 'width', 'height', 'peso', 'g_weight'];
+        let SPOTS = [];
 
         function parseBr(t) {
             t = String(t ?? '').trim().replace(/\s/g, '');
@@ -302,9 +296,8 @@ $importers = [
             const n = parseFloat(t);
             return isNaN(n) ? null : n;
         }
-        function fmt(n, dec) {
-            if (n === null || n === undefined || isNaN(n)) return '';
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: dec });
+        function fmtBr(n) {
+            return (n === null || n === undefined) ? '' : String(n).replace('.', ',');
         }
         function lerData(t) {
             const m = String(t ?? '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -323,269 +316,260 @@ $importers = [
             document.getElementById('importer_texto').value = IMPORTERS[document.getElementById('sel_importer').value].texto;
         }
 
+        // Lista os processos do projeto com checkbox — abertos já vêm marcados
         function preencherProcessos() {
             const proj = document.getElementById('sel_projeto').value;
-            const sel = document.getElementById('sel_processo');
-            sel.innerHTML = '<option value="">Selecione...</option>';
-            (PROCESSOS_POR_PROJETO[proj] || []).forEach(p => {
-                const o = document.createElement('option');
-                o.value = p; o.textContent = p;
-                sel.appendChild(o);
-            });
-        }
-
-        function recalcularPickup() {
-            const etd = lerData(document.getElementById('cab_etd').value);
-            if (!etd) return;
-            etd.setDate(etd.getDate() - PICKUP_DIAS);
-            document.getElementById('cab_pickup').value = escreverData(etd);
+            const caixa = document.getElementById('lista-processos-rel');
+            const lista = PROCESSOS_POR_PROJETO[proj] || [];
+            caixa.innerHTML = lista.length ? lista.map(p =>
+                `<label><input type="checkbox" class="chk-proc" value="${esc(p.processo)}" ${p.finalizado ? '' : 'checked'}> ${esc(p.processo)}${p.finalizado ? ' <small class="text-muted">(finalizado)</small>' : ''}</label>`
+            ).join('') : '<span class="text-muted small">Nenhum processo nesse projeto.</span>';
         }
 
         function carregarRelease() {
             const projeto = document.getElementById('sel_projeto').value;
-            const processo = document.getElementById('sel_processo').value;
-            if (!processo) return;
-            document.title = 'Release_' + processo;
-            fetch('release.php?ajax=buscar&projeto=' + encodeURIComponent(projeto) + '&processo=' + encodeURIComponent(processo))
+            const processos = Array.from(document.querySelectorAll('.chk-proc:checked')).map(c => c.value);
+            if (!processos.length) { alert('Marque pelo menos um processo.'); return; }
+            document.title = 'Release_' + (projeto || 'projeto');
+            fetch('release.php?ajax=buscar&projeto=' + encodeURIComponent(projeto) + '&processos=' + encodeURIComponent(processos.join(',')))
                 .then(r => r.json())
                 .then(d => {
-                    document.getElementById('cab_planta').value = d.planta || '';
-                    document.getElementById('cab_po').value = d.po || '';
-                    document.getElementById('cab_etd').value = d.etd || '';
-                    document.getElementById('cab_eta').value = d.eta || '';
-                    document.getElementById('cab_eta_yapp').value = d.eta_yapp || '';
-                    document.getElementById('cab_pickup').value = d.pickup || '';
-                    if (d.status_embarque) document.getElementById('cab_status').value = d.status_embarque;
-                    // Planta → Importer (final 1 = Gravataí; senão Americana)
-                    if (/1$/.test((d.planta || '').trim())) document.getElementById('sel_importer').value = 'gravatai';
-                    else if (d.planta) document.getElementById('sel_importer').value = 'americana';
-                    aplicarImporter();
-
+                    SPOTS = d.spots || [];
                     const avisos = [];
-                    if (!d.tem_follow) avisos.push('Esse processo ainda não está no Follow — ETD/ETA/ETA YAPP e Pick up ficam em branco (dá pra digitar).');
-                    if (!d.tem_parametros) avisos.push('A tabela de Parâmetros da Importação ainda não existe no banco.');
+                    SPOTS.filter(s => !s.tem_follow).forEach(s => avisos.push(s.processo + ' ainda não está no Follow — datas em branco (dá pra digitar).'));
+                    if (d.tem_parametros === false) avisos.push('A tabela de Parâmetros da Importação ainda não existe no banco.');
                     document.getElementById('avisos').innerHTML = avisos.map(a => '<div class="alert alert-warning py-2">' + esc(a) + '</div>').join('');
-
-                    const corpo = document.getElementById('corpo-release');
-                    corpo.innerHTML = '';
-                    (d.itens || []).forEach((it, i) => {
-                        const tr = document.createElement('tr');
-                        const inp = (campo, valor, falta) => `<td class="num"><input class="f-${campo}${falta ? ' falta-param' : ''}" value="${esc(valor)}" oninput="recalcular()"></td>`;
-                        tr.innerHTML = `
-                            <td>${i + 1}</td>
-                            <td><input class="f-desc" value="${esc(it.desc)}"></td>
-                            <td><input class="f-sap" value="${esc(it.sap)}"></td>
-                            ${inp('unit_pack', it.unit_pack, it.unit_pack === '')}
-                            ${inp('qtd', it.qtd, false)}
-                            <td class="num calc c-pack"></td>
-                            ${inp('u_price', it.u_price, it.u_price === '')}
-                            <td class="num calc c-tprice"></td>
-                            ${inp('length', it.length, it.length === '')}
-                            ${inp('width', it.width, it.width === '')}
-                            ${inp('height', it.height, it.height === '')}
-                            <td class="num calc c-cbm"></td>
-                            ${inp('peso', it.peso, it.peso === '')}
-                            <td class="num calc c-nweight"></td>
-                            <td class="num calc c-gweight" title="G Weight = N Weight + 25 kg por pack (fórmula da planilha). Se tiver G Weight em Parâmetros, usa o cadastrado."></td>
-                            <td class="d-none"><input class="f-g_weight" value="${esc(it.g_weight)}"></td>
-                        `;
-                        corpo.appendChild(tr);
-                    });
-                    if (!(d.itens || []).length) {
-                        corpo.innerHTML = '<tr><td colspan="15" class="text-center text-muted py-4">Nenhum item nesse processo.</td></tr>';
-                    }
-                    recalcular();
+                    // Importer pela planta do 1º spot
+                    if (SPOTS[0] && SPOTS[0].cidade === 'GRAVATAÍ') document.getElementById('sel_importer').value = 'gravatai';
+                    else if (SPOTS[0]) document.getElementById('sel_importer').value = 'americana';
+                    aplicarImporter();
+                    desenharSpots();
+                    desenharItens(d.itens || []);
                 })
-                .catch(() => alert('Erro de conexão ao buscar o processo.'));
+                .catch(() => alert('Erro de conexão ao buscar os processos.'));
         }
 
-        // Lê uma linha da tabela e devolve valores + cálculos (mesmas fórmulas da planilha)
-        function lerLinha(tr) {
-            const v = {};
-            CAMPOS_EDIT.forEach(c => { v[c] = parseBr(tr.querySelector('.f-' + c).value); });
-            v.desc = tr.querySelector('.f-desc').value;
-            v.sap = tr.querySelector('.f-sap').value;
-            v.pack = (v.qtd !== null && v.unit_pack) ? v.qtd / v.unit_pack : null;
-            v.tprice = (v.qtd !== null && v.u_price !== null) ? v.qtd * v.u_price : null;
-            v.cbm = (v.pack !== null && v.length !== null && v.width !== null && v.height !== null) ? v.pack * v.length * v.width * v.height / 1000000 : null;
-            v.nweight = (v.qtd !== null && v.peso !== null) ? v.qtd * v.peso : null;
-            // G WEIGHT: cadastrado em Parâmetros, senão a fórmula da planilha (N WEIGHT + 25 × PACK)
-            v.gweight = v.g_weight !== null ? v.g_weight : ((v.nweight !== null && v.pack !== null) ? v.nweight + 25 * v.pack : null);
-            return v;
+        // Quadro dos Spots (uma coluna por Spot): cidade, modal e as 4 datas
+        function desenharSpots() {
+            const tab = document.getElementById('tabela-spots');
+            if (!SPOTS.length) { tab.innerHTML = ''; return; }
+            const linha = (rotulo, campo, extra = '') => '<tr><th class="text-start">' + rotulo + '</th>' + SPOTS.map((s, i) =>
+                `<td><input class="sp-${campo}" data-i="${i}" value="${esc(s[campo])}" ${extra}></td>`).join('') + '</tr>';
+            tab.innerHTML =
+                '<tr><th></th>' + SPOTS.map((s, i) => `<th class="spot">Spot ${i + 1}<br><small>${esc(s.processo)}${s.po ? ' · PO ' + esc(s.po) : ''}</small></th>`).join('') + '</tr>' +
+                linha('Cidade', 'cidade') + linha('Modal', 'modal_txt') +
+                linha('PICK UP', 'pickup') + linha('ETD', 'etd', 'oninput="recalcularPickup(this)"') + linha('ETA', 'eta') + linha('ETA YAPP', 'eta_yapp');
         }
 
-        function linhasRelease() {
-            return Array.from(document.querySelectorAll('#corpo-release tr')).filter(tr => tr.querySelector('.f-qtd'));
+        function recalcularPickup(campo) {
+            const etd = lerData(campo.value);
+            if (!etd) return;
+            etd.setDate(etd.getDate() - PICKUP_DIAS);
+            document.querySelector('.sp-pickup[data-i="' + campo.dataset.i + '"]').value = escreverData(etd);
         }
 
-        function recalcular() {
-            const tot = { qtd: 0, pack: 0, tprice: 0, cbm: 0, nweight: 0, g_weight: 0 };
-            linhasRelease().forEach(tr => {
-                const v = lerLinha(tr);
-                tr.querySelector('.c-pack').textContent = fmt(v.pack, 2);
-                tr.querySelector('.c-tprice').textContent = fmt(v.tprice, 2);
-                tr.querySelector('.c-cbm').textContent = fmt(v.cbm, 3);
-                tr.querySelector('.c-nweight').textContent = fmt(v.nweight, 2);
-                tr.querySelector('.c-gweight').textContent = fmt(v.gweight, 2);
-                Object.keys(tot).forEach(k => { const val = k === 'g_weight' ? v.gweight : v[k]; if (val !== null) tot[k] += val; });
+        // Itens: descrição, SAP, unit pack, FORECAST de cada Spot e o quadro de parâmetros
+        function desenharItens(itens) {
+            const tab = document.getElementById('tabela-itens-rel');
+            if (!itens.length) { tab.innerHTML = '<tr><td class="text-muted p-3">Nenhum item.</td></tr>'; return; }
+            const inp = (cls, valor, falta) => `<td class="num"><input class="${cls}${falta ? ' falta-param' : ''}" value="${esc(valor)}"></td>`;
+            let html = '<thead><tr><th>Description</th><th>SAP</th><th>unit pack</th>' +
+                SPOTS.map((s, i) => `<th class="spot">Spot ${i + 1}<br>FORECAST</th>`).join('') +
+                '<th>U PRICE</th><th>LENGTH</th><th>WIDTH</th><th>HEIGHT</th><th>weight of component (kg)</th><th>G WEIGHT</th></tr></thead><tbody>';
+            itens.forEach(it => {
+                html += '<tr class="linha-item">' +
+                    `<td><input class="f-desc" value="${esc(it.desc)}" style="min-width:220px"></td>` +
+                    `<td><input class="f-sap" value="${esc(it.sap)}" style="min-width:90px"></td>` +
+                    inp('f-unit_pack', it.unit_pack, it.unit_pack === '') +
+                    SPOTS.map((s, i) => `<td class="num forecast"><input class="f-qtd" data-i="${i}" value="${esc(fmtBr(it.qtd[s.processo] ?? 0))}"></td>`).join('') +
+                    inp('f-u_price', it.u_price, it.u_price === '') +
+                    inp('f-length', it.length, it.length === '') +
+                    inp('f-width', it.width, it.width === '') +
+                    inp('f-height', it.height, it.height === '') +
+                    inp('f-peso', it.peso, it.peso === '') +
+                    inp('f-g_weight', it.g_weight, it.g_weight === '') +
+                    '</tr>';
             });
-            document.getElementById('tot_qtd').textContent = fmt(tot.qtd, 2);
-            document.getElementById('tot_pack').textContent = fmt(tot.pack, 2);
-            document.getElementById('tot_tprice').textContent = fmt(tot.tprice, 2);
-            document.getElementById('tot_cbm').textContent = fmt(tot.cbm, 3);
-            document.getElementById('tot_nweight').textContent = fmt(tot.nweight, 2);
-            document.getElementById('tot_gweight').textContent = fmt(tot.g_weight, 2);
+            tab.innerHTML = html + '</tbody>';
         }
 
-        // ---------- Exportar .xlsx no MESMO layout da planilha
-        // "PO between YAPP HQ and YAPP Subsidiaries" (aba de projeto):
-        //   linha 1 = planta · linha 2 = processo · linhas 3-5 = PICK UP / ETA BR / ETA YAPP
-        //   (rótulos em vermelho, Arial 16, datas m/d/yyyy em fundo cinza) · linha 6 = cabeçalho
-        //   · itens a partir da linha 7 · Total · bloco do Importer embaixo.
-        //   Fórmulas iguais às da planilha: PACK = QTY/unit pack, T PRICE = QTY*U PRICE,
-        //   volume = PACK*L*W*H/1000000, N WEIGHT = QTY*weight, G WEIGHT = N WEIGHT + 25*PACK.
+        function lerItens() {
+            return Array.from(document.querySelectorAll('#tabela-itens-rel tr.linha-item')).map(tr => {
+                const v = { desc: tr.querySelector('.f-desc').value, sap: tr.querySelector('.f-sap').value.trim() };
+                CAMPOS_PARAM.forEach(c => { v[c] = parseBr(tr.querySelector('.f-' + c).value); });
+                v.qtd = SPOTS.map((s, i) => parseBr(tr.querySelector('.f-qtd[data-i="' + i + '"]').value) ?? 0);
+                return v;
+            });
+        }
+        function lerSpots() {
+            return SPOTS.map((s, i) => {
+                const val = campo => document.querySelector('.sp-' + campo + '[data-i="' + i + '"]').value;
+                return { cidade: val('cidade'), modal: val('modal_txt'), pickup: val('pickup'), etd: val('etd'), eta: val('eta'), eta_yapp: val('eta_yapp') };
+            });
+        }
+
+        // ---------- Exportar .xlsx idêntico à aba de projeto da planilha ----------
+        // Colunas: A # (oculta) | B DESCRIPTION | C SAP | D unit pack |
+        // por Spot: FORECAST | PACK | CBM | PRICE | 2 colunas de respiro |
+        // U PRICE | T PRICE (oculta) | LENGTH | WIDTH | HEIGHT | volume | weight of component | N WEIGHT | G WEIGHT
         function exportarRelease() {
             if (typeof ExcelJS === 'undefined') { alert('Biblioteca de planilha não carregou. Recarregue a página.'); return; }
-            const linhas = linhasRelease();
-            if (!linhas.length) { alert('Escolha um processo com itens antes de exportar.'); return; }
-            const processo = document.getElementById('sel_processo').value;
+            const itens = lerItens();
+            if (!itens.length || !SPOTS.length) { alert('Carregue o projeto e os processos antes de exportar.'); return; }
+            const spots = lerSpots();
             const projeto = document.getElementById('sel_projeto').value;
-            const po = document.getElementById('cab_po').value.trim();
 
             const wb = new ExcelJS.Workbook();
-            wb.calcProperties.fullCalcOnLoad = true; // Excel recalcula as fórmulas ao abrir
+            wb.calcProperties.fullCalcOnLoad = true;
             const ws = wb.addWorksheet((projeto || 'Release').replace(/[\\\/\?\*\[\]:]/g, ' ').substring(0, 31), {
-                views: [{ showGridLines: false }],
+                views: [{ showGridLines: false, zoomScale: 70 }],
             });
-
-            // Colunas: A # | B DESCRIPTION | C SAP | D (código alternativo, vazio) | E unit pack |
-            // F QTY (status) | G PACK | H U PRICE | I T PRICE | J LENGTH | K WIDTH | L HEIGHT |
-            // M volume | N weight of component | O N WEIGHT | P G WEIGHT
-            ws.columns = [4, 30, 12, 6, 9, 18, 8, 9, 11, 8, 8, 8, 9, 11, 11, 11].map(w => ({ width: w }));
             ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
-            const CINZA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
-            const AMARELO = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+            const L = n => { let s = ''; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
             const fino = { style: 'thin' };
-            const borda = { top: fino, left: fino, bottom: fino, right: fino };
-            const fonteTopo = { name: '微软雅黑', size: 11, bold: true };
-            const fonteRotulo = { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFF0000' } };
-            const fonteData = { name: 'Arial', size: 16, color: { argb: 'FFFF0000' } };
-            const fonteCab = { name: 'Arial', size: 8, bold: true };
-            const fonteCabNormal = { name: 'Arial', size: 8 };
-            const fonteItem = { name: 'Arial', size: 11 };
+            const bordaTodas = { top: fino, left: fino, bottom: fino, right: fino };
+            const CINZA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+            const BRANCO = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+            const ARDOSIA = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF44546A' } };
+            const YAHEI = '微软雅黑';
+            const arial = (size, bold = false, extra = {}) => ({ name: 'Arial', size, bold, ...extra });
+            const VERMELHO = { argb: 'FFFF0000' };
             const comoData = t => { const d = lerData(t); return d ? new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) : (t || null); };
-            const COLS_AMARELAS = [9, 13, 15, 16]; // T PRICE, volume, N WEIGHT, G WEIGHT
 
-            // Linhas 1-2: planta e processo (sobre a coluna de quantidade, como na planilha)
-            const topo = [[1, document.getElementById('cab_planta').value], [2, processo]];
-            topo.forEach(([lin, valor]) => {
-                const c = ws.getCell(lin, 6);
-                c.value = valor; c.font = fonteTopo; c.fill = CINZA; c.border = borda;
-                c.alignment = { horizontal: 'center', vertical: 'middle' };
+            // Posição das colunas
+            const colSpot = i => 5 + i * 4;                 // FORECAST do Spot i (E, I, M...)
+            const fimSpots = 5 + spots.length * 4 - 1;
+            const cU = fimSpots + 3;                        // U PRICE (2 colunas de respiro antes)
+            const cT = cU + 1, cLen = cU + 2, cWid = cU + 3, cHei = cU + 4, cVol = cU + 5, cPeso = cU + 6, cNw = cU + 7, cGw = cU + 8;
+
+            // Larguras (iguais às da planilha)
+            ws.getColumn(1).width = 2.91; ws.getColumn(1).hidden = true;
+            ws.getColumn(2).width = 22.27; ws.getColumn(3).width = 13.54; ws.getColumn(4).width = 10.09;
+            spots.forEach((s, i) => {
+                const c = colSpot(i);
+                ws.getColumn(c).width = 16; ws.getColumn(c + 1).width = 5.45; ws.getColumn(c + 2).width = 6.5; ws.getColumn(c + 3).width = 9.5;
             });
-            if (po) {
-                const cPo = ws.getCell(2, 2);
-                cPo.value = 'PO ' + po; cPo.font = fonteTopo;
-            }
-            ws.getRow(1).height = 22.2;
-            ws.getRow(2).height = 16.2;
+            ws.getColumn(fimSpots + 1).width = 3; ws.getColumn(fimSpots + 2).width = 3;
+            ws.getColumn(cU).width = 5.73; ws.getColumn(cT).width = 6.73; ws.getColumn(cT).hidden = true;
+            [cLen, cWid, cHei].forEach(c => { ws.getColumn(c).width = 4.91; });
+            ws.getColumn(cVol).width = 5.5; ws.getColumn(cPeso).width = 7.91; ws.getColumn(cNw).width = 8; ws.getColumn(cGw).width = 8.54;
 
-            // Linhas 3-5: PICK UP / ETA BR / ETA YAPP
-            const datas = [
-                [3, 'PICK UP', document.getElementById('cab_pickup').value],
-                [4, 'ETA BR', document.getElementById('cab_eta').value],
-                [5, 'ETA YAPP', document.getElementById('cab_eta_yapp').value],
-            ];
-            datas.forEach(([lin, rotulo, valor]) => {
-                const cr = ws.getCell(lin, 2);
-                cr.value = rotulo; cr.font = fonteRotulo; cr.alignment = { wrapText: true };
-                const cd = ws.getCell(lin, 6);
-                cd.value = comoData(valor); cd.font = fonteData; cd.fill = CINZA; cd.border = borda;
-                cd.numFmt = 'm/d/yyyy'; cd.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-                ws.getRow(lin).height = 22.05;
+            // Linhas 1-7: cabeçalho de cada Spot
+            [16.2, 22.2, 16.2, 19.7, 19.7, 19.7, 19.7].forEach((ht, k) => { ws.getRow(k + 1).height = ht; });
+            const rotulos = [[4, 'PICK UP', 'pickup'], [5, 'ETD', 'etd'], [6, 'ETA', 'eta'], [7, 'ETA YAPP', 'eta_yapp']];
+            rotulos.forEach(([lin, rot]) => {
+                const c = ws.getCell(lin, 2);
+                c.value = rot; c.font = arial(16, true, { color: VERMELHO }); c.alignment = { vertical: 'middle', wrapText: true };
+            });
+            spots.forEach((s, i) => {
+                const c = colSpot(i);
+                const t1 = ws.getCell(1, c);
+                t1.value = 'Spot ' + (i + 1); t1.fill = ARDOSIA; t1.font = { name: YAHEI, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+                t1.alignment = { horizontal: 'center', vertical: 'middle' };
+                [[2, s.cidade], [3, s.modal]].forEach(([lin, valor]) => {
+                    for (let k = 0; k < 4; k++) { ws.getCell(lin, c + k).fill = BRANCO; }
+                    const cel = ws.getCell(lin, c);
+                    cel.value = valor || null; cel.font = { name: YAHEI, size: 11, bold: true };
+                    cel.alignment = { horizontal: 'center', vertical: 'middle' }; cel.border = { left: fino, right: fino };
+                });
+                rotulos.forEach(([lin, , campo]) => {
+                    for (let k = 1; k < 4; k++) { ws.getCell(lin, c + k).fill = BRANCO; }
+                    const cel = ws.getCell(lin, c);
+                    cel.value = comoData(s[campo]); cel.numFmt = 'dd/mm/yyyy';
+                    cel.font = arial(16, false, { color: VERMELHO }); cel.fill = BRANCO;
+                    cel.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                    cel.border = lin === 4 ? bordaTodas : { left: fino, right: fino, bottom: fino };
+                });
             });
 
-            // Linha 6: cabeçalho
-            const titulos = ['', 'DESCRIPTION', 'SAP', '', 'unit pack', document.getElementById('cab_status').value, 'PACK',
-                'U  PRICE', 'T PRICE', 'LENGTH', 'WIDTH', 'HEIGHT', 'volume', 'weight of component（kg）', 'N WEIGHT', 'G WEIGHT'];
-            titulos.forEach((t, k) => {
-                const c = ws.getCell(6, k + 1);
-                c.value = t || null;
-                c.font = COLS_AMARELAS.includes(k + 1) || k + 1 === 14 ? fonteCabNormal : fonteCab;
-                c.border = borda;
-                c.alignment = { horizontal: k + 1 === 7 ? 'center' : (k + 1 === 3 ? 'left' : undefined), vertical: 'middle', wrapText: true };
-                if (k + 1 === 6) c.fill = CINZA;
-                if (COLS_AMARELAS.includes(k + 1)) c.fill = AMARELO;
+            // Linha 8: títulos
+            ws.getRow(8).height = 33;
+            const titulo = (col, texto, bold, centro = false, borda = true) => {
+                const c = ws.getCell(8, col);
+                c.value = texto; c.font = arial(8, bold);
+                c.alignment = { horizontal: centro ? 'center' : (col === 3 ? 'left' : undefined), vertical: 'middle', wrapText: true };
+                if (borda) c.border = bordaTodas;
+            };
+            ws.getCell(8, 1).border = { left: fino, right: fino, top: fino };
+            titulo(2, 'DESCRIPTION', true); titulo(3, 'SAP', true); titulo(4, 'unit pack', true);
+            spots.forEach((s, i) => {
+                const c = colSpot(i);
+                titulo(c, 'FORECAST', false, false, false);
+                titulo(c + 1, 'PACK', true, true); titulo(c + 2, 'CBM', true, true); titulo(c + 3, 'PRICE', true, true);
             });
-            ws.getRow(6).height = 33;
+            ws.getCell(8, fimSpots + 1).border = { left: fino };
+            titulo(cU, 'U  PRICE', true); titulo(cT, 'T PRICE', false); titulo(cLen, 'LENGTH', true); titulo(cWid, 'WIDTH', true);
+            titulo(cHei, 'HEIGHT', true); titulo(cVol, 'volume', false); titulo(cPeso, 'weight of component（kg）', false);
+            titulo(cNw, 'N WEIGHT', false); titulo(cGw, 'G WEIGHT', false);
 
-            // Itens
-            const primeira = 7;
-            linhas.forEach((tr, i) => {
-                const v = lerLinha(tr);
-                const n = primeira + i;
-                const sapNum = /^\d+$/.test(v.sap.trim()) ? Number(v.sap.trim()) : v.sap;
-                const valores = {
-                    1: i + 1, 2: v.desc, 3: sapNum, 5: v.unit_pack, 6: v.qtd,
-                    7: { formula: `IF(AND(ISNUMBER(E${n}),E${n}<>0),F${n}/E${n},"")`, result: v.pack ?? '' },
-                    8: v.u_price,
-                    9: { formula: `IF(ISNUMBER(H${n}),F${n}*H${n},"")`, result: v.tprice ?? '' },
-                    10: v.length, 11: v.width, 12: v.height,
-                    13: { formula: `IF(AND(ISNUMBER(G${n}),ISNUMBER(J${n}),ISNUMBER(K${n}),ISNUMBER(L${n})),G${n}*J${n}*K${n}*L${n}/1000000,"")`, result: v.cbm ?? '' },
-                    14: v.peso,
-                    15: { formula: `IF(ISNUMBER(N${n}),F${n}*N${n},"")`, result: v.nweight ?? '' },
-                    16: v.g_weight !== null ? v.g_weight
-                        : { formula: `IF(AND(ISNUMBER(O${n}),ISNUMBER(G${n})),O${n}+25*G${n},"")`, result: v.gweight ?? '' },
+            // Itens (a partir da linha 9)
+            const primeira = 9;
+            itens.forEach((v, k) => {
+                const n = primeira + k;
+                ws.getRow(n).height = 13.8;
+                const cel = (col, valor, fonte, extra = {}) => {
+                    const c = ws.getCell(n, col);
+                    c.value = valor; c.font = fonte; c.border = bordaTodas;
+                    c.alignment = { vertical: 'middle', ...(extra.al || {}) };
+                    if (extra.numFmt) c.numFmt = extra.numFmt;
+                    if (extra.fill) c.fill = extra.fill;
+                    return c;
                 };
-                for (let c = 1; c <= 16; c++) {
-                    const cel = ws.getCell(n, c);
-                    cel.value = valores[c] ?? null;
-                    cel.font = c === 8 ? { ...fonteItem, bold: true } : fonteItem;
-                    cel.border = borda;
-                    cel.alignment = { horizontal: c === 1 || c === 3 ? 'left' : (c === 7 ? 'center' : undefined), wrapText: c === 2 };
-                    if (c === 6) cel.fill = CINZA;
-                    if (COLS_AMARELAS.includes(c)) cel.fill = AMARELO;
-                }
-                ws.getCell(n, 7).numFmt = '0.0';
-                ws.getCell(n, 9).numFmt = '#,##0.00';
-                ws.getCell(n, 13).numFmt = '0.000';
-                ws.getCell(n, 15).numFmt = '#,##0.00';
-                ws.getCell(n, 16).numFmt = '#,##0.00';
-                ws.getRow(n).height = 15;
+                const D = `D${n}`, U = `${L(cU)}${n}`, VOL = `${L(cVol)}${n}`;
+                cel(1, k + 1, arial(11), { al: { horizontal: 'left' } });
+                cel(2, v.desc, arial(10));
+                cel(3, v.sap, arial(11), { al: { horizontal: 'left' }, numFmt: '@' });
+                cel(4, v.unit_pack, arial(11));
+                spots.forEach((s, i) => {
+                    const c = colSpot(i), Q = `${L(c)}${n}`, P = `${L(c + 1)}${n}`;
+                    cel(c, v.qtd[i], arial(11, true), { fill: CINZA, numFmt: '#,##0' });
+                    cel(c + 1, { formula: `IFERROR(${Q}/${D},0)` }, arial(10), { al: { horizontal: 'center' }, numFmt: 'General' });
+                    cel(c + 2, { formula: `IFERROR(${VOL}*${P},0)` }, arial(10), { al: { horizontal: 'center' }, numFmt: '0.000' });
+                    cel(c + 3, { formula: `IFERROR(${U}*${Q},0)` }, arial(10), { al: { horizontal: 'center' }, numFmt: '0.00' });
+                });
+                ws.getCell(n, fimSpots + 1).border = { left: fino };
+                cel(cU, v.u_price, arial(11, true), { numFmt: '0.00' });
+                cel(cT, null, arial(11));
+                cel(cLen, v.length, arial(11)); cel(cWid, v.width, arial(11)); cel(cHei, v.height, arial(11));
+                cel(cVol, { formula: `IFERROR(${L(cLen)}${n}*${L(cWid)}${n}*${L(cHei)}${n}/1000000,0)` }, arial(11), { numFmt: '0.00' });
+                cel(cPeso, v.peso, arial(11), { numFmt: '0.00' });
+                cel(cNw, { formula: `IFERROR(${L(cPeso)}${n}*${D},0)` }, arial(11), { numFmt: '0.##' });
+                cel(cGw, v.g_weight, arial(11));
             });
 
             // Total
-            const ultima = primeira + linhas.length - 1;
+            const ultima = primeira + itens.length - 1;
             const nt = ultima + 1;
-            ws.getCell(nt, 1).value = ' ';
-            const cTot = ws.getCell(nt, 2);
-            cTot.value = 'Total'; cTot.font = { ...fonteItem, bold: true };
-            const colLetra = c => String.fromCharCode(64 + c);
-            [6, 7, 9, 13, 15, 16].forEach(c => {
-                const cel = ws.getCell(nt, c);
-                cel.value = { formula: `SUM(${colLetra(c)}${primeira}:${colLetra(c)}${ultima})` };
-                cel.font = { ...fonteItem, bold: true };
-                cel.numFmt = c === 13 ? '0.000' : (c === 7 ? '0.0' : '#,##0.00');
-                if (COLS_AMARELAS.includes(c)) cel.fill = AMARELO;
+            ws.getRow(nt).height = 17.4;
+            const ct = (col, valor, fonte, centro = false) => {
+                const c = ws.getCell(nt, col);
+                c.value = valor; c.font = fonte; c.border = bordaTodas;
+                c.alignment = { horizontal: centro ? 'center' : undefined, vertical: 'middle', wrapText: true };
+            };
+            ct(1, ' ', arial(11)); ct(2, 'Total', arial(11, true)); ct(3, null, arial(11)); ct(4, null, arial(11));
+            spots.forEach((s, i) => {
+                const c = colSpot(i);
+                ct(c, null, arial(11, true), true);
+                [1, 2, 3].forEach(k => ct(c + k, { formula: `SUM(${L(c + k)}${primeira}:${L(c + k)}${ultima})` }, arial(10, true), true));
+                ws.getCell(nt, c + 2).numFmt = '0.000';
+                ws.getCell(nt, c + 3).numFmt = '#,##0.00';
             });
-            ws.getCell(nt, 6).numFmt = '#,##0';
-            for (let c = 1; c <= 16; c++) ws.getCell(nt, c).border = borda;
 
-            // Bloco do Importer (mesclado, igual à planilha)
+            // Importer
             const ni = nt + 3;
-            ws.mergeCells(ni, 2, ni + 5, 16);
+            ws.getRow(ni).height = 96;
+            ws.mergeCells(ni, 2, ni, Math.max(fimSpots, 8));
             const ci = ws.getCell(ni, 2);
             ci.value = document.getElementById('importer_texto').value;
-            ci.font = { name: '微软雅黑', size: 11, bold: true };
-            ci.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
-            for (let r = nt + 1; r <= ni + 5; r++) ws.getRow(r).height = 16.2;
+            ci.font = { name: YAHEI, size: 11, bold: true };
+            ci.alignment = { wrapText: true, vertical: 'top' };
 
             wb.xlsx.writeBuffer().then(buf => {
                 const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = ('Release_' + (projeto ? projeto + '_' : '') + processo + '.xlsx').replace(/\s+/g, '_');
+                a.download = ('Release_' + (projeto || 'projeto') + '.xlsx').replace(/\s+/g, '_');
                 document.body.appendChild(a); a.click(); a.remove();
                 URL.revokeObjectURL(a.href);
             }).catch(() => alert('Erro ao gerar a planilha.'));
