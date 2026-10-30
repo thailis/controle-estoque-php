@@ -42,6 +42,11 @@ function formatarDataBrProgramacao(?string $data): string
 
 function normalizarTexto(string $texto): string
 {
+    // Limpa o que costuma vir "escondido" no cabeçalho do Excel: marcador BOM,
+    // espaço não-quebrável, espaços duplos e ":" no final.
+    $texto = str_replace(["\xEF\xBB\xBF", "\xC2\xA0"], ['', ' '], $texto);
+    $texto = preg_replace('/\s+/u', ' ', $texto) ?? $texto;
+    $texto = rtrim(trim($texto), ':');
     $texto = mb_strtolower(trim($texto), 'UTF-8');
     $mapa = [
         'á' => 'a', 'à' => 'a', 'ã' => 'a', 'â' => 'a', 'ä' => 'a',
@@ -87,6 +92,8 @@ function localizarColunaComponente(array $cabecalhoNormalizado): ?int
     $candidatos = [
     'codigo_componente',
     'componente',
+    'sap',
+    'codigo sap',
     'codigo do componente',
     'codigo componente',
     'cod componente',
@@ -105,25 +112,43 @@ function localizarColunaComponente(array $cabecalhoNormalizado): ?int
 // "quantidade" é pareada com a coluna imediatamente anterior (a data daquela programação).
 // Isso cobre tanto o formato simples (codigo_componente, data, quantidade) quanto o formato
 // largo da planilha (Programação 1, Quantidade, Programação 2, Quantidade 2, ...).
+// Coluna de quantidade PEDIDA (ignora "quantidade recebida" e "importado", que
+// vêm na exportação da própria Programação).
+function ehColunaQuantidade(string $nome): bool
+{
+    if (str_contains($nome, 'recebid') || str_contains($nome, 'importad')) {
+        return false;
+    }
+    return str_contains($nome, 'quantidade')
+        || in_array($nome, ['qtd', 'qtde', 'qty', 'quant', 'quantity', 'quantidade pedida'], true);
+}
+
 function detectarParesDataQuantidade(array $cabecalhoNormalizado): array
 {
     // Formato simples (uma única coluna de quantidade): procura a coluna de data
     // PELO NOME, em qualquer posição — antes exigia que a data viesse logo antes
     // da quantidade, e um arquivo "componente, quantidade, preco, processo, data"
     // tentava ler o código do componente como data.
-    $colunasQtd = array_keys(array_filter($cabecalhoNormalizado, fn($n) => str_contains($n, 'quantidade')));
+    $colunasQtd = array_keys(array_filter($cabecalhoNormalizado, fn($n) => ehColunaQuantidade($n)));
     if (count($colunasQtd) === 1) {
-        foreach (['data', 'data programacao', 'data_programacao', 'programacao', 'data entrega', 'data_entrega', 'entrega'] as $nomeData) {
+        foreach (['data', 'data programacao', 'data_programacao', 'programacao', 'data entrega', 'data_entrega', 'entrega', 'date', 'eta', 'data prevista', 'previsao'] as $nomeData) {
             $indiceData = array_search($nomeData, $cabecalhoNormalizado, true);
             if ($indiceData !== false) {
                 return [[$indiceData, $colunasQtd[0]]];
+            }
+        }
+        // Qualquer outra coluna com "data"/"date" no nome (menos data recebida / original)
+        foreach ($cabecalhoNormalizado as $indice => $nome) {
+            if ((str_contains($nome, 'data') || str_contains($nome, 'date'))
+                && !str_contains($nome, 'recebid') && !str_contains($nome, 'original')) {
+                return [[$indice, $colunasQtd[0]]];
             }
         }
     }
 
     $pares = [];
     foreach ($cabecalhoNormalizado as $indice => $nome) {
-        if ($indice > 0 && str_contains($nome, 'quantidade')) {
+        if ($indice > 0 && ehColunaQuantidade($nome)) {
             $pares[] = [$indice - 1, $indice];
         }
     }
@@ -207,6 +232,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $indicePlanta = null;
                 }
 
+                // Mostra quais colunas foram reconhecidas (a ordem no arquivo não importa)
+                $letraColImp = fn($i) => $i === null ? '—' : chr(65 + (int) $i);
+                $mensagens[] = 'ℹ️ Colunas reconhecidas — Componente: ' . $letraColImp($indiceComponente)
+                    . ' · Data: ' . (isset($paresDataQuantidade[0]) ? $letraColImp($paresDataQuantidade[0][0]) : '—')
+                    . ' · Quantidade: ' . (isset($paresDataQuantidade[0]) ? $letraColImp($paresDataQuantidade[0][1]) : '—')
+                    . ' · PO: ' . $letraColImp($indicePo) . ' · Processo: ' . $letraColImp($indiceProcesso)
+                    . ' · Planta: ' . $letraColImp($indicePlanta) . ' · Moeda: ' . $letraColImp($indiceMoeda);
+
                 if ($indiceComponente === null) {
                     $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'componente' ou 'codigo_componente' no cabeçalho.";
                 } elseif (empty($paresDataQuantidade)) {
@@ -242,11 +275,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         continue;
                     }
 
-                    if (count($linha) !== count($cabecalho)) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada (número de colunas não confere).";
-                        continue;
-                    }
+                    // Linha com menos colunas que o cabeçalho (células vazias no fim) é
+                    // completada; com mais, as sobras são ignoradas — não descarta mais a linha.
+                    $linha = array_slice(array_pad($linha, count($cabecalho), ''), 0, count($cabecalho));
 
                     $codigoComponente = trim($linha[$indiceComponente] ?? '');
                     if ($codigoComponente === '') {
