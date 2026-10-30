@@ -208,7 +208,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     $buscaVolta = (string) ($_POST['busca_atual'] ?? '');
     $statusFiltroVolta = (string) ($_POST['status_atual'] ?? 'aberto');
     $condicaoFiltroVolta = (string) ($_POST['condicao_atual'] ?? 'todos');
-    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&mes_base=' . urlencode((string) ($_POST['mes_base_atual'] ?? '')) . '&mes=' . urlencode((string) ($_POST['mes_atual'] ?? '')) . '&categoria=' . urlencode((string) ($_POST['categoria_atual'] ?? '')) . '&excluido=1');
+    header('Location: follow.php?pagina=' . $paginaVolta . '&busca=' . urlencode($buscaVolta) . '&status=' . urlencode($statusFiltroVolta) . '&condicao=' . urlencode($condicaoFiltroVolta) . '&fornecedor=' . urlencode((string) ($_POST['fornecedor_atual'] ?? '')) . '&categoria=' . urlencode((string) ($_POST['categoria_atual'] ?? '')) . '&excluido=1');
     exit;
 }
 
@@ -331,30 +331,32 @@ $resCategorias = mysqli_query($conn, "SELECT DISTINCT TRIM(categoria) AS categor
 if ($resCategorias) {
     while ($l = mysqli_fetch_assoc($resCategorias)) { $categoriasDisponiveis[] = $l['categoria']; }
 }
-// Filtro de Mês: escolhe qual data do embarque vale (Prevista por padrão) e o
-// mês (aaaa-mm). Só aceita as colunas da lista — nunca vem texto livre pro SQL.
-$datasParaMes = ['prevista' => 'Prevista', 'eta' => 'ETA', 'etd' => 'ETD', 'efetiva' => 'Efetiva', 'pickup' => 'Pickup'];
-$filtroMesBase = isset($_GET['mes_base']) && isset($datasParaMes[$_GET['mes_base']]) ? $_GET['mes_base'] : 'prevista';
-$filtroMes = isset($_GET['mes']) && preg_match('/^\d{4}-\d{2}$/', (string) $_GET['mes']) ? (string) $_GET['mes'] : '';
+// Ordem da lista: pela Prevista (o filtro de Mês/Data foi trocado pelo de Fornecedor)
+$filtroMesBase = 'prevista';
 
-// Meses que existem de verdade na data escolhida (mais recente primeiro)
-$mesesDisponiveis = [];
-$resMeses = mysqli_query($conn, "SELECT DISTINCT DATE_FORMAT(`$filtroMesBase`, '%Y-%m') AS mes FROM follow WHERE `$filtroMesBase` IS NOT NULL ORDER BY mes DESC");
-if ($resMeses) {
-    while ($l = mysqli_fetch_assoc($resMeses)) { $mesesDisponiveis[] = $l['mes']; }
+// Filtro de Fornecedor (vem de Processos — um processo pode ter mais de um)
+$filtroFornecedor = trim($_GET['fornecedor'] ?? '');
+$fornecedoresDisponiveis = [];
+$resFornecedores = mysqli_query($conn, "SELECT DISTINCT TRIM(fornecedor) AS fornecedor FROM processos WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> '' ORDER BY fornecedor");
+if ($resFornecedores) {
+    while ($l = mysqli_fetch_assoc($resFornecedores)) { $fornecedoresDisponiveis[] = $l['fornecedor']; }
 }
-$nomesMeses = ['01' => 'Jan', '02' => 'Fev', '03' => 'Mar', '04' => 'Abr', '05' => 'Mai', '06' => 'Jun', '07' => 'Jul', '08' => 'Ago', '09' => 'Set', '10' => 'Out', '11' => 'Nov', '12' => 'Dez'];
-$rotuloMes = fn(string $m) => ($nomesMeses[substr($m, 5, 2)] ?? substr($m, 5, 2)) . '/' . substr($m, 0, 4);
+
+// Agente = FFW (agente de carga) cadastrado em Processos pro processo
+$sqlAgente = "(SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(pag.ffw), '') SEPARATOR ', ') FROM processos pag WHERE pag.processo = f.processo)";
 
 $condicoes = [];
 $params = [];
 $tipos = '';
 
 if ($busca !== '') {
-    $condicoes[] = "(f.processo LIKE ? OR f.trk LIKE ? OR f.armador LIKE ? OR f.requerente LIKE ?)";
-    $like = '%' . $busca . '%';
-    $params[] = $like; $params[] = $like; $params[] = $like; $params[] = $like;
-    $tipos .= 'ssss';
+    // Sem diferenciar maiúscula/minúscula (LOWER dos dois lados); inclui o Agente (FFW)
+    $condicoes[] = "(LOWER(f.processo) LIKE ? OR LOWER(COALESCE(f.trk, '')) LIKE ? OR LOWER(COALESCE(f.armador, '')) LIKE ?
+        OR LOWER(COALESCE(f.requerente, '')) LIKE ?
+        OR EXISTS (SELECT 1 FROM processos pb WHERE pb.processo = f.processo AND LOWER(COALESCE(pb.ffw, '')) LIKE ?))";
+    $like = '%' . mb_strtolower($busca, 'UTF-8') . '%';
+    array_push($params, $like, $like, $like, $like, $like);
+    $tipos .= 'sssss';
 }
 if ($filtroStatus === 'aberto') {
     $condicoes[] = "COALESCE(f.status, 'aberto') <> 'fechado'
@@ -381,9 +383,9 @@ if ($filtroCategoria !== '') {
     $tipos .= 's';
 }
 
-if ($filtroMes !== '') {
-    $condicoes[] = "DATE_FORMAT(f.`$filtroMesBase`, '%Y-%m') = ?";
-    $params[] = $filtroMes;
+if ($filtroFornecedor !== '') {
+    $condicoes[] = "EXISTS (SELECT 1 FROM processos pforn WHERE pforn.processo = f.processo AND TRIM(pforn.fornecedor) = ?)";
+    $params[] = $filtroFornecedor;
     $tipos .= 's';
 }
 
@@ -399,7 +401,8 @@ $ordemData = "COALESCE(f.`$filtroMesBase`, f.prevista, f.eta, f.etd, f.efetiva, 
 if (($_GET['exportar'] ?? '') === 'csv') {
     $stmtExp = mysqli_prepare($conn, "
         SELECT f.*,
-            (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo
+            (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo,
+            $sqlAgente AS agente
         FROM follow f
         $where
         ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
@@ -414,7 +417,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="follow-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Rastreio (TRK)', 'FT (dias)', 'Transit (dias)', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
+    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Agente', 'Rastreio (TRK)', 'FT (dias)', 'Transit (dias)', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
     $dataCsv = fn($d) => ($d === null || $d === '') ? '' : dataBr($d);
     while ($r = mysqli_fetch_assoc($resExp)) {
         // Mesmas regras de Status e Condição da tabela
@@ -435,7 +438,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $condicaoCsv = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][calcularCondicaoFollow($r['prevista'])] ?? '';
         }
         fputcsv($saida, [
-            $statusCsv, $r['processo'], $r['origem'] ?? '', $r['destino'] ?? '', $r['armador'] ?? '', $r['trk'] ?? '',
+            $statusCsv, $r['processo'], $r['origem'] ?? '', $r['destino'] ?? '', $r['armador'] ?? '', $r['agente'] ?? '', $r['trk'] ?? '',
             $r['ft_dias'] ?? '', $r['transit_dias'] ?? '',
             $dataCsv($r['pickup'] ?? null), $dataCsv($r['etd'] ?? null), $dataCsv($r['eta'] ?? null),
             $dataCsv($r['prevista'] ?? null), $dataCsv($r['efetiva'] ?? null),
@@ -469,7 +472,8 @@ $totalPendentes = (int) mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) 
 // isso um LIMIT 1 aqui já garante um valor único e correto por processo.
 $sql = "
     SELECT f.*,
-        (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo
+        (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo,
+        $sqlAgente AS agente
     FROM follow f
     $where
     ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
@@ -514,17 +518,18 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(3), .table-follow td:nth-child(3) { width: 120px; }
         .table-follow th:nth-child(4), .table-follow td:nth-child(4) { width: 120px; }
         .table-follow th:nth-child(5), .table-follow td:nth-child(5) { width: 130px; }
-        .table-follow th:nth-child(6), .table-follow td:nth-child(6) { width: 140px; }
-        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 90px; }
+        .table-follow th:nth-child(6), .table-follow td:nth-child(6) { width: 150px; } /* Agente */
+        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 140px; }
         .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 90px; }
-        .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 100px; }
+        .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 90px; }
         .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 100px; }
         .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: 100px; }
         .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 100px; }
-        .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 160px; }
-        .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 130px; }
-        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 220px; } /* OBS */
-        .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 80px; }
+        .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 100px; }
+        .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 160px; }
+        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 130px; }
+        .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 220px; } /* OBS */
+        .table-follow th:nth-child(17), .table-follow td:nth-child(17) { width: 80px; }
         .table-follow td.col-obs { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .table-follow td.celula-editavel {
             overflow-wrap: break-word;
@@ -670,8 +675,8 @@ while ($row = mysqli_fetch_assoc($result)) {
             </div>
             <form method="GET" class="row g-3 align-items-end">
                 <div class="col-md-3">
-                    <label class="form-label">Processo, rastreio, armador ou requerente</label>
-                    <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Ex.: yp0000 ou MSC">
+                    <label class="form-label">Processo, rastreio, armador, agente ou requerente</label>
+                    <input type="text" name="busca" class="form-control" value="<?php echo h($busca); ?>" placeholder="Ex.: yp0000, msc ou agente">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label">Status</label>
@@ -700,27 +705,19 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-md-1">
-                    <label class="form-label">Data</label>
-                    <select name="mes_base" class="form-select" title="Qual data do embarque usar no filtro de mês" onchange="this.form.mes.value=''; this.form.submit();">
-                        <?php foreach ($datasParaMes as $col => $rot): ?>
-                            <option value="<?php echo h($col); ?>" <?php echo $filtroMesBase === $col ? 'selected' : ''; ?>><?php echo h($rot); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label">Mês</label>
-                    <select name="mes" class="form-select" onchange="this.form.submit()">
-                        <option value="">Todos os meses</option>
-                        <?php foreach ($mesesDisponiveis as $m): ?>
-                            <option value="<?php echo h($m); ?>" <?php echo $filtroMes === $m ? 'selected' : ''; ?>><?php echo h($rotuloMes($m)); ?></option>
+                <div class="col-md-3">
+                    <label class="form-label">Fornecedor</label>
+                    <select name="fornecedor" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos</option>
+                        <?php foreach ($fornecedoresDisponiveis as $forn): ?>
+                            <option value="<?php echo h($forn); ?>" <?php echo $filtroFornecedor === $forn ? 'selected' : ''; ?>><?php echo h($forn); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="col-md-3 d-flex gap-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
                     <a href="follow.php?status=todos" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?<?php echo h(http_build_query(['busca' => $busca, 'status' => $filtroStatus, 'condicao' => $filtroCondicao, 'categoria' => $filtroCategoria, 'mes_base' => $filtroMesBase, 'mes' => $filtroMes, 'exportar' => 'csv'])); ?>" class="btn btn-outline-primary text-nowrap" title="Exporta tudo o que está filtrado (todas as páginas)">Exportar CSV</a>
+                    <a href="?<?php echo h(http_build_query(['busca' => $busca, 'status' => $filtroStatus, 'condicao' => $filtroCondicao, 'categoria' => $filtroCategoria, 'fornecedor' => $filtroFornecedor, 'exportar' => 'csv'])); ?>" class="btn btn-outline-primary text-nowrap" title="Exporta tudo o que está filtrado (todas as páginas)">Exportar CSV</a>
                 </div>
             </form>
         </section>
@@ -734,7 +731,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table table-follow mb-0" style="min-width: 1980px;">
+                <table class="table mrp-table table-follow mb-0" style="min-width: 2130px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -742,6 +739,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Origem</th>
                             <th>Destino</th>
                             <th>Armador</th>
+                            <th title="Agente de carga (FFW) cadastrado em Processos">Agente</th>
                             <th>Rastreio (TRK)</th>
                             <th>FT (dias)</th>
                             <th>Transit (dias)</th>
@@ -757,7 +755,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="16" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="17" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -808,6 +806,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="origem" data-valor-bruto="<?php echo h($r['origem'] ?? ''); ?>"><?php echo h($r['origem'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="destino" data-valor-bruto="<?php echo h($r['destino'] ?? ''); ?>"><?php echo h($r['destino'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="armador" data-valor-bruto="<?php echo h($r['armador'] ?? ''); ?>"><?php echo h($r['armador'] ?: '—'); ?></td>
+                                    <td title="Vem do FFW em Processos"><?php echo h(($r['agente'] ?? '') !== '' ? $r['agente'] : '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="trk" data-valor-bruto="<?php echo h($r['trk'] ?? ''); ?>"><?php echo h($r['trk'] ?: '—'); ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
@@ -826,8 +825,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="busca_atual" value="<?php echo h($busca); ?>">
                                             <input type="hidden" name="status_atual" value="<?php echo h($filtroStatus); ?>">
                                             <input type="hidden" name="condicao_atual" value="<?php echo h($filtroCondicao); ?>">
-                                            <input type="hidden" name="mes_base_atual" value="<?php echo h($filtroMesBase); ?>">
-                                            <input type="hidden" name="mes_atual" value="<?php echo h($filtroMes); ?>">
+                                            <input type="hidden" name="fornecedor_atual" value="<?php echo h($filtroFornecedor); ?>">
                                             <input type="hidden" name="categoria_atual" value="<?php echo h($filtroCategoria); ?>">
                                             <button type="submit" class="btn btn-outline-danger btn-sm" title="Excluir do Follow">✕</button>
                                         </form>
@@ -846,7 +844,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>&mes_base=<?php echo urlencode($filtroMesBase); ?>&mes=<?php echo urlencode($filtroMes); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&status=<?php echo urlencode($filtroStatus); ?>&condicao=<?php echo urlencode($filtroCondicao); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>
