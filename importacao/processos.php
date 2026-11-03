@@ -1433,6 +1433,14 @@ function montarFiltrosProcessos(array $get): array
         $condicoes[] = $condStatus;
     }
 
+    // Follow: Sim = processo já tem embarque no Follow; Não = ainda falta cadastrar
+    $filtroFollowGet = trim((string) ($get['follow'] ?? ''));
+    if ($filtroFollowGet === 'sim') {
+        $condicoes[] = "EXISTS (SELECT 1 FROM follow fw WHERE UPPER(TRIM(fw.processo)) = UPPER(TRIM(processos.processo)))";
+    } elseif ($filtroFollowGet === 'nao') {
+        $condicoes[] = "NOT EXISTS (SELECT 1 FROM follow fw WHERE UPPER(TRIM(fw.processo)) = UPPER(TRIM(processos.processo)))";
+    }
+
     return [$condicoes, $params, $tipos];
 }
 
@@ -1491,6 +1499,7 @@ $filtroCategoria = trim($_GET['categoria'] ?? '');
 $filtroFornecedor = trim($_GET['fornecedor'] ?? '');
 $filtroStatus = trim($_GET['status'] ?? '');
 if (condicaoStatusProcesso($filtroStatus) === null) { $filtroStatus = ''; }
+$filtroFollow = in_array($_GET['follow'] ?? '', ['sim', 'nao'], true) ? $_GET['follow'] : '';
 
 // Listas pros filtros em dropdown (só valores que já existem de verdade na base)
 $plantasDisponiveis = opcoesUnicasProcessos($conn, 'planta');
@@ -1508,7 +1517,10 @@ $total = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtTotal))['total'];
 mysqli_stmt_close($stmtTotal);
 $totalPaginas = max(1, (int) ceil($total / $porPagina));
 
-$sql = "SELECT * FROM processos $where ORDER BY criado_em DESC LIMIT ? OFFSET ?";
+// tem_follow: o processo já tem embarque cadastrado no Follow? (coluna "Follow")
+$sql = "SELECT processos.*,
+        EXISTS (SELECT 1 FROM follow fw WHERE UPPER(TRIM(fw.processo)) = UPPER(TRIM(processos.processo))) AS tem_follow
+    FROM processos $where ORDER BY criado_em DESC LIMIT ? OFFSET ?";
 $stmt = mysqli_prepare($conn, $sql);
 if (!empty($params)) {
     mysqli_stmt_bind_param($stmt, $tipos . 'ii', ...array_merge($params, [$porPagina, $offset]));
@@ -1734,10 +1746,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <label class="form-label">Tipo</label>
                         <input type="text" name="tipo_manual" class="form-control">
                     </div>
-                    <div class="col-md-2">
-                        <label class="form-label">FFW</label>
-                        <input type="text" name="ffw_manual" class="form-control">
-                    </div>
                     <div class="col-md-12">
                         <label class="form-label">Observações</label>
                         <input type="text" name="obs_manual" class="form-control">
@@ -1870,13 +1878,21 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </select>
                 </div>
                 <div class="col-md-2">
+                    <label class="form-label">Follow</label>
+                    <select name="follow" class="form-select">
+                        <option value="">Todos</option>
+                        <option value="sim" <?php echo $filtroFollow === 'sim' ? 'selected' : ''; ?>>Sim (já no Follow)</option>
+                        <option value="nao" <?php echo $filtroFollow === 'nao' ? 'selected' : ''; ?>>Não (falta cadastrar)</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
                     <button type="submit" class="btn btn-primary w-100">Buscar</button>
                 </div>
                 <div class="col-md-2">
                     <a href="processos.php" class="btn btn-outline-secondary w-100">Limpar filtros</a>
                 </div>
                 <div class="col-md-2">
-                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
+                    <a href="?exportar=1&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>&follow=<?php echo urlencode($filtroFollow); ?>" class="btn btn-outline-secondary w-100">Exportar CSV</a>
                 </div>
                 <div class="col-md-2">
                     <button type="submit" form="form-sync-bom" class="btn btn-outline-primary w-100" title="Atualiza a descrição dos processos não finalizados com a descrição da BOM do MRP (componentes que não estão na BOM ficam como estão)">🔄 Sincronizar descrições com a BOM</button>
@@ -1923,7 +1939,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Total</th>
                             <th>Moeda</th>
                             <th>Tipo</th>
-                            <th>FFW</th>
+                            <th title="Sim = processo já cadastrado no Follow; Não = ainda falta cadastrar">Follow</th>
                             <th>Obs</th>
                             <th class="no-print">Excluir</th>
                         </tr>
@@ -1999,7 +2015,13 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                     <td class="col-total"><?php echo numeroBr($r['total']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="moeda" data-valor-bruto="<?php echo h($r['moeda'] ?? ''); ?>"><?php echo h($r['moeda'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="tipo" data-valor-bruto="<?php echo h($r['tipo'] ?? ''); ?>"><?php echo h($r['tipo'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="ffw" data-valor-bruto="<?php echo h($r['ffw'] ?? ''); ?>"><?php echo h($r['ffw'] ?: '—'); ?></td>
+                                    <td>
+                                        <?php if (!empty($r['tem_follow'])): ?>
+                                            <span class="status-badge status-ok" title="Processo já cadastrado no Follow">Sim</span>
+                                        <?php else: ?>
+                                            <span class="status-badge status-sem_demanda" title="Ainda não cadastrado no Follow">Não</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td class="celula-editavel description-cell" data-id="<?php echo $id; ?>" data-campo="obs" data-valor-bruto="<?php echo h($r['obs'] ?? ''); ?>" title="<?php echo h($r['obs'] ?? ''); ?>"><?php echo h($r['obs'] ?: '—'); ?></td>
                                     <td class="no-print">
                                         <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este processo? Essa ação não pode ser desfeita.');">
@@ -2029,7 +2051,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <ul class="pagination pagination-sm mb-0">
                             <?php for ($p = 1; $p <= $totalPaginas; $p++): ?>
                                 <li class="page-item <?php echo $p === $pagina ? 'active' : ''; ?>">
-                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>"><?php echo $p; ?></a>
+                                    <a class="page-link" href="?pagina=<?php echo $p; ?>&busca=<?php echo urlencode($busca); ?>&planta=<?php echo urlencode($filtroPlanta); ?>&componente=<?php echo urlencode($filtroComponente); ?>&categoria=<?php echo urlencode($filtroCategoria); ?>&fornecedor=<?php echo urlencode($filtroFornecedor); ?>&status=<?php echo urlencode($filtroStatus); ?>&follow=<?php echo urlencode($filtroFollow); ?>"><?php echo $p; ?></a>
                                 </li>
                             <?php endfor; ?>
                         </ul>

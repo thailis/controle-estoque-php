@@ -88,6 +88,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
+    // Agente: o valor continua guardado em processos.ffw (não mudou de lugar no
+    // banco). Editar aqui grava o FFW em TODAS as linhas daquele processo.
+    if ($id > 0 && $campo === 'agente') {
+        try {
+            $stmtProc = mysqli_prepare($conn, "SELECT processo FROM follow WHERE id = ?");
+            mysqli_stmt_bind_param($stmtProc, 'i', $id);
+            mysqli_stmt_execute($stmtProc);
+            $linhaProc = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProc));
+            mysqli_stmt_close($stmtProc);
+            if (!$linhaProc) {
+                echo json_encode(['ok' => false, 'erro' => 'Embarque não encontrado.']);
+                exit;
+            }
+            $agenteSalvo = $valor === '' ? null : $valor;
+            $stmtAg = mysqli_prepare($conn, "UPDATE processos SET ffw = ? WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?))");
+            mysqli_stmt_bind_param($stmtAg, 'ss', $agenteSalvo, $linhaProc['processo']);
+            mysqli_stmt_execute($stmtAg);
+            mysqli_stmt_close($stmtAg);
+        } catch (Throwable $erroAgente) {
+            echo json_encode(['ok' => false, 'erro' => 'Não foi possível salvar: ' . $erroAgente->getMessage()]);
+            exit;
+        }
+        echo json_encode(['ok' => true, 'exibido' => $agenteSalvo ?? '—']);
+        exit;
+    }
+
     $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente', 'obs'];
     // ETA e Prevista NÃO entram mais aqui — viraram sempre calculadas (mesma
     // fórmula do cadastro manual: ETA = ETD + Transit dias, Prevista = ETA +
@@ -285,6 +311,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             );
             if (mysqli_stmt_execute($stmt)) {
                 $mensagens[] = "✅ Embarque do processo \"$processoEscolhido\" cadastrado.";
+                // Agente preenchido → grava no FFW de todas as linhas do processo.
+                // Em branco → mantém o FFW que já estava cadastrado.
+                $agenteManual = trim($_POST['agente_manual'] ?? '');
+                if ($agenteManual !== '') {
+                    $stmtAg = mysqli_prepare($conn, "UPDATE processos SET ffw = ? WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?))");
+                    mysqli_stmt_bind_param($stmtAg, 'ss', $agenteManual, $processoEscolhido);
+                    mysqli_stmt_execute($stmtAg);
+                    mysqli_stmt_close($stmtAg);
+                }
             } else {
                 $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
             }
@@ -310,7 +345,8 @@ $resProcessos = mysqli_query($conn, "
         MIN(NULLIF(TRIM(codigo_componente), '')) AS codigo_componente,
         COUNT(DISTINCT NULLIF(TRIM(codigo_componente), '')) AS total_componentes,
         GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY codigo_componente SEPARATOR ', ') AS todos_componentes,
-        GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS todas_descricoes
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS todas_descricoes,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(ffw), '') SEPARATOR ', ') AS agente_atual
     FROM processos
     GROUP BY processo
     ORDER BY processo
@@ -631,6 +667,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <input type="text" name="armador_manual" class="form-control">
                     </div>
                     <div class="col-md-3">
+                        <label class="form-label">Agente <small class="text-muted">(em branco mantém o atual)</small></label>
+                        <input type="text" name="agente_manual" id="agente_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
                         <label class="form-label">Rastreio (TRK)</label>
                         <input type="text" name="trk_manual" class="form-control">
                     </div>
@@ -741,7 +781,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Origem</th>
                             <th>Destino</th>
                             <th>Armador</th>
-                            <th title="Agente de carga (FFW) cadastrado em Processos">Agente</th>
+                            <th title="Agente de carga (FFW) — duplo clique para editar">Agente</th>
                             <th>Rastreio (TRK)</th>
                             <th>FT (dias)</th>
                             <th>Transit (dias)</th>
@@ -808,7 +848,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="origem" data-valor-bruto="<?php echo h($r['origem'] ?? ''); ?>"><?php echo h($r['origem'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="destino" data-valor-bruto="<?php echo h($r['destino'] ?? ''); ?>"><?php echo h($r['destino'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="armador" data-valor-bruto="<?php echo h($r['armador'] ?? ''); ?>"><?php echo h($r['armador'] ?: '—'); ?></td>
-                                    <td title="Vem do FFW em Processos"><?php echo h(($r['agente'] ?? '') !== '' ? $r['agente'] : '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="agente" data-valor-bruto="<?php echo h($r['agente'] ?? ''); ?>" title="Duplo clique para editar — grava em todas as linhas do processo"><?php echo h(($r['agente'] ?? '') !== '' ? $r['agente'] : '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="trk" data-valor-bruto="<?php echo h($r['trk'] ?? ''); ?>"><?php echo h($r['trk'] ?: '—'); ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
@@ -865,7 +905,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         const PROCESSOS_FOLLOW = <?php
             $mapaProcFollow = [];
             foreach ($processosDisponiveis as $p) {
-                $mapaProcFollow[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = ['c' => (string) ($p['todos_componentes'] ?? ''), 'd' => (string) ($p['todas_descricoes'] ?? '')];
+                $mapaProcFollow[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = ['c' => (string) ($p['todos_componentes'] ?? ''), 'd' => (string) ($p['todas_descricoes'] ?? ''), 'a' => (string) ($p['agente_atual'] ?? '')];
             }
             echo json_encode($mapaProcFollow, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
         ?>;
@@ -874,6 +914,8 @@ while ($row = mysqli_fetch_assoc($result)) {
             const achado = PROCESSOS_FOLLOW[digitado];
             document.getElementById('preview_componente').value = achado ? (achado.c || '—') : '—';
             document.getElementById('preview_descricao').value = achado ? (achado.d || '—') : '—';
+            // Mostra o agente que já está cadastrado (só como dica, não preenche)
+            document.getElementById('agente_manual').placeholder = achado && achado.a ? 'Atual: ' + achado.a : '';
             document.getElementById('processo_manual_aviso').textContent =
                 digitado === '' ? '' : (achado ? '✓ processo encontrado' : 'processo não encontrado em Processos');
         }
