@@ -886,22 +886,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     //  - sem_duplicar:  pula linha cuja chave já existe (no banco ou antes no arquivo)
                     //  - atualizar:     se a chave já existe, atualiza os dados; senão insere
                     //  - substituir:    apaga tudo e importa só o arquivo
-                    $modo = (string) ($_POST['modo_importacao'] ?? (!empty($_POST['limpar_tabela']) ? 'substituir' : 'adicionar'));
-                    if (!in_array($modo, ['adicionar', 'sem_duplicar', 'atualizar', 'substituir'], true)) {
-                        $modo = 'adicionar';
-                    }
-                    if ($modo === 'substituir') {
-                        mysqli_query($conn, 'TRUNCATE TABLE processos');
-                        $mensagens[] = '🗑️ Tabela de processos esvaziada antes da importação.';
-                    }
+                    // Modo ÚNICO: "Adicionar sem duplicar". Linha cuja chave
+                    // Processo + PO + Data (solicitação) + Componente já existe no
+                    // banco NÃO entra (seja aberta, finalizada ou cancelada) — só
+                    // entram as novas. Repetições dentro do próprio arquivo são
+                    // permitidas (ex.: várias linhas "N/A" no mesmo processo).
+                    $modo = 'sem_duplicar';
 
-                    $chaveProcesso = fn($proc, $mat, $comp) => mb_strtolower(trim((string) $proc) . '|' . trim((string) $mat) . '|' . trim((string) $comp), 'UTF-8');
+                    $chaveProcesso = fn($proc, $po, $data, $comp) => mb_strtolower(
+                        trim((string) $proc) . '|' . trim((string) $po) . '|' . trim((string) $data) . '|' . trim((string) $comp), 'UTF-8');
                     $existentes = []; // chave => [id, status]
-                    if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
-                        $resExist = mysqli_query($conn, "SELECT id, processo, material, codigo_componente, status FROM processos");
-                        while ($le = mysqli_fetch_assoc($resExist)) {
-                            $existentes[$chaveProcesso($le['processo'], $le['material'], $le['codigo_componente'])] = [(int) $le['id'], strtolower(trim((string) $le['status']))];
-                        }
+                    $resExist = mysqli_query($conn, "SELECT id, processo, po, solicitacao, codigo_componente, status FROM processos");
+                    while ($le = mysqli_fetch_assoc($resExist)) {
+                        $existentes[$chaveProcesso($le['processo'], $le['po'], $le['solicitacao'], $le['codigo_componente'])] = [(int) $le['id'], strtolower(trim((string) $le['status']))];
                     }
                     $ignorados = 0;
                     $atualizados = 0;
@@ -969,7 +966,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             $controlaEstoque = $categoriaTextoCsv === 'tooling' ? 'nao' : 'sim';
                         }
 
-                        $chaveLinha = $chaveProcesso($processo, $get('material'), $get('codigo_componente'));
+                        $chaveLinha = $chaveProcesso($processo, $get('po'), $solicitacao ?? '', $get('codigo_componente'));
                         if ($modo === 'sem_duplicar' && isset($existentes[$chaveLinha])) {
                             $ignorados++;
                             continue;
@@ -1002,10 +999,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                                 $mensagens[] = '❌ Erro ao atualizar ' . $processo . ': ' . mysqli_stmt_error($stmtAtualizaCsv);
                             }
                             continue;
-                        }
-                        // marca como "já existe" pra não duplicar dentro do próprio arquivo
-                        if ($modo === 'sem_duplicar' || $modo === 'atualizar') {
-                            $existentes[$chaveLinha] = [0, 'aberto'];
                         }
 
                         $lote[] = [
@@ -1044,10 +1037,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     }
                     $mensagens[] = "✅ Importação concluída: $importados linha(s) nova(s)"
                         . ($atualizados > 0 ? ", $atualizados atualizada(s)" : '')
-                        . ($ignorados > 0 ? ", $ignorados ignorada(s) (já existiam" . ($modo === 'atualizar' ? ' ou processo finalizado' : '') . ')' : '')
+                        . ($ignorados > 0 ? ", $ignorados ignorada(s) (já existiam: mesmo processo + PO + data + componente)" : '')
                         . '.';
                     if ($erros > 0) {
                         $mensagens[] = "⚠️ $erros linha(s) com erro.";
+                    }
+
+                    // Processo com embarque já FECHADO no Follow (entrega confirmada)
+                    // e sem nenhum embarque ainda aberto → volta a ser "finalizado".
+                    // Evita que uma reimportação deixe como "aberto" o que já foi
+                    // entregue (e que a sincronização da Programação puxe de novo).
+                    // Cancelados não são tocados.
+                    $resFinaliza = mysqli_query($conn, "
+                        UPDATE processos p
+                        SET p.status = 'finalizado'
+                        WHERE LOWER(TRIM(COALESCE(p.status, 'aberto'))) = 'aberto'
+                          AND EXISTS (SELECT 1 FROM follow f
+                                      WHERE UPPER(TRIM(f.processo)) = UPPER(TRIM(p.processo)) AND f.status = 'fechado')
+                          AND NOT EXISTS (SELECT 1 FROM follow f2
+                                      WHERE UPPER(TRIM(f2.processo)) = UPPER(TRIM(p.processo)) AND COALESCE(f2.status, 'aberto') <> 'fechado')
+                    ");
+                    $finalizadasAuto = $resFinaliza ? mysqli_affected_rows($conn) : 0;
+                    if ($finalizadasAuto > 0) {
+                        $mensagens[] = "🔒 $finalizadasAuto linha(s) marcadas como Finalizado (processo com entrega já confirmada no Follow).";
                     }
                 }
             }
@@ -1630,24 +1642,11 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <button type="submit" class="btn btn-primary w-100">Importar</button>
                     </div>
                     <div class="col-12">
-                        <label class="form-label fw-bold mb-2">O que fazer com os dados?</label>
-                        <div class="list-group">
-                            <label class="list-group-item d-flex gap-2">
-                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="adicionar" checked>
-                                <span><strong>Adicionar</strong> — insere as linhas do arquivo, mesmo se já existirem (pode duplicar)</span>
-                            </label>
-                            <label class="list-group-item d-flex gap-2">
-                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="sem_duplicar">
-                                <span><strong>Adicionar sem duplicar</strong> — ignora linhas cujo Processo + Material + Componente já existe</span>
-                            </label>
-                            <label class="list-group-item d-flex gap-2">
-                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="atualizar">
-                                <span><strong>Adicionar e atualizar</strong> — se já existir (mesmo Processo + Material + Componente), atualiza os dados; senão insere novo. Processos já finalizados não são alterados.</span>
-                            </label>
-                            <label class="list-group-item d-flex gap-2">
-                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="substituir">
-                                <span><strong>Substituir tudo</strong> — apaga todos os processos atuais e importa somente o que está no arquivo</span>
-                            </label>
+                        <input type="hidden" name="modo_importacao" value="sem_duplicar">
+                        <div class="alert alert-light border mb-0" style="font-size:.9rem;">
+                            <strong>Adicionar sem duplicar</strong> — só entram as linhas novas. Se já existir no banco uma linha com o mesmo
+                            <strong>Processo + PO + Data (solicitação) + Componente</strong>, ela é ignorada (aberta, finalizada ou cancelada).
+                            Depois da importação, processos com entrega já confirmada no Follow ficam como <strong>Finalizado</strong>.
                         </div>
                     </div>
                 </form>
