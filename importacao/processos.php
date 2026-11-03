@@ -896,10 +896,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $chaveProcesso = fn($proc, $po, $data, $comp) => mb_strtolower(
                         trim((string) $proc) . '|' . trim((string) $po) . '|' . trim((string) $data) . '|' . trim((string) $comp), 'UTF-8');
                     $existentes = []; // chave => [id, status]
+                    $qtdPorChave = []; // chave => quantas linhas no banco têm essa chave
                     $resExist = mysqli_query($conn, "SELECT id, processo, po, solicitacao, codigo_componente, status FROM processos");
                     while ($le = mysqli_fetch_assoc($resExist)) {
-                        $existentes[$chaveProcesso($le['processo'], $le['po'], $le['solicitacao'], $le['codigo_componente'])] = [(int) $le['id'], strtolower(trim((string) $le['status']))];
+                        $chaveExist = $chaveProcesso($le['processo'], $le['po'], $le['solicitacao'], $le['codigo_componente']);
+                        $existentes[$chaveExist] = [(int) $le['id'], strtolower(trim((string) $le['status']))];
+                        $qtdPorChave[$chaveExist] = ($qtdPorChave[$chaveExist] ?? 0) + 1;
                     }
+                    // Linha que já existe e está EM ABERTO: atualiza só Quantidade, Preço
+                    // (e Total) e Moeda. Finalizada/cancelada: não mexe. Coluna vazia
+                    // no CSV não apaga o valor gravado.
+                    $stmtAtualizaQtdCsv = mysqli_prepare($conn, "
+                        UPDATE processos
+                        SET quantidade = COALESCE(?, quantidade),
+                            preco = COALESCE(?, preco),
+                            moeda = COALESCE(?, moeda),
+                            total = COALESCE(?, COALESCE(?, quantidade) * COALESCE(?, preco), total)
+                        WHERE id = ? AND COALESCE(NULLIF(LOWER(TRIM(status)), ''), 'aberto') = 'aberto'
+                    ");
                     $ignorados = 0;
                     $atualizados = 0;
                     $temColunaEstoque = $indices['controla_estoque'] !== null;
@@ -968,7 +982,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                         $chaveLinha = $chaveProcesso($processo, $get('po'), $solicitacao ?? '', $get('codigo_componente'));
                         if ($modo === 'sem_duplicar' && isset($existentes[$chaveLinha])) {
-                            $ignorados++;
+                            [$idExistente, $statusExistente] = $existentes[$chaveLinha];
+                            $statusExistente = $statusExistente === '' ? 'aberto' : $statusExistente;
+                            // Só atualiza se estiver em aberto e a chave for única no banco
+                            // (ex.: várias linhas "N/A" iguais no mesmo processo → não dá
+                            // pra saber qual atualizar, então ignora).
+                            if ($statusExistente === 'aberto' && ($qtdPorChave[$chaveLinha] ?? 0) === 1) {
+                                $moedaCsv = $get('moeda') !== '' ? $get('moeda') : null;
+                                $totalCsv = parseNumeroBrProcessos($get('total'));
+                                $qtdTxt = $quantidade !== null ? (string) $quantidade : null;
+                                $precoTxt = $preco !== null ? (string) $preco : null;
+                                $totalTxt = $totalCsv !== null ? (string) $totalCsv : null;
+                                $idTxt = (string) $idExistente;
+                                mysqli_stmt_bind_param($stmtAtualizaQtdCsv, 'sssssss', $qtdTxt, $precoTxt, $moedaCsv, $totalTxt, $qtdTxt, $precoTxt, $idTxt);
+                                if (mysqli_stmt_execute($stmtAtualizaQtdCsv) && mysqli_stmt_affected_rows($stmtAtualizaQtdCsv) > 0) {
+                                    $atualizados++;
+                                } else {
+                                    $ignorados++; // nada mudou
+                                }
+                            } else {
+                                $ignorados++;
+                            }
                             continue;
                         }
                         if ($modo === 'atualizar' && isset($existentes[$chaveLinha])) {
@@ -1035,9 +1069,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     if ($stmtAtualizaCsv !== null) {
                         mysqli_stmt_close($stmtAtualizaCsv);
                     }
+                    mysqli_stmt_close($stmtAtualizaQtdCsv);
                     $mensagens[] = "✅ Importação concluída: $importados linha(s) nova(s)"
                         . ($atualizados > 0 ? ", $atualizados atualizada(s)" : '')
-                        . ($ignorados > 0 ? ", $ignorados ignorada(s) (já existiam: mesmo processo + PO + data + componente)" : '')
+                        . ($ignorados > 0 ? ", $ignorados ignorada(s) (já existiam sem mudança, ou processo finalizado/cancelado)" : '')
                         . '.';
                     if ($erros > 0) {
                         $mensagens[] = "⚠️ $erros linha(s) com erro.";
@@ -1645,7 +1680,8 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <input type="hidden" name="modo_importacao" value="sem_duplicar">
                         <div class="alert alert-light border mb-0" style="font-size:.9rem;">
                             <strong>Adicionar sem duplicar</strong> — só entram as linhas novas. Se já existir no banco uma linha com o mesmo
-                            <strong>Processo + PO + Data (solicitação) + Componente</strong>, ela é ignorada (aberta, finalizada ou cancelada).
+                            <strong>Processo + PO + Data (solicitação) + Componente</strong>, ela não é duplicada: se o processo estiver <strong>em aberto</strong>,
+                            atualiza só <strong>Quantidade, Preço e Moeda</strong> (coluna vazia não apaga); se estiver finalizado ou cancelado, é ignorada.
                             Depois da importação, processos com entrega já confirmada no Follow ficam como <strong>Finalizado</strong>.
                         </div>
                     </div>
