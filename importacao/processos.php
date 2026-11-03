@@ -490,7 +490,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'massa_p
     $rotuloAlvo = ($alvoTipo === 'po' ? 'PO' : 'Processo') . " \"$alvoValor\"";
 
     $erroMassa = null;
-    if ($alvoValor === '' || !in_array($operacaoMassa, ['excluir', 'data', 'po', 'processo'], true)) {
+    if ($alvoValor === '' || !in_array($operacaoMassa, ['excluir', 'data', 'po', 'processo', 'cancelar', 'reabrir', 'estoque_sim', 'estoque_nao'], true)) {
         $erroMassa = 'Informe o Processo ou a PO e escolha a ação.';
     } elseif ($operacaoMassa === 'data') {
         $valorMassa = parseDataProcessos($valorMassa);
@@ -542,11 +542,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'massa_p
                 'data'     => "UPDATE processos SET solicitacao = ? WHERE $condAlvo AND $condAberto",
                 'po'       => "UPDATE processos SET po = ? WHERE $condAlvo AND $condAberto",
                 'processo' => "UPDATE processos SET processo = ? WHERE $condAlvo AND $condAberto",
+                // Cancelar só mexe em quem não está cancelado; Reabrir só nos cancelados
+                'cancelar' => "UPDATE processos SET status = 'cancelado' WHERE $condAlvo AND $condAberto AND LOWER(TRIM(COALESCE(status, ''))) <> 'cancelado'",
+                'reabrir'  => "UPDATE processos SET status = 'aberto' WHERE $condAlvo AND LOWER(TRIM(COALESCE(status, ''))) = 'cancelado'",
+                'estoque_sim' => "UPDATE processos SET controla_estoque = 'sim' WHERE $condAlvo AND $condAberto AND LOWER(TRIM(COALESCE(controla_estoque, ''))) <> 'sim'",
+                'estoque_nao' => "UPDATE processos SET controla_estoque = 'nao' WHERE $condAlvo AND $condAberto AND LOWER(TRIM(COALESCE(controla_estoque, ''))) <> 'nao'",
             ][$operacaoMassa];
             mysqli_begin_transaction($conn);
             try {
                 $stmtMassa = mysqli_prepare($conn, $sqlMassa);
-                if ($operacaoMassa === 'excluir') {
+                if (in_array($operacaoMassa, ['excluir', 'cancelar', 'reabrir', 'estoque_sim', 'estoque_nao'], true)) {
                     mysqli_stmt_bind_param($stmtMassa, 's', $alvoUpper);
                 } else {
                     mysqli_stmt_bind_param($stmtMassa, 'ss', $valorMassa, $alvoUpper);
@@ -568,9 +573,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'massa_p
                         }
                     }
                 }
+                // Cancelar/Reabrir o processo inteiro → Pagamento acompanha (igual ao botão da tabela)
+                if (in_array($operacaoMassa, ['cancelar', 'reabrir'], true) && $alvoTipo === 'processo') {
+                    $novoStatusPag = $operacaoMassa === 'cancelar' ? 'cancelado' : 'aberto';
+                    try {
+                        $stmtPagM = mysqli_prepare($conn, "UPDATE pagamento SET status = ? WHERE UPPER(TRIM(processo)) = ?");
+                        mysqli_stmt_bind_param($stmtPagM, 'ss', $novoStatusPag, $alvoUpper);
+                        mysqli_stmt_execute($stmtPagM);
+                        mysqli_stmt_close($stmtPagM);
+                    } catch (Throwable $erroPagM) {
+                        error_log('Cancelar em massa (pagamento): ' . $erroPagM->getMessage());
+                    }
+                }
                 mysqli_commit($conn);
 
                 $descricaoAcao = [
+                    'cancelar' => 'linha(s) canceladas' . ($alvoTipo === 'processo' ? ' (Pagamento também)' : ''),
+                    'reabrir'  => 'linha(s) reabertas' . ($alvoTipo === 'processo' ? ' (Pagamento também)' : ''),
+                    'estoque_sim' => 'linha(s) com Estoque = Sim',
+                    'estoque_nao' => 'linha(s) com Estoque = Não',
                     'excluir'  => 'linha(s) excluída(s)',
                     'data'     => 'linha(s) com Solicitação alterada para ' . dataBr($valorMassa),
                     'po'       => "linha(s) com PO = $valorMassa",
@@ -1758,6 +1779,10 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <option value="data">Alterar Solicitação (data)</option>
                             <option value="po">Incluir / trocar PO</option>
                             <option value="processo">Trocar Processo</option>
+                            <option value="cancelar">⛔ Cancelar</option>
+                            <option value="reabrir">↩️ Reabrir (cancelados → aberto)</option>
+                            <option value="estoque_sim">Estoque → Sim</option>
+                            <option value="estoque_nao">Estoque → Não</option>
                             <option value="excluir">🗑️ Excluir linhas</option>
                         </select>
                     </div>
@@ -1769,7 +1794,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <button type="submit" class="btn btn-warning btn-sm">Aplicar</button>
                     </div>
                 </form>
-                <small class="text-muted d-block mt-2">Age em <strong>todas as linhas</strong> do Processo ou da PO (sem diferenciar maiúscula/minúscula). Linhas já <strong>finalizadas</strong> nunca são alteradas nem excluídas. Excluir não mexe no Follow nem no Pagamento. Trocar Processo com alvo = Processo leva junto Follow e Pagamento; com alvo = PO, só as linhas da PO mudam.</small>
+                <small class="text-muted d-block mt-2">Age em <strong>todas as linhas</strong> do Processo ou da PO (sem diferenciar maiúscula/minúscula). Linhas já <strong>finalizadas</strong> nunca são alteradas nem excluídas. Excluir não mexe no Follow nem no Pagamento. Trocar Processo com alvo = Processo leva junto Follow e Pagamento; com alvo = PO, só as linhas da PO mudam. Cancelar/Reabrir com alvo = Processo também muda o Pagamento. Lembre: linha que já estava na Programação do MRP não sai de lá sozinha.</small>
                 <datalist id="massa-lista-processos">
                     <?php foreach ($processosAbertos as $codAberto => $_dadosAberto): ?><option value="<?php echo h($codAberto); ?>"><?php endforeach; ?>
                 </datalist>
