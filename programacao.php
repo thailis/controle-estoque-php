@@ -11,6 +11,29 @@ $atualizados = 0;
 $ignorados = 0;
 $erros = 0;
 
+// Origem / sincronização de cada linha (colunas origem, sync_em, sync_acao).
+// Se o SQL ainda não foi rodado, tudo isso é simplesmente ignorado.
+function programacaoTemColunasSync(mysqli $conn): bool
+{
+    static $tem = null;
+    if ($tem === null) {
+        $res = @mysqli_query($conn, "SHOW COLUMNS FROM programacao LIKE 'sync_em'");
+        $tem = $res && mysqli_num_rows($res) > 0;
+    }
+    return $tem;
+}
+
+function marcarOrigemProgramacao(mysqli $conn, int $id, string $origem): void
+{
+    if ($id <= 0 || !programacaoTemColunasSync($conn)) {
+        return;
+    }
+    $stmt = mysqli_prepare($conn, "UPDATE programacao SET origem = ? WHERE id = ?");
+    mysqli_stmt_bind_param($stmt, 'si', $origem, $id);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+}
+
 function parseDataProgramacao(string $valor): ?string
 {
     $valor = trim($valor);
@@ -379,6 +402,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         mysqli_stmt_bind_param($stmtInsert, "ssssddss", $codigoComponente, $poLinha, $processoLinha, $data, $quantidade, $preco, $moedaLinha, $plantaLinha);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
+                            marcarOrigemProgramacao($conn, (int) mysqli_stmt_insert_id($stmtInsert), 'csv');
                         } else {
                             $erros++;
                             $mensagens[] = "⚠️ Erro na linha $linhaNum: " . mysqli_stmt_error($stmtInsert);
@@ -565,6 +589,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
         'processo'   => $_POST['processo_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'mes'        => $_POST['mes_atual'] ?? '',
+        'sync'       => $_POST['sync_atual'] ?? '',
         'excluido'   => 1,
     ]));
     exit;
@@ -641,6 +666,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
         'processo'   => $_POST['processo_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'mes'        => $_POST['mes_atual'] ?? '',
+        'sync'       => $_POST['sync_atual'] ?? '',
     ]) . '#linha-' . $idAlternar);
     exit;
 }
@@ -865,7 +891,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $idsCompletadas = [];
     $idsAtualizadas = [];
     $sincSemPo = [];
+    $sincSemMudanca = 0;
     $flashSinc = 'sinc_ok';
+    // Carimbo desta sincronização (horário de Brasília) — vai em cada linha
+    // criada/alterada, pra dar pra filtrar depois ("Sincronização" na busca).
+    $syncEm = (new DateTimeImmutable('now', new DateTimeZone('America/Sao_Paulo')))->format('Y-m-d H:i:s');
     try {
         $connImp = conectarImportacaoProgramacao();
 
@@ -934,6 +964,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         ");
         $stmtInsere = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 
+        $temSync = programacaoTemColunasSync($conn);
+        $stmtMarcaId = $temSync ? mysqli_prepare($conn, "UPDATE programacao SET origem = COALESCE(origem, 'sync'), sync_em = ?, sync_acao = ? WHERE id = ?") : null;
+        $stmtMarcaChave = $temSync ? mysqli_prepare($conn, "
+            UPDATE programacao SET sync_em = ?, sync_acao = 'atualizada'
+            WHERE TRIM(codigo_componente) = ? AND TRIM(COALESCE(processo, '')) = ? AND TRIM(COALESCE(po, '')) = ?
+              AND COALESCE(atendido, 0) = 0
+        ") : null;
+        $marcarSync = function (int $id, string $acao) use ($stmtMarcaId, $syncEm) {
+            if ($stmtMarcaId === null || $id <= 0) return;
+            mysqli_stmt_bind_param($stmtMarcaId, 'ssi', $syncEm, $acao, $id);
+            mysqli_stmt_execute($stmtMarcaId);
+        };
+
         mysqli_begin_transaction($conn);
         foreach ($linhasProc as $l) {
             $proc = (string) $l['processo'];
@@ -961,20 +1004,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
                     mysqli_stmt_execute($stmtCompleta);
                     $sincCompletadas++;
                     $idsCompletadas[] = $idExistente;
+                    $marcarSync($idExistente, 'completada');
                 }
+                $foiCompletada = in_array($idExistente, $idsCompletadas, true);
                 mysqli_stmt_bind_param($stmtContaIguais, 'sss', $comp, $proc, $po);
                 mysqli_stmt_execute($stmtContaIguais);
                 $qtdLinhasIguais = (int) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtContaIguais))['n'] ?? 1);
                 if ($qtdLinhasIguais > 1) {
                     mysqli_stmt_bind_param($stmtAtualizaSemQtd, 'dsssss', $preco, $moedaSinc, $plantaSinc, $comp, $proc, $po);
                     mysqli_stmt_execute($stmtAtualizaSemQtd);
-                    $sincExistentes++;
-                    $idsAtualizadas[] = $idExistente;
+                    // Só conta como "atualizada" se algum valor mudou de verdade
+                    if (mysqli_stmt_affected_rows($stmtAtualizaSemQtd) > 0) {
+                        $sincExistentes++;
+                        $idsAtualizadas[] = $idExistente;
+                        if ($stmtMarcaChave !== null && !$foiCompletada) {
+                            mysqli_stmt_bind_param($stmtMarcaChave, 'ssss', $syncEm, $comp, $proc, $po);
+                            mysqli_stmt_execute($stmtMarcaChave);
+                        }
+                    } elseif (!$foiCompletada) {
+                        $sincSemMudanca++;
+                    }
                 } elseif ((int) $existente['atendido'] === 0) {
                     mysqli_stmt_bind_param($stmtAtualizaSinc, 'ddssi', $qtd, $preco, $moedaSinc, $plantaSinc, $idExistente);
                     mysqli_stmt_execute($stmtAtualizaSinc);
-                    $sincExistentes++;
-                    $idsAtualizadas[] = $idExistente;
+                    if (mysqli_stmt_affected_rows($stmtAtualizaSinc) > 0) {
+                        $sincExistentes++;
+                        $idsAtualizadas[] = $idExistente;
+                        if (!$foiCompletada) {
+                            $marcarSync($idExistente, 'atualizada');
+                        }
+                    } elseif (!$foiCompletada) {
+                        $sincSemMudanca++;
+                    }
+                } elseif (!$foiCompletada) {
+                    $sincSemMudanca++;
                 }
                 continue;
             }
@@ -988,7 +1051,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
             mysqli_stmt_bind_param($stmtInsere, 'ssssddss', $comp, $po, $proc, $dataEta, $qtd, $preco, $moeda, $plantaSinc);
             mysqli_stmt_execute($stmtInsere);
             $sincCriadas++;
-            $idsCriadas[] = (int) mysqli_stmt_insert_id($stmtInsere);
+            $idNova = (int) mysqli_stmt_insert_id($stmtInsere);
+            $idsCriadas[] = $idNova;
+            $marcarSync($idNova, 'criada');
         }
         mysqli_commit($conn);
         mysqli_stmt_close($stmtBusca);
@@ -997,6 +1062,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         mysqli_stmt_close($stmtContaIguais);
         mysqli_stmt_close($stmtAtualizaSemQtd);
         mysqli_stmt_close($stmtInsere);
+        if ($stmtMarcaId !== null) { mysqli_stmt_close($stmtMarcaId); }
+        if ($stmtMarcaChave !== null) { mysqli_stmt_close($stmtMarcaChave); }
     } catch (Throwable $erroSinc) {
         try { mysqli_rollback($conn); } catch (Throwable $e) { /* nada a desfazer */ }
         error_log('Erro ao sincronizar programação com processos: ' . $erroSinc->getMessage());
@@ -1008,6 +1075,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         'sinc_criadas' => $sincCriadas,
         'sinc_compl'   => $sincCompletadas,
         'sinc_exist'   => $sincExistentes,
+        'sinc_semmud'  => $sincSemMudanca,
+        // link "Ver tudo desta sincronização" (filtro por carimbo)
+        'sinc_em'      => (isset($temSync) && $temSync && ($sincCriadas + $sincCompletadas + $sincExistentes) > 0) ? $syncEm : '',
         'sinc_semdata' => implode(', ', array_slice(array_keys($sincSemData), 0, 30)),
         // ids das linhas criadas/completadas, pros links "ver quais" da mensagem
         'sinc_ids_c'   => implode(',', array_slice($idsCriadas, 0, 400)),
@@ -1043,6 +1113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         $stmtInsManual = mysqli_prepare($conn, "INSERT INTO programacao (codigo_componente, po, processo, data, quantidade, preco, moeda, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         mysqli_stmt_bind_param($stmtInsManual, "ssssddss", $componenteManual, $poManual, $processoManual, $dataManual, $quantidadeManual, $precoManual, $moedaManual, $plantaManual);
         mysqli_stmt_execute($stmtInsManual);
+        marcarOrigemProgramacao($conn, (int) mysqli_stmt_insert_id($stmtInsManual), 'manual');
         mysqli_stmt_close($stmtInsManual);
         $flash = 'inserido';
     }
@@ -1054,6 +1125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         'processo'   => $_POST['processo_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'mes'        => $_POST['mes_atual'] ?? '',
+        'sync'       => $_POST['sync_atual'] ?? '',
         'flash'      => $flash,
     ]));
     exit;
@@ -1302,6 +1374,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         'processo'   => $_POST['processo_atual'] ?? '',
         'fornecedor' => $_POST['fornecedor_atual'] ?? '',
         'mes'        => $_POST['mes_atual'] ?? '',
+        'sync'       => $_POST['sync_atual'] ?? '',
         'flash'      => $flash,
     ]) . '#linha-' . $idEditar);
     exit;
@@ -1330,6 +1403,29 @@ $mesFiltro = isset($_GET['mes']) ? trim($_GET['mes']) : '';
 if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $mesFiltro)) {
     $mesFiltro = '';
 }
+// Filtro "Sincronização": carimbo exato (aaaa-mm-dd hh:mm:ss) de uma sincronização
+$syncFiltro = trim((string) ($_GET['sync'] ?? ''));
+if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $syncFiltro) || !programacaoTemColunasSync($conn)) {
+    $syncFiltro = '';
+}
+// Últimas sincronizações, pro dropdown (cada linha conta na ÚLTIMA sincronização que a criou/alterou)
+$sincronizacoesDisponiveis = [];
+if (programacaoTemColunasSync($conn)) {
+    $resSyncs = mysqli_query($conn, "
+        SELECT sync_em,
+               SUM(sync_acao = 'criada') AS criadas,
+               SUM(sync_acao = 'atualizada') AS atualizadas,
+               SUM(sync_acao = 'completada') AS completadas
+        FROM programacao
+        WHERE sync_em IS NOT NULL
+        GROUP BY sync_em
+        ORDER BY sync_em DESC
+        LIMIT 20
+    ");
+    while ($resSyncs && ($ls = mysqli_fetch_assoc($resSyncs))) {
+        $sincronizacoesDisponiveis[] = $ls;
+    }
+}
 $editando = isset($_GET['editar']) ? (int) $_GET['editar'] : 0;
 $flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
 
@@ -1351,7 +1447,11 @@ $flashMap = [
         (trim((string) ($_GET['sinc_semdata'] ?? '')) !== '' || trim((string) ($_GET['sinc_sempo'] ?? '')) !== '') ? 'warning' : 'success',
         '🔄 Sincronização com os Processos: ' . (int) ($_GET['sinc_criadas'] ?? 0) . ' linha(s) criada(s), '
             . (int) ($_GET['sinc_compl'] ?? 0) . ' completada(s) com processo/PO, '
-            . (int) ($_GET['sinc_exist'] ?? 0) . ' já existiam e foram atualizadas (quantidade, preço, moeda e planta — sem duplicar).'
+            . (int) ($_GET['sinc_exist'] ?? 0) . ' atualizada(s) com mudança (quantidade, preço, moeda ou planta), '
+            . (int) ($_GET['sinc_semmud'] ?? 0) . ' já existiam sem nenhuma mudança.'
+            . (trim((string) ($_GET['sinc_em'] ?? '')) !== ''
+                ? ' <a class="alert-link" href="programacao.php?filtro=&mes=&sync=' . htmlspecialchars(urlencode((string) $_GET['sinc_em']), ENT_QUOTES, 'UTF-8') . '">Ver tudo desta sincronização</a> •'
+                : '')
             . (trim((string) ($_GET['sinc_ids_c'] ?? '')) !== ''
                 ? ' <a class="alert-link" href="programacao.php?filtro=todos&ids=' . htmlspecialchars(urlencode((string) $_GET['sinc_ids_c']), ENT_QUOTES, 'UTF-8') . '">Ver as criadas</a>'
                 : '')
@@ -1440,6 +1540,13 @@ if ($processoFiltro !== '') {
     $params[] = '%' . $processoFiltro . '%';
     $params[] = '%' . $processoFiltro . '%';
     $tipos .= 'ss';
+}
+
+if ($syncFiltro !== '') {
+    $condicoes[] = "p.sync_em = ?";
+    $params[] = $syncFiltro;
+    $tipos .= 's';
+    $porPagina = 500; // mostra tudo numa página só
 }
 
 if ($fornecedorFiltro !== '') {
@@ -1555,6 +1662,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 
 $sql = "SELECT p.id, p.codigo_componente, p.po, p.processo, p.planta, p.data, p.quantidade, p.importado, p.atendido, COALESCE(p.bloqueado, 0) AS bloqueado,
                p.preco, p.moeda, p.data_recebida, p.quantidade_recebida,
+               " . (programacaoTemColunasSync($conn) ? "p.origem, p.sync_em, p.sync_acao" : "NULL AS origem, NULL AS sync_em, NULL AS sync_acao") . ",
                bg.descricao, bg.fornecedores, bg.pn
         FROM programacao p
         LEFT JOIN (
@@ -1757,6 +1865,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
                 <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                 <input type="hidden" name="mes_atual" value="<?php echo h($mesFiltro); ?>">
+                                            <input type="hidden" name="sync_atual" value="<?php echo h($syncFiltro); ?>">
                 <div class="col-auto">
                     <label class="form-label small mb-1">Componente</label>
                     <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" placeholder="Ex.: 12000586" required>
@@ -1860,6 +1969,21 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <div class="col-auto">
                     <input type="month" name="mes" class="form-control form-control-sm" title="Mês (pela coluna Data). Com situação Pendente, inclui também os pendentes atrasados de meses anteriores." value="<?php echo h($mesFiltro); ?>" onchange="this.form.submit()">
                 </div>
+                <?php if (!empty($sincronizacoesDisponiveis) || $syncFiltro !== ''): ?>
+                <div class="col-auto">
+                    <select name="sync" class="form-select form-select-sm" onchange="this.form.submit()" title="Mostra só as linhas criadas/alteradas numa sincronização com os Processos">
+                        <option value="">Todas as sincronizações</option>
+                        <?php foreach ($sincronizacoesDisponiveis as $sd): ?>
+                            <?php
+                                $rotSync = (new DateTimeImmutable($sd['sync_em']))->format('d/m H:i') . ' — '
+                                    . (int) $sd['criadas'] . ' nova(s), ' . (int) $sd['atualizadas'] . ' atualizada(s)'
+                                    . ((int) $sd['completadas'] > 0 ? ', ' . (int) $sd['completadas'] . ' completada(s)' : '');
+                            ?>
+                            <option value="<?php echo h($sd['sync_em']); ?>" <?php echo $syncFiltro === $sd['sync_em'] ? 'selected' : ''; ?>>🔄 <?php echo h($rotSync); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php endif; ?>
                 <div class="col-auto">
                     <select name="filtro" class="form-select form-select-sm" onchange="this.form.submit()" title="Situação">
                         <option value="" <?php echo $filtro === '' ? 'selected' : ''; ?>>Todas as situações</option>
@@ -1870,7 +1994,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="programacao.php?filtro=&mes=" class="btn btn-outline-secondary" title="Tira todos os filtros (todas as situações e todos os meses)">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -1910,7 +2034,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                 $estaAtendido = (int) ($row['atendido'] ?? 0) === 1;
                                 $idLinha = (int) $row['id'];
                                 $emEdicao = ($editando === $idLinha);
-                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro) . '&processo=' . urlencode($processoFiltro) . '&fornecedor=' . urlencode($fornecedorFiltro) . '&mes=' . urlencode($mesFiltro);
+                                $linkVoltar = '?pagina=' . $pagina . '&busca=' . urlencode($busca) . '&filtro=' . urlencode($filtro) . '&processo=' . urlencode($processoFiltro) . '&fornecedor=' . urlencode($fornecedorFiltro) . '&mes=' . urlencode($mesFiltro) . '&sync=' . urlencode($syncFiltro);
                                 ?>
                                 <tr id="linha-<?php echo $idLinha; ?>">
                                     <td>
@@ -1923,6 +2047,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                                             <input type="hidden" name="mes_atual" value="<?php echo h($mesFiltro); ?>">
+                                            <input type="hidden" name="sync_atual" value="<?php echo h($syncFiltro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
                                                     title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque)'; ?>">
@@ -1930,6 +2055,20 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?>
                                             </button>
                                         </form>
+                                        <?php
+                                            $acaoSyncLinha = (string) ($row['sync_acao'] ?? '');
+                                            $origemLinha = (string) ($row['origem'] ?? '');
+                                            $quandoSyncLinha = !empty($row['sync_em']) ? (new DateTimeImmutable($row['sync_em']))->format('d/m H:i') : '';
+                                            $seloSync = ['criada' => ['🆕 Nova', '#0a7d3b'], 'atualizada' => ['↻ Atualizada', '#9a6700'], 'completada' => ['🔗 Completada', '#0b5cad']][$acaoSyncLinha] ?? null;
+                                            $seloOrigem = ['manual' => '✍️ Manual', 'csv' => '📄 CSV'][$origemLinha] ?? null;
+                                        ?>
+                                        <?php if ($seloSync): ?>
+                                            <div style="font-size:.7rem; color:<?php echo $seloSync[1]; ?>; white-space:nowrap;" title="Última sincronização com os Processos que mexeu nesta linha">
+                                                <?php echo $seloSync[0]; ?> · <?php echo h($quandoSyncLinha); ?>
+                                            </div>
+                                        <?php elseif ($seloOrigem): ?>
+                                            <div style="font-size:.7rem; color:#6c757d; white-space:nowrap;"><?php echo $seloOrigem; ?></div>
+                                        <?php endif; ?>
                                     </td>
                                     <?php $podeEditarLinha = !$estaAtendido; ?>
                                     <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
@@ -2026,6 +2165,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="processo_atual" value="<?php echo h($processoFiltro); ?>">
                                             <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                                             <input type="hidden" name="mes_atual" value="<?php echo h($mesFiltro); ?>">
+                                            <input type="hidden" name="sync_atual" value="<?php echo h($syncFiltro); ?>">
                                             <button type="submit" class="btn-remover-linha" title="Excluir">✕</button>
                                         </form>
                                     </td>
@@ -2040,13 +2180,13 @@ while ($row = mysqli_fetch_assoc($result)) {
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
