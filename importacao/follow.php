@@ -221,15 +221,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
     $processoEscolhido = trim($_POST['processo_manual'] ?? '');
 
     if ($processoEscolhido === '') {
-        $mensagens[] = '❌ Escolha um processo já cadastrado em Processos.';
+        $mensagens[] = '❌ Digite um processo já cadastrado em Processos.';
     } else {
-        // Confirma no servidor que o processo existe de verdade — nunca confia
-        // só no que veio do <select> do navegador.
-        $stmtCheck = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM processos WHERE processo = ?");
+        // O processo agora é DIGITADO (sem diferenciar maiúscula/minúscula):
+        // procura em Processos e usa o código exatamente como está cadastrado lá.
+        $stmtCheck = mysqli_prepare($conn, "SELECT TRIM(processo) AS processo FROM processos WHERE UPPER(TRIM(processo)) = UPPER(?) LIMIT 1");
         mysqli_stmt_bind_param($stmtCheck, 's', $processoEscolhido);
         mysqli_stmt_execute($stmtCheck);
-        $existeProcesso = (int) mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck))['total'] > 0;
+        $linhaCheck = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtCheck));
         mysqli_stmt_close($stmtCheck);
+        $existeProcesso = (bool) $linhaCheck;
+        if ($existeProcesso) {
+            $processoEscolhido = (string) $linhaCheck['processo'];
+        }
 
         // Trava contra duplicar: "processos" tem uma linha por componente
         // dentro do mesmo processo, mas o Follow deve ter só 1 linha por
@@ -585,14 +589,12 @@ while ($row = mysqli_fetch_assoc($result)) {
 
                     <div class="col-md-4">
                         <label class="form-label">Processo *</label>
-                        <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcesso()">
-                            <option value="">Escolha um processo já cadastrado...</option>
-                            <?php foreach ($processosDisponiveis as $p): ?>
-                                <option value="<?php echo h($p['processo']); ?>" data-componente="<?php echo h($p['todos_componentes'] ?? ''); ?>" data-descricao="<?php echo h($p['todas_descricoes'] ?? ''); ?>">
-                                    <?php echo h($p['processo']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
+                        <input type="text" name="processo_manual" id="processo_manual" class="form-control" required autocomplete="off"
+                               list="lista-processos-follow" placeholder="Digite o processo (ex.: y26a1p0027)" oninput="atualizarPreviewProcesso()">
+                        <datalist id="lista-processos-follow">
+                            <?php foreach ($processosDisponiveis as $p): ?><option value="<?php echo h($p['processo']); ?>"><?php endforeach; ?>
+                        </datalist>
+                        <small class="text-muted" id="processo_manual_aviso"></small>
                         <?php if (empty($processosDisponiveis)): ?>
                             <small class="text-danger">Nenhum processo cadastrado ainda — <a href="processos.php">cadastre um processo primeiro</a>.</small>
                         <?php endif; ?>
@@ -858,11 +860,22 @@ while ($row = mysqli_fetch_assoc($result)) {
     <script>
         // Ao escolher um processo no <select>, mostra o componente/descrição
         // que já estão cadastrados nele — não precisa (nem dá) pra redigitar.
+        // Processo digitado (sem diferenciar maiúscula/minúscula) → mostra o
+        // componente/descrição cadastrados nele em Processos.
+        const PROCESSOS_FOLLOW = <?php
+            $mapaProcFollow = [];
+            foreach ($processosDisponiveis as $p) {
+                $mapaProcFollow[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = ['c' => (string) ($p['todos_componentes'] ?? ''), 'd' => (string) ($p['todas_descricoes'] ?? '')];
+            }
+            echo json_encode($mapaProcFollow, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+        ?>;
         function atualizarPreviewProcesso() {
-            const select = document.getElementById('processo_manual');
-            const opcao = select.options[select.selectedIndex];
-            document.getElementById('preview_componente').value = opcao.dataset.componente || '—';
-            document.getElementById('preview_descricao').value = opcao.dataset.descricao || '—';
+            const digitado = document.getElementById('processo_manual').value.trim().toUpperCase();
+            const achado = PROCESSOS_FOLLOW[digitado];
+            document.getElementById('preview_componente').value = achado ? (achado.c || '—') : '—';
+            document.getElementById('preview_descricao').value = achado ? (achado.d || '—') : '—';
+            document.getElementById('processo_manual_aviso').textContent =
+                digitado === '' ? '' : (achado ? '✓ processo encontrado' : 'processo não encontrado em Processos');
         }
 
         function formatarDataBrJs(iso) {
