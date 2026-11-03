@@ -891,7 +891,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // banco NÃO entra (seja aberta, finalizada ou cancelada) — só
                     // entram as novas. Repetições dentro do próprio arquivo são
                     // permitidas (ex.: várias linhas "N/A" no mesmo processo).
-                    $modo = 'sem_duplicar';
+                    //  - sem_duplicar: regra acima
+                    //  - substituir:   APAGA todas as linhas que NÃO estão finalizadas
+                    //                  (abertas e canceladas) e importa o arquivo. Linhas
+                    //                  finalizadas ficam intactas; se o arquivo trouxer uma
+                    //                  linha igual a uma finalizada, ela é ignorada (não duplica).
+                    //                  Tudo numa transação: se der erro, nada é apagado.
+                    $modo = ($_POST['modo_importacao'] ?? '') === 'substituir' ? 'substituir' : 'sem_duplicar';
+                    if ($modo === 'substituir') {
+                        mysqli_begin_transaction($conn);
+                        mysqli_query($conn, "DELETE FROM processos WHERE COALESCE(NULLIF(LOWER(TRIM(status)), ''), 'aberto') <> 'finalizado'");
+                        $apagadasSubst = mysqli_affected_rows($conn);
+                    }
 
                     $chaveProcesso = fn($proc, $po, $data, $comp) => mb_strtolower(
                         trim((string) $proc) . '|' . trim((string) $po) . '|' . trim((string) $data) . '|' . trim((string) $comp), 'UTF-8');
@@ -981,7 +992,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }
 
                         $chaveLinha = $chaveProcesso($processo, $get('po'), $solicitacao ?? '', $get('codigo_componente'));
-                        if ($modo === 'sem_duplicar' && isset($existentes[$chaveLinha])) {
+                        if (($modo === 'sem_duplicar' || $modo === 'substituir') && isset($existentes[$chaveLinha])) {
                             [$idExistente, $statusExistente] = $existentes[$chaveLinha];
                             $statusExistente = $statusExistente === '' ? 'aberto' : $statusExistente;
                             // Só atualiza se estiver em aberto e a chave for única no banco
@@ -1070,6 +1081,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         mysqli_stmt_close($stmtAtualizaCsv);
                     }
                     mysqli_stmt_close($stmtAtualizaQtdCsv);
+                    if ($modo === 'substituir') {
+                        if ($erros > 0) {
+                            mysqli_rollback($conn);
+                            $mensagens[] = "❌ Excluir e substituir CANCELADO: $erros linha(s) com erro. Nada foi apagado nem importado — corrija o arquivo e tente de novo.";
+                            $importados = 0; $atualizados = 0; $ignorados = 0;
+                        } else {
+                            mysqli_commit($conn);
+                            $mensagens[] = "🗑️ $apagadasSubst linha(s) não finalizada(s) apagada(s) antes da importação (finalizadas mantidas).";
+                        }
+                    }
                     $mensagens[] = "✅ Importação concluída: $importados linha(s) nova(s)"
                         . ($atualizados > 0 ? ", $atualizados atualizada(s)" : '')
                         . ($ignorados > 0 ? ", $ignorados ignorada(s) (já existiam sem mudança, ou processo finalizado/cancelado)" : '')
@@ -1668,7 +1689,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
             <details>
                 <summary class="fw-bold" style="cursor:pointer;">📤 Importar novo arquivo CSV</summary>
                 <form method="POST" enctype="multipart/form-data" class="row g-3 align-items-end mt-3"
-                      onsubmit="const m = this.querySelector('input[name=modo_importacao]:checked'); return !m || m.value !== 'substituir' || confirm('ATENÇÃO: Substituir tudo vai APAGAR todos os processos atuais e deixar só o que está no arquivo. Continuar?');">
+                      onsubmit="const m = this.querySelector('input[name=modo_importacao]:checked'); return !m || m.value !== 'substituir' || confirm('ATENÇÃO: Excluir e substituir vai APAGAR todas as linhas NÃO finalizadas (abertas e canceladas) e deixar só o que está no arquivo. As finalizadas ficam. Continuar?');">
                     <div class="col-md-6">
                         <label class="form-label">Arquivo CSV</label>
                         <input type="file" name="arquivo_csv" class="form-control" accept=".csv" required>
@@ -1677,13 +1698,21 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <button type="submit" class="btn btn-primary w-100">Importar</button>
                     </div>
                     <div class="col-12">
-                        <input type="hidden" name="modo_importacao" value="sem_duplicar">
-                        <div class="alert alert-light border mb-0" style="font-size:.9rem;">
-                            <strong>Adicionar sem duplicar</strong> — só entram as linhas novas. Se já existir no banco uma linha com o mesmo
-                            <strong>Processo + PO + Data (solicitação) + Componente</strong>, ela não é duplicada: se o processo estiver <strong>em aberto</strong>,
-                            atualiza só <strong>Quantidade, Preço e Moeda</strong> (coluna vazia não apaga); se estiver finalizado ou cancelado, é ignorada.
-                            Depois da importação, processos com entrega já confirmada no Follow ficam como <strong>Finalizado</strong>.
+                        <label class="form-label fw-bold mb-2">O que fazer com os dados?</label>
+                        <div class="list-group" style="font-size:.9rem;">
+                            <label class="list-group-item d-flex gap-2">
+                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="sem_duplicar" checked>
+                                <span><strong>Adicionar sem duplicar</strong> — só entram as linhas novas. Se já existir no banco uma linha com o mesmo
+                                <strong>Processo + PO + Data (solicitação) + Componente</strong>, ela não é duplicada: se o processo estiver <strong>em aberto</strong>,
+                                atualiza só <strong>Quantidade, Preço e Moeda</strong> (coluna vazia não apaga); se estiver finalizado ou cancelado, é ignorada.</span>
+                            </label>
+                            <label class="list-group-item d-flex gap-2">
+                                <input class="form-check-input flex-shrink-0" type="radio" name="modo_importacao" value="substituir">
+                                <span><strong>Excluir e substituir</strong> — apaga <strong>todas as linhas não finalizadas</strong> (abertas e canceladas) e importa o arquivo.
+                                As <strong>finalizadas não são mexidas</strong> (linha igual a uma finalizada no arquivo é ignorada). Se alguma linha der erro, nada é apagado.</span>
+                            </label>
                         </div>
+                        <small class="text-muted d-block mt-2">Nos dois modos, depois da importação, processos com entrega já confirmada no Follow ficam como <strong>Finalizado</strong>.</small>
                     </div>
                 </form>
                 <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
