@@ -280,6 +280,11 @@ $res = mysqli_query($conn, "
     ORDER BY projeto, finalizado, processo
 ");
 while ($l = mysqli_fetch_assoc($res)) {
+    // Só processos com código de Release (sigla do fornecedor): Y + ano + modal + planta + SIGLA + sequencial
+    // (ex.: Y26S3YP05). Processos comuns (ex.: Y26S3P0009) não aparecem aqui.
+    if (!preg_match('/^Y\d{2}[A-Z]\d[A-Z]{2,3}\d+$/i', (string) $l['processo'])) {
+        continue;
+    }
     $processosPorProjeto[$l['projeto']][] = ['processo' => $l['processo'], 'finalizado' => (int) $l['finalizado'] === 1];
 }
 
@@ -349,13 +354,14 @@ $importers = [
                 <div class="col-md-3">
                     <label class="form-label small fw-bold mb-1">Projeto(s) — pode marcar mais de um</label>
                     <div id="lista-projetos-rel" class="lista-rel">
+                        <?php if (!$processosPorProjeto): ?><span class="text-muted small">Nenhum processo com código de Release ainda.</span><?php endif; ?>
                         <?php foreach (array_keys($processosPorProjeto) as $proj): ?>
                             <label><input type="checkbox" class="chk-proj" value="<?php echo h($proj); ?>" onchange="preencherProcessos()"> <?php echo h($proj === '' ? '(sem projeto)' : $proj); ?></label>
                         <?php endforeach; ?>
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label small fw-bold mb-1">Processos (cada um = 1 Spot)</label>
+                    <label class="form-label small fw-bold mb-1">Processos de Release (cada um = 1 Spot)</label>
                     <div id="lista-processos-rel"><span class="text-muted small">Escolha o projeto primeiro.</span></div>
                     <div class="d-flex align-items-center gap-3 mt-1">
                         <button type="button" class="btn btn-primary btn-sm" onclick="carregarRelease()">Carregar</button>
@@ -478,7 +484,7 @@ $importers = [
             const linha = (rotulo, campo, extra = '') => '<tr><th class="text-start">' + rotulo + '</th>' + SPOTS.map((s, i) =>
                 `<td><input class="sp-${campo}" data-i="${i}" value="${esc(s[campo])}" ${extra}></td>`).join('') + '</tr>';
             tab.innerHTML =
-                '<tr><th></th>' + SPOTS.map((s, i) => `<th class="spot">Spot ${i + 1}<br><small>${esc(s.processo)}${s.po ? ' · PO ' + esc(s.po) : ''}</small></th>`).join('') + '</tr>' +
+                '<tr><th></th>' + SPOTS.map((s, i) => `<th class="spot">${esc(s.processo)}${s.po ? '<br><small>PO ' + esc(s.po) + '</small>' : ''}</th>`).join('') + '</tr>' +
                 linha('Cidade', 'cidade') + linha('Modal', 'modal_txt') +
                 linha('PICK UP', 'pickup') + linha('ETD', 'etd', 'oninput="recalcularPickup(this)"') + linha('ETA', 'eta') + linha('ETA YAPP', 'eta_yapp');
         }
@@ -496,7 +502,7 @@ $importers = [
             if (!itens.length) { tab.innerHTML = '<tr><td class="text-muted p-3">Nenhum item.</td></tr>'; return; }
             const inp = (cls, valor, falta) => `<td class="num"><input class="${cls}${falta ? ' falta-param' : ''}" value="${esc(valor)}"></td>`;
             let html = '<thead><tr><th>Description</th><th>SAP</th><th>unit pack</th>' +
-                SPOTS.map((s, i) => `<th class="spot">Spot ${i + 1}<br>FORECAST</th>`).join('') +
+                SPOTS.map((s, i) => `<th class="spot">${esc(s.processo)}<br>FORECAST</th>`).join('') +
                 '<th>U PRICE</th><th>LENGTH</th><th>WIDTH</th><th>HEIGHT</th><th>weight of component (kg)</th><th>G WEIGHT</th></tr></thead><tbody>';
             itens.forEach(it => {
                 html += '<tr class="linha-item">' +
@@ -589,7 +595,8 @@ $importers = [
             spots.forEach((s, i) => {
                 const c = colSpot(i);
                 const t1 = ws.getCell(1, c);
-                t1.value = 'Spot ' + (i + 1); t1.fill = ARDOSIA; t1.font = { name: YAHEI, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+                // nome do processo no lugar de "Spot N"
+                t1.value = (SPOTS[i] && SPOTS[i].processo) ? SPOTS[i].processo : 'Spot ' + (i + 1); t1.fill = ARDOSIA; t1.font = { name: YAHEI, size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
                 t1.alignment = { horizontal: 'center', vertical: 'middle' };
                 [[2, s.cidade], [3, s.modal]].forEach(([lin, valor]) => {
                     for (let k = 0; k < 4; k++) { ws.getCell(lin, c + k).fill = BRANCO; }
