@@ -454,7 +454,7 @@ try {
         <div class="doc-cargo">
             <div class="doc-cargo-titulo">Cargo summary:</div>
             <table class="doc-cargo-tabela">
-                <tr><td class="lbl">Volume (m³):</td><td><input type="text" id="cargo_volume" readonly title="Soma de L × W × H ÷ 1.000.000 de todos os itens"></td></tr>
+                <tr><td class="lbl">Volume (total):</td><td><input type="text" id="cargo_volume" readonly title="Soma da coluna Wood Box (quantidade de pallets) de todos os itens"></td></tr>
                 <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de Volume × Qty de todos os itens"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight" readonly></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
@@ -578,7 +578,7 @@ try {
                 <td class="num"><input type="text" class="f-peso-unit" placeholder="0,00" oninput="recalcularLinha(${idx})"></td>
                 <td class="num"><input type="text" class="f-peso-net-total" readonly></td>
                 <td class="num"><input type="text" class="f-peso-bruto-total" oninput="recalcularCargo()"></td>
-                <td class="center"><input type="text" class="f-wood-box" placeholder="Sim/Não"></td>
+                <td class="center"><input type="text" class="f-wood-box" placeholder="0" title="Quantidade de pallets deste item" oninput="recalcularCargo()"></td>
                 <td class="center">
                     <div class="sub-dim">
                         <input type="text" class="f-dim-l" placeholder="L" oninput="recalcularCargo()">
@@ -632,12 +632,16 @@ try {
         function recalcularCargo() {
             let netTotal = 0;
             let brutoTotal = 0;
-            let volumeTotal = 0;
+            let palletsTotal = 0;
+            let temPallet = false;
             let cbmTotal = 0;
             const medidas = []; // "LxWxH" de cada item, na ordem
             document.querySelectorAll('#corpo-itens tr').forEach(linha => {
                 netTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-net-total').value);
                 brutoTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-bruto-total').value);
+                // Wood Box = quantidade de pallets do item → soma vai em "Volume (total)"
+                const pallets = linha.querySelector('.f-wood-box').value.trim();
+                if (pallets !== '') { temPallet = true; palletsTotal += parseNumeroBrDoc(pallets); }
                 // Volume do item = L × W × H ÷ 1.000.000 (cm³ → m³); CBM = Volume × Qty
                 const l = parseNumeroBrDoc(linha.querySelector('.f-dim-l').value);
                 const w = parseNumeroBrDoc(linha.querySelector('.f-dim-w').value);
@@ -645,7 +649,6 @@ try {
                 if (l > 0 && w > 0 && hgt > 0) {
                     const volume = l * w * hgt / 1000000;
                     const qtd = parseNumeroBrDoc(linha.querySelector('.td-qtd').dataset.valor || '');
-                    volumeTotal += volume;
                     cbmTotal += volume * qtd;
                     const fmt = n => String(Math.round(n * 100) / 100).replace('.', ',');
                     medidas.push(fmt(l) + 'x' + fmt(w) + 'x' + fmt(hgt));
@@ -654,7 +657,9 @@ try {
             const fmtVol = n => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 });
             document.getElementById('cargo_net_weight').value = formatarNumeroBrDoc(netTotal);
             document.getElementById('cargo_gross_weight').value = formatarNumeroBrDoc(brutoTotal);
-            document.getElementById('cargo_volume').value = medidas.length ? fmtVol(volumeTotal) : '';
+            document.getElementById('cargo_volume').value = temPallet
+                ? palletsTotal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
+                : '';
             document.getElementById('cargo_cbm').value = medidas.length ? fmtVol(cbmTotal) : '';
             // Dimensions: todas as medidas, juntando as iguais (ex.: "3x 120x100x107")
             const contagem = new Map();
