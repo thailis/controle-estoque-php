@@ -341,6 +341,11 @@ if ($tabelaExiste) {
     <style>
         #tabela-param td, #tabela-param th { padding: 10px 12px; font-size: .85rem; }
         #tabela-param td.num, #tabela-param th.num { text-align: right; }
+        /* colunas com largura fixa: SAP e Description à esquerda, números todos do mesmo tamanho */
+        #tabela-param { table-layout: fixed; width: 100%; min-width: 1100px; }
+        #tabela-param th { text-align: left; }
+        #tabela-param td, #tabela-param th { overflow: hidden; text-overflow: ellipsis; }
+        #tabela-param th.num { white-space: nowrap; }
         .celula-editavel { cursor: cell; }
         .celula-editavel:hover { background: #eef4fb; box-shadow: inset 0 0 0 1px #b9d3ef; }
         .celula-editavel input { width: 100%; text-align: right; }
@@ -476,6 +481,12 @@ if ($tabelaExiste) {
             </div>
             <div class="table-responsive">
                 <table class="table mrp-table mb-0" id="tabela-param">
+                    <colgroup>
+                        <col style="width:9%">
+                        <col style="width:24%">
+                        <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><col style="width:9%"><?php endforeach; ?>
+                        <col style="width:4%">
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>SAP</th>
