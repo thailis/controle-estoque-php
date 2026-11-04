@@ -45,7 +45,7 @@ const CAMPOS_PARAM_IMPORTACAO = [
     'length_cm'     => 'LENGTH',
     'width_cm'      => 'WIDTH',
     'height_cm'     => 'HEIGHT',
-    'peso_unitario' => 'Weight of component (kg)',
+    'peso_unitario' => 'Weight un (kg)',
     'g_weight'      => 'G WEIGHT',
 ];
 
@@ -217,7 +217,7 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
             'length_cm' => ['length', 'length_cm', 'comprimento'],
             'width_cm' => ['width', 'width_cm', 'largura'],
             'height_cm' => ['height', 'height_cm', 'altura'],
-            'peso_unitario' => ['weight', 'weight of component', 'weight of component (kg)', 'weight of component（kg）', 'peso_unitario', 'peso'],
+            'peso_unitario' => ['weight', 'weight of component', 'weight of component (kg)', 'weight of component（kg）', 'weight un', 'weight un (kg)', 'peso_unitario', 'peso'],
             'g_weight' => ['g weight', 'g_weight', 'gross weight'],
         ];
         $indices = [];
@@ -340,7 +340,7 @@ if ($tabelaExiste) {
     <link href="assets/dashboard.css" rel="stylesheet">
     <style>
         #tabela-param td, #tabela-param th { padding: 10px 12px; font-size: .85rem; }
-        #tabela-param td.num { text-align: right; }
+        #tabela-param td.num, #tabela-param th.num { text-align: right; }
         .celula-editavel { cursor: cell; }
         .celula-editavel:hover { background: #eef4fb; box-shadow: inset 0 0 0 1px #b9d3ef; }
         .celula-editavel input { width: 100%; text-align: right; }
@@ -480,7 +480,7 @@ if ($tabelaExiste) {
                         <tr>
                             <th>SAP</th>
                             <th>Description</th>
-                            <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><th><?php echo h($rotulo); ?></th><?php endforeach; ?>
+                            <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><th class="num"><?php echo h($rotulo); ?></th><?php endforeach; ?>
                             <th></th>
                         </tr>
                     </thead>
