@@ -271,8 +271,23 @@ try {
                     continue;
                 }
 
+                // Data pra ENVIAR o pedido ao fornecedor:
+                //  - Urgente (em atraso) → a data da consulta (hoje; amanhã será amanhã)
+                //  - Planejar → data de entrega − Lead Time (frozen zone) − Transit Time
+                $leadTotalDias = (int) $comp['frozen_zone_dias'] + (int) $comp['transit_time_dias'];
+                if ($p['status'] === 'urgente') {
+                    $dataPedido = $hoje;
+                } else {
+                    $dataPedido = $p['data_necessidade']->modify("-{$leadTotalDias} days");
+                    if ($dataPedido < $hoje) {
+                        $dataPedido = $hoje;
+                    }
+                }
+
                 $resultados[] = [
                     'codigo_componente' => $codigo,
+                    'data_pedido' => $dataPedido,
+                    'lead_total_dias' => $leadTotalDias,
                     'descricao' => $comp['descricao'],
                     'fornecedores' => $comp['fornecedores'],
                     'projetos' => $comp['projetos'],
@@ -304,7 +319,7 @@ try {
         usort($resultados, function ($a, $b) {
             if ($a['status'] === 'urgente' && $b['status'] !== 'urgente') return -1;
             if ($b['status'] === 'urgente' && $a['status'] !== 'urgente') return 1;
-            return $a['data'] <=> $b['data'];
+            return [$a['data_pedido'], $a['data']] <=> [$b['data_pedido'], $b['data']];
         });
     }
 
@@ -322,7 +337,7 @@ try {
         // As demais colunas são só informativas e a importação ignora.
         // Só pode haver UMA coluna com "Quantidade" no nome (a importação pareia
         // a quantidade com a coluna "Data").
-        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Current Stock', 'Quantidade', 'Setup (%)', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             fputcsv($saida, [
                 $r['codigo_componente'],
@@ -332,6 +347,8 @@ try {
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
+                // Order date: data pra enviar o pedido (informativa — a importação da Programação usa "Data")
+                $r['data_pedido']->format('d/m/Y'),
                 // Original date: só preenchida quando a data foi recalculada (a original já tinha passado)
                 ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
                 $r['data']->format('d/m/Y'),
@@ -473,39 +490,37 @@ try {
                 <table class="table mrp-table align-middle mb-0">
                     <thead>
                         <tr>
-                            <th>Data de necessidade</th>
+                            <th title="Urgente: hoje (data da consulta). Planejar: data de entrega − Lead Time − Transit Time">Enviar pedido até</th>
                             <th>Código</th>
                             <th>Descrição</th>
                             <th>Fornecedor</th>
                             <th>Projeto</th>
                             <th class="text-center">Estoque hoje</th>
                             <th class="text-center">Quantidade sugerida</th>
+                            <th class="text-center" title="Quando o material precisa chegar (data de necessidade)">Data de entrega</th>
                             <th class="text-center">Status</th>
                             <th>Evolução</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($resultados)): ?>
-                            <tr><td colspan="9" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
+                            <tr><td colspan="10" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
                         <?php else: ?>
                             <?php $mesAtual = null; ?>
                             <?php foreach ($resultados as $r): ?>
                                 <?php
-                                    $mesLabel = $r['status'] === 'urgente' ? 'URGENTE — AGORA' : ucfirst($r['data']->format('F \d\e Y'));
+                                    $mesLabel = $r['status'] === 'urgente' ? 'URGENTE — AGORA' : 'Enviar pedido em ' . ucfirst($r['data_pedido']->format('m/Y'));
                                     if ($mesLabel !== $mesAtual):
                                         $mesAtual = $mesLabel;
                                 ?>
-                                    <tr class="mes-divisor"><td colspan="9"><?php echo h($mesLabel); ?></td></tr>
+                                    <tr class="mes-divisor"><td colspan="10"><?php echo h($mesLabel); ?></td></tr>
                                 <?php endif; ?>
                                 <tr>
                                     <?php /* Sempre mostra a data de necessidade, mesmo quando "urgente" — o badge de Status já
                                              diferencia a urgência; esconder a data aqui só tirava informação de quem olha a tela. */ ?>
-                                    <td>
-                                        <?php echo h($r['data']->format('d/m/Y')); ?>
-                                        <?php if ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface): ?>
-                                            <span class="badge bg-light text-danger border ms-1" title="Era para chegar em <?php echo h($r['data_original']->format('d/m/Y')); ?>, mas não há pedido programado. Nova data = hoje + Lead Time + Transit Time.">recalculada</span>
-                                            <small class="d-block text-muted">era <?php echo h($r['data_original']->format('d/m/Y')); ?></small>
-                                        <?php endif; ?>
+                                    <td title="<?php echo $r['status'] === 'urgente' ? 'Urgente: enviar hoje' : 'Entrega − ' . (int) $r['lead_total_dias'] . ' dias (Lead Time + Transit Time)'; ?>">
+                                        <strong class="<?php echo $r['status'] === 'urgente' ? 'text-danger' : ''; ?>"><?php echo h($r['data_pedido']->format('d/m/Y')); ?></strong>
+                                        <?php if ($r['status'] === 'urgente'): ?><small class="d-block text-danger">enviar hoje</small><?php endif; ?>
                                     </td>
                                     <td>
                                         <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
@@ -525,6 +540,13 @@ try {
                                             <span class="qtd-sugerida-num"><?php echo numeroBr($r['quantidade'], 0); ?></span>
                                             <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border qtd-sugerida-badge">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
                                         </span>
+                                    </td>
+                                    <td class="text-center">
+                                        <?php echo h($r['data']->format('d/m/Y')); ?>
+                                        <?php if ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface): ?>
+                                            <span class="badge bg-light text-danger border ms-1" title="Era para chegar em <?php echo h($r['data_original']->format('d/m/Y')); ?>, mas não há pedido programado. Nova data = hoje + Lead Time + Transit Time.">recalculada</span>
+                                            <small class="d-block text-muted">era <?php echo h($r['data_original']->format('d/m/Y')); ?></small>
+                                        <?php endif; ?>
                                     </td>
                                     <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>" <?php if ($r['estoque_seguranca_qtd'] > 0): ?>title="Estoque de segurança calculado: <?php echo numeroBr($r['estoque_seguranca_qtd'], 0); ?> unidades"<?php endif; ?>><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($r['codigo_componente']); ?>">Ver evolução</a></td>
