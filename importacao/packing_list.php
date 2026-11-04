@@ -455,10 +455,10 @@ try {
             <div class="doc-cargo-titulo">Cargo summary:</div>
             <table class="doc-cargo-tabela">
                 <tr><td class="lbl">Volume (total):</td><td><input type="text" id="cargo_volume" readonly title="Soma da coluna Wood Box (quantidade de pallets) de todos os itens"></td></tr>
-                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de Volume × Qty de todos os itens"></td></tr>
+                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de L × W × H ÷ 1.000.000 × Wood Box (pallets) de todos os itens"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight" readonly></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
-                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes" readonly title="Medidas (L x W x H) de todos os itens"></td></tr>
+                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes" readonly title="Maior L x maior W x maior H entre todos os itens"></td></tr>
             </table>
         </div>
 
@@ -635,37 +635,39 @@ try {
             let palletsTotal = 0;
             let temPallet = false;
             let cbmTotal = 0;
-            const medidas = []; // "LxWxH" de cada item, na ordem
+            let temCbm = false;
+            let maiorL = 0, maiorW = 0, maiorH = 0; // Dimensions = maior L, maior W e maior H entre os itens
             document.querySelectorAll('#corpo-itens tr').forEach(linha => {
                 netTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-net-total').value);
                 brutoTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-bruto-total').value);
                 // Wood Box = quantidade de pallets do item → soma vai em "Volume (total)"
-                const pallets = linha.querySelector('.f-wood-box').value.trim();
-                if (pallets !== '') { temPallet = true; palletsTotal += parseNumeroBrDoc(pallets); }
-                // Volume do item = L × W × H ÷ 1.000.000 (cm³ → m³); CBM = Volume × Qty
+                const palletsTexto = linha.querySelector('.f-wood-box').value.trim();
+                const pallets = parseNumeroBrDoc(palletsTexto);
+                if (palletsTexto !== '') { temPallet = true; palletsTotal += pallets; }
                 const l = parseNumeroBrDoc(linha.querySelector('.f-dim-l').value);
                 const w = parseNumeroBrDoc(linha.querySelector('.f-dim-w').value);
                 const hgt = parseNumeroBrDoc(linha.querySelector('.f-dim-h').value);
-                if (l > 0 && w > 0 && hgt > 0) {
-                    const volume = l * w * hgt / 1000000;
-                    const qtd = parseNumeroBrDoc(linha.querySelector('.td-qtd').dataset.valor || '');
-                    cbmTotal += volume * qtd;
-                    const fmt = n => String(Math.round(n * 100) / 100).replace('.', ',');
-                    medidas.push(fmt(l) + 'x' + fmt(w) + 'x' + fmt(hgt));
+                maiorL = Math.max(maiorL, l);
+                maiorW = Math.max(maiorW, w);
+                maiorH = Math.max(maiorH, hgt);
+                // CBM do item = L × W × H ÷ 1.000.000 × Wood Box (pallets).
+                // Sem Wood Box preenchido, o item não entra no CBM.
+                if (l > 0 && w > 0 && hgt > 0 && palletsTexto !== '') {
+                    cbmTotal += (l * w * hgt / 1000000) * pallets;
+                    temCbm = true;
                 }
             });
             const fmtVol = n => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 });
+            const fmtMedida = n => String(Math.round(n * 100) / 100).replace('.', ',');
             document.getElementById('cargo_net_weight').value = formatarNumeroBrDoc(netTotal);
             document.getElementById('cargo_gross_weight').value = formatarNumeroBrDoc(brutoTotal);
             document.getElementById('cargo_volume').value = temPallet
                 ? palletsTotal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
                 : '';
-            document.getElementById('cargo_cbm').value = medidas.length ? fmtVol(cbmTotal) : '';
-            // Dimensions: todas as medidas, juntando as iguais (ex.: "3x 120x100x107")
-            const contagem = new Map();
-            medidas.forEach(m => contagem.set(m, (contagem.get(m) || 0) + 1));
-            document.getElementById('cargo_dimensoes').value = Array.from(contagem.entries())
-                .map(([m, n]) => (n > 1 ? n + 'x ' : '') + m).join('; ');
+            document.getElementById('cargo_cbm').value = temCbm ? fmtVol(cbmTotal) : '';
+            document.getElementById('cargo_dimensoes').value = (maiorL > 0 || maiorW > 0 || maiorH > 0)
+                ? fmtMedida(maiorL) + 'x' + fmtMedida(maiorW) + 'x' + fmtMedida(maiorH)
+                : '';
         }
 
         // Importa uma imagem de assinatura (JPG/PNG) e mostra ela acima da
