@@ -45,12 +45,13 @@ try {
 }
 
 // Parâmetros de compra de um componente, usados no modo "Release":
-//   lead_total   = Lead Time (frozen_zone_dias) + Transit Time → Pick up = ETA − lead_total
+//   lead_total   = Transit Time (transit_time_dias) → Pick up = ETA − Transit Time
+//                  (o Lead Time / frozen zone NÃO entra no Pick up)
 //   congelamento = Frozen Zone (dias) → Status F (congelado) / P (pode alterar)
 function parametrosReleasePo(mysqli $conn, string $codigo): array
 {
     $stmt = mysqli_prepare($conn, "
-        SELECT MAX(COALESCE(frozen_zone_dias, 0) + COALESCE(transit_time_dias, 0)) AS lead_total,
+        SELECT MAX(transit_time_dias) AS lead_total,
                MAX(congelamento_dias) AS congelamento
         FROM parametros_compra
         WHERE TRIM(codigo_componente) = ?
@@ -526,7 +527,7 @@ if ($resProcessosProgramacao) {
         </div>
 
         <div class="po-material-titulo">
-            <label class="po-formato-intl po-release no-print" title="Release: troca Net Price/Total por Pick up (ETA − Lead Time total), Order e Status (F = Frozen Zone / P = pode alterar)">
+            <label class="po-formato-intl po-release no-print" title="Release: troca Net Price/Total por Pick up (ETA − Transit Time), Order e Status (F = Frozen Zone / P = pode alterar)">
                 <input type="checkbox" id="modo_release" onchange="alternarRelease()">
                 Release
             </label>
@@ -1051,7 +1052,7 @@ if ($resProcessosProgramacao) {
         }
 
         // ---------- Modo Release ----------
-        // Pick up = ETA − Lead Time total (Lead Time + Transit Time, de Parâmetros).
+        // Pick up = ETA − Transit Time (de Parâmetros; o Lead Time não entra).
         // Status  = "F" se a ETA cair dentro do Frozen Zone contado da data do
         //           pedido (hoje + Frozen Zone dias) → congelado; senão "P".
         // Os parâmetros vêm por componente (Parâmetros de Compra). Sem parâmetro
@@ -1090,7 +1091,7 @@ if ($resProcessosProgramacao) {
                     const pickup = new Date(eta);
                     pickup.setDate(pickup.getDate() - lead);
                     definirValorPull(campoPickup, escreverDataPo(pickup));
-                    campoPickup.title = 'ETA − ' + lead + ' dias (Lead Time + Transit Time) — duplo clique pra alterar';
+                    campoPickup.title = 'ETA − ' + lead + ' dias (Transit Time) — duplo clique pra alterar';
                 } else {
                     definirValorPull(campoPickup, '');
                 }
