@@ -314,9 +314,7 @@ try {
                 <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
                 <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-light btn-sm" href="packing_list.php">📦 Packing List</a>
-                <a class="btn btn-outline-light btn-sm" href="documentos.php" title="Invoice e Packing List na mesma janela">🗂️ Invoice + Packing</a>
+                <a class="btn btn-light btn-sm" href="documentos.php" title="Commercial Invoice + Packing List">📄 CI / PL</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
             </nav>
         </div>

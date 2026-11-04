@@ -595,8 +595,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
                 <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
+                <a class="btn btn-outline-light btn-sm" href="documentos.php" title="Commercial Invoice + Packing List">📄 CI / PL</a>
                 <a class="btn btn-outline-light btn-sm" href="release.php">🚚 Release</a>
                 <a class="btn btn-outline-light btn-sm" href="parametros_importacao.php">⚙️ Parâmetros</a>
             </nav>

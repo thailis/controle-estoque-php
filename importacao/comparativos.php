@@ -496,8 +496,7 @@ $ultimosComparativos = array_slice(array_reverse($comparativos, true), 0, 30, tr
                 <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
                 <a class="btn btn-light btn-sm" href="comparativos.php">Comparativos</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Packing List</a>
+                <a class="btn btn-outline-light btn-sm" href="documentos.php" title="Commercial Invoice + Packing List">📄 CI / PL</a>
             </nav>
         </div>
     </header>

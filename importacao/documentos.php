@@ -51,13 +51,17 @@ require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
         <div class="container-fluid d-flex flex-wrap align-items-center justify-content-between gap-3">
             <div>
                 <span class="eyebrow">Controle de Importação • Documentos</span>
-                <h1>Commercial Invoice + Packing List</h1>
+                <h1>CI / PL — Commercial Invoice + Packing List</h1>
             </div>
             <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
                 <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
                 <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
-                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Só Invoice</a>
-                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Só Packing List</a>
+                <a class="btn btn-outline-light btn-sm" href="pagamento.php">Pagamento</a>
+                <a class="btn btn-outline-light btn-sm" href="confirmar_entrega.php">Confirmar entrega</a>
+                <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
+                <a class="btn btn-light btn-sm" href="documentos.php">📄 CI / PL</a>
+                <a class="btn btn-outline-light btn-sm" href="release.php">🚚 Release</a>
+                <a class="btn btn-outline-light btn-sm" href="parametros_importacao.php">⚙️ Parâmetros</a>
             </nav>
         </div>
     </header>
@@ -87,11 +91,11 @@ require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
     <div class="quadros" id="quadros">
         <div class="quadro">
-            <div class="quadro-titulo">📄 Commercial Invoice <a href="commercial_invoice.php" target="_blank">abrir sozinha ↗</a></div>
+            <div class="quadro-titulo">📄 Commercial Invoice</div>
             <iframe id="frame-ci" src="commercial_invoice.php" title="Commercial Invoice"></iframe>
         </div>
         <div class="quadro">
-            <div class="quadro-titulo">📦 Packing List <a href="packing_list.php" target="_blank">abrir sozinha ↗</a></div>
+            <div class="quadro-titulo">📦 Packing List</div>
             <iframe id="frame-pl" src="packing_list.php" title="Packing List"></iframe>
         </div>
     </div>

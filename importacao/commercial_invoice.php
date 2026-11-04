@@ -350,9 +350,7 @@ try {
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="pagamento.php">Pagamento</a>
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="confirmar_entrega.php">Confirmar entrega</a>
                 <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="comparativos.php">Comparativos</a>
-                <a class="btn btn-light btn-sm btn-nav-compacta" href="commercial_invoice.php">📄 Commercial Invoice</a>
-                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="packing_list.php">📦 Packing List</a>
-                <a class="btn btn-outline-light btn-sm btn-nav-compacta" href="documentos.php" title="Invoice e Packing List na mesma janela">🗂️ Invoice + Packing</a>
+                <a class="btn btn-light btn-sm btn-nav-compacta" href="documentos.php" title="Commercial Invoice + Packing List">📄 CI / PL</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
                 <input type="text" id="ptax_valor" class="form-control form-control-sm" style="width:90px; min-height:auto;" placeholder="PTAX" title="Cotação (PTAX) usada pra converter USD → R$ na planilha">
                 <input type="text" id="ptax_data" class="form-control form-control-sm" style="width:115px; min-height:auto;" placeholder="Data PTAX" title="Data da PTAX (dd/mm/aaaa) — só pra aparecer no cabeçalho da planilha, digite do jeito que quiser">
