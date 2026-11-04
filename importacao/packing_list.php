@@ -454,11 +454,11 @@ try {
         <div class="doc-cargo">
             <div class="doc-cargo-titulo">Cargo summary:</div>
             <table class="doc-cargo-tabela">
-                <tr><td class="lbl">Volume:</td><td><input type="text" id="cargo_volume"></td></tr>
-                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm"></td></tr>
+                <tr><td class="lbl">Volume (m³):</td><td><input type="text" id="cargo_volume" readonly title="Soma de L × W × H ÷ 1.000.000 de todos os itens"></td></tr>
+                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de Volume × Qty de todos os itens"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight" readonly></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
-                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes"></td></tr>
+                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes" readonly title="Medidas (L x W x H) de todos os itens"></td></tr>
             </table>
         </div>
 
@@ -581,9 +581,9 @@ try {
                 <td class="center"><input type="text" class="f-wood-box" placeholder="Sim/Não"></td>
                 <td class="center">
                     <div class="sub-dim">
-                        <input type="text" class="f-dim-l" placeholder="L">
-                        <input type="text" class="f-dim-w" placeholder="W">
-                        <input type="text" class="f-dim-h" placeholder="H">
+                        <input type="text" class="f-dim-l" placeholder="L" oninput="recalcularCargo()">
+                        <input type="text" class="f-dim-w" placeholder="W" oninput="recalcularCargo()">
+                        <input type="text" class="f-dim-h" placeholder="H" oninput="recalcularCargo()">
                     </div>
                 </td>
                 <td class="col-acao no-print"><button type="button" class="btn-remover-linha" onclick="removerLinha(${idx})" title="Remover linha">✕</button></td>
@@ -632,12 +632,35 @@ try {
         function recalcularCargo() {
             let netTotal = 0;
             let brutoTotal = 0;
+            let volumeTotal = 0;
+            let cbmTotal = 0;
+            const medidas = []; // "LxWxH" de cada item, na ordem
             document.querySelectorAll('#corpo-itens tr').forEach(linha => {
                 netTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-net-total').value);
                 brutoTotal += parseNumeroBrDoc(linha.querySelector('.f-peso-bruto-total').value);
+                // Volume do item = L × W × H ÷ 1.000.000 (cm³ → m³); CBM = Volume × Qty
+                const l = parseNumeroBrDoc(linha.querySelector('.f-dim-l').value);
+                const w = parseNumeroBrDoc(linha.querySelector('.f-dim-w').value);
+                const hgt = parseNumeroBrDoc(linha.querySelector('.f-dim-h').value);
+                if (l > 0 && w > 0 && hgt > 0) {
+                    const volume = l * w * hgt / 1000000;
+                    const qtd = parseNumeroBrDoc(linha.querySelector('.td-qtd').dataset.valor || '');
+                    volumeTotal += volume;
+                    cbmTotal += volume * qtd;
+                    const fmt = n => String(Math.round(n * 100) / 100).replace('.', ',');
+                    medidas.push(fmt(l) + 'x' + fmt(w) + 'x' + fmt(hgt));
+                }
             });
+            const fmtVol = n => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 });
             document.getElementById('cargo_net_weight').value = formatarNumeroBrDoc(netTotal);
             document.getElementById('cargo_gross_weight').value = formatarNumeroBrDoc(brutoTotal);
+            document.getElementById('cargo_volume').value = medidas.length ? fmtVol(volumeTotal) : '';
+            document.getElementById('cargo_cbm').value = medidas.length ? fmtVol(cbmTotal) : '';
+            // Dimensions: todas as medidas, juntando as iguais (ex.: "3x 120x100x107")
+            const contagem = new Map();
+            medidas.forEach(m => contagem.set(m, (contagem.get(m) || 0) + 1));
+            document.getElementById('cargo_dimensoes').value = Array.from(contagem.entries())
+                .map(([m, n]) => (n > 1 ? n + 'x ' : '') + m).join('; ');
         }
 
         // Importa uma imagem de assinatura (JPG/PNG) e mostra ela acima da
