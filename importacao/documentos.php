@@ -287,7 +287,7 @@ require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
         function copiarPesosPL() {
             const docPl = docDe('pl'), docCi = docDe('ci');
             if (!docPl || !docCi) return;
-            ['cargo_net_weight', 'cargo_gross_weight', 'cargo_volume', 'cargo_cbm', 'cargo_dimensoes'].forEach(id => {
+            ['cargo_net_weight', 'cargo_gross_weight', 'cargo_volume', 'cargo_cbm'].forEach(id => {
                 const de = docPl.getElementById(id), para = docCi.getElementById(id);
                 if (de && para && de.value !== '' && de.value !== '0,00') para.value = de.value;
             });
@@ -315,6 +315,9 @@ require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
                     const janOutra = janelaDe(outra(chave));
                     const selOutra = docOutra && docOutra.getElementById('select_processo');
                     if (!selOutra || selOutra.value === selProcesso.value) return;
+                    // Só repassa processo que existe (já convertido pro código cadastrado)
+                    const existe = Array.from(doc.querySelectorAll('#lista-processos-doc option')).some(o => o.value === selProcesso.value);
+                    if (!existe) return;
                     copiando = true;
                     selOutra.value = selProcesso.value;
                     if (janOutra && typeof janOutra.carregarProcesso === 'function') janOutra.carregarProcesso();

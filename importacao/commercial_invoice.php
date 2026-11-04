@@ -25,7 +25,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo') {
     $processo = trim($_GET['processo'] ?? '');
     $itens = [];
     if ($processo !== '') {
-        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, ncm, quantidade, preco, moeda FROM processos WHERE processo = ? ORDER BY id");
+        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, ncm, quantidade, preco, moeda FROM processos WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?)) ORDER BY id");
         mysqli_stmt_bind_param($stmt, 's', $processo);
         mysqli_stmt_execute($stmt);
         $res = mysqli_stmt_get_result($stmt);
@@ -128,12 +128,13 @@ try {
         }
         .doc-header input {
             background: transparent;
-            border: none;
+            border: 1px solid #4a6178;
+            border-radius: 3px;
             color: #fff;
             font-weight: 750;
             text-align: center;
-            width: 160px;
-            font-size: 1.05rem;
+            width: 200px;
+            font-size: .95rem;
         }
         .doc-header input::placeholder { color: #aab5c0; }
         .doc-header select {
@@ -361,12 +362,10 @@ try {
 
     <div class="doc-sheet" id="doc-sheet">
         <div class="doc-header">Commercial Invoice:
-            <select id="select_processo" onchange="carregarProcesso()">
-                <option value="">Selecione um processo...</option>
-                <?php foreach ($processosDisponiveis as $p): ?>
-                    <option value="<?php echo h($p); ?>"><?php echo h($p); ?></option>
-                <?php endforeach; ?>
-            </select>
+            <input type="text" id="select_processo" list="lista-processos-doc" autocomplete="off" placeholder="Digite o processo..." onchange="carregarProcesso()">
+            <datalist id="lista-processos-doc">
+                <?php foreach ($processosDisponiveis as $p): ?><option value="<?php echo h($p); ?>"><?php endforeach; ?>
+            </datalist>
         </div>
 
         <div class="doc-toolbar-select no-print">
@@ -496,7 +495,6 @@ try {
                 <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight"></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight"></td></tr>
-                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes"></td></tr>
             </table>
         </div>
 
@@ -515,6 +513,11 @@ try {
     <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
     <script>
         let contadorLinhas = 0;
+        const PROCESSOS_DOC = <?php
+            $mapaProcDoc = [];
+            foreach ($processosDisponiveis as $p) { $mapaProcDoc[mb_strtoupper(trim((string) $p), 'UTF-8')] = trim((string) $p); }
+            echo json_encode($mapaProcDoc ?: new stdClass(), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+        ?>;
         // E-mail do Exporter: sempre o mesmo pra Americana e Gravataí (editável na tela)
         const EMAIL_EXPORTER = 'marialima.br@yapp.com';
 
@@ -669,8 +672,13 @@ try {
         // Ao escolher o Processo, busca os componentes cadastrados nele em
         // Processos e substitui as linhas atuais por eles.
         function carregarProcesso() {
-            const processo = document.getElementById('select_processo').value;
-            if (!processo) return;
+            // Processo digitado (sem diferenciar maiúscula/minúscula) → código como está cadastrado
+            const campoProcesso = document.getElementById('select_processo');
+            const digitado = campoProcesso.value.trim();
+            if (!digitado) return;
+            const processo = PROCESSOS_DOC[digitado.toUpperCase()];
+            if (!processo) { alert('Processo "' + digitado + '" não encontrado em Processos.'); return; }
+            campoProcesso.value = processo;
             fetch('commercial_invoice.php?ajax=buscar_processo&processo=' + encodeURIComponent(processo))
                 .then(r => r.json())
                 .then(dados => {

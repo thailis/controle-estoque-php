@@ -16,7 +16,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo') {
     $processo = trim($_GET['processo'] ?? '');
     $itens = [];
     if ($processo !== '') {
-        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, quantidade FROM processos WHERE processo = ? ORDER BY id");
+        $stmt = mysqli_prepare($conn, "SELECT codigo_componente, descricao, quantidade FROM processos WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?)) ORDER BY id");
         mysqli_stmt_bind_param($stmt, 's', $processo);
         mysqli_stmt_execute($stmt);
         $res = mysqli_stmt_get_result($stmt);
@@ -119,6 +119,11 @@ try {
             border-radius: 3px;
         }
         .doc-header select option { color: #17212b; background: #fff; }
+        .doc-header input {
+            background: transparent; border: 1px solid #4a6178; border-radius: 3px; color: #fff;
+            font-weight: 750; text-align: center; width: 200px; font-size: .95rem; padding: 2px 6px;
+        }
+        .doc-header input::placeholder { color: #aab5c0; }
 
         .doc-secao-titulo {
             font-weight: 750;
@@ -322,12 +327,10 @@ try {
 
     <div class="doc-sheet" id="doc-sheet">
         <div class="doc-header">Packing List:
-            <select id="select_processo" onchange="carregarProcesso()">
-                <option value="">Selecione um processo...</option>
-                <?php foreach ($processosDisponiveis as $p): ?>
-                    <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
-                <?php endforeach; ?>
-            </select>
+            <input type="text" id="select_processo" list="lista-processos-doc" autocomplete="off" placeholder="Digite o processo..." onchange="carregarProcesso()">
+            <datalist id="lista-processos-doc">
+                <?php foreach ($processosDisponiveis as $p): ?><option value="<?php echo htmlspecialchars($p); ?>"><?php endforeach; ?>
+            </datalist>
         </div>
 
         <div class="doc-seletor-wrap no-print">
@@ -456,7 +459,6 @@ try {
                 <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de L × W × H ÷ 1.000.000 × Wood Box (pallets) de todos os itens"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight" readonly></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
-                <tr><td class="lbl">Dimensions (cm):</td><td><input type="text" id="cargo_dimensoes" readonly title="Maior L x maior W x maior H entre todos os itens"></td></tr>
             </table>
         </div>
 
@@ -474,6 +476,11 @@ try {
 
     <script>
         let contadorLinhas = 0;
+        const PROCESSOS_DOC = <?php
+            $mapaProcDoc = [];
+            foreach ($processosDisponiveis as $p) { $mapaProcDoc[mb_strtoupper(trim((string) $p), 'UTF-8')] = trim((string) $p); }
+            echo json_encode($mapaProcDoc ?: new stdClass(), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+        ?>;
 
         function parseNumeroBrDoc(texto) {
             if (!texto) return 0;
@@ -546,8 +553,13 @@ try {
         }
 
         function carregarProcesso() {
-            const processo = document.getElementById('select_processo').value;
-            if (!processo) return;
+            // Processo digitado (sem diferenciar maiúscula/minúscula) → código como está cadastrado
+            const campoProcesso = document.getElementById('select_processo');
+            const digitado = campoProcesso.value.trim();
+            if (!digitado) return;
+            const processo = PROCESSOS_DOC[digitado.toUpperCase()];
+            if (!processo) { alert('Processo "' + digitado + '" não encontrado em Processos.'); return; }
+            campoProcesso.value = processo;
             fetch('packing_list.php?ajax=buscar_processo&processo=' + encodeURIComponent(processo))
                 .then(r => r.json())
                 .then(dados => {
@@ -663,9 +675,6 @@ try {
                 ? palletsTotal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
                 : '';
             document.getElementById('cargo_cbm').value = temCbm ? fmtVol(cbmTotal) : '';
-            document.getElementById('cargo_dimensoes').value = (maiorL > 0 || maiorW > 0 || maiorH > 0)
-                ? fmtMedida(maiorL) + 'x' + fmtMedida(maiorW) + 'x' + fmtMedida(maiorH)
-                : '';
         }
 
         // Importa uma imagem de assinatura (JPG/PNG) e mostra ela acima da
