@@ -302,6 +302,8 @@ try {
             .doc-sheet { box-shadow: none; border: none; margin: 0; max-width: 100%; }
             table.doc-tabela .col-acao { display: none; }
             input, textarea { color: #000 !important; }
+            /* Referência (processo) no cabeçalho azul: continua branca no PDF */
+            .doc-header input { color: #fff !important; -webkit-text-fill-color: #fff !important; }
         }
     </style>
 </head>
@@ -403,7 +405,7 @@ try {
                     <th>Unit Net<br>Weight (kg)</th>
                     <th>Total Net<br>Weight (kg)</th>
                     <th>Total Gross<br>Weight (kg)</th>
-                    <th>Wood Box</th>
+                    <th>Package</th>
                     <th>Dimensions (cm)<br>L / W / H</th>
                     <th class="col-acao no-print"></th>
                 </tr>
@@ -455,8 +457,8 @@ try {
         <div class="doc-cargo">
             <div class="doc-cargo-titulo">Cargo summary:</div>
             <table class="doc-cargo-tabela">
-                <tr><td class="lbl">Volume (total):</td><td><input type="text" id="cargo_volume" readonly title="Soma da coluna Wood Box (quantidade de pallets) de todos os itens"></td></tr>
-                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de L × W × H ÷ 1.000.000 × Wood Box (pallets) de todos os itens"></td></tr>
+                <tr><td class="lbl">Volume (total):</td><td><input type="text" id="cargo_volume" readonly title="Soma da coluna Package (quantidade de pallets) de todos os itens"></td></tr>
+                <tr><td class="lbl">CBM:</td><td><input type="text" id="cargo_cbm" readonly title="Soma de L × W × H ÷ 1.000.000 × Package (pallets) de todos os itens"></td></tr>
                 <tr><td class="lbl">Net Weight (kg):</td><td><input type="text" id="cargo_net_weight" readonly></td></tr>
                 <tr><td class="lbl">Gross Weight (kg):</td><td><input type="text" id="cargo_gross_weight" readonly></td></tr>
             </table>

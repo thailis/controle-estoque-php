@@ -240,6 +240,7 @@ require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
                     #pdf-ci .doc-sheet, #pdf-pl .doc-sheet { box-shadow: none !important; border: none !important; margin: 0 !important; max-width: 100% !important; }
                     #pdf-pl { break-before: page; page-break-before: always; }
                     input, textarea { color: #000 !important; }
+                    .doc-header input { color: #fff !important; -webkit-text-fill-color: #fff !important; }
                     .col-acao { display: none !important; }
                 </style></head><body>
                 <div id="pdf-ci">${folhaCi}</div>

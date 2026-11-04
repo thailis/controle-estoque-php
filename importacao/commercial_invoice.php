@@ -334,6 +334,8 @@ try {
             .doc-sheet { box-shadow: none; border: none; margin: 0; max-width: 100%; }
             table.doc-tabela .col-acao { display: none; }
             input, textarea { color: #000 !important; }
+            /* Referência (processo) no cabeçalho azul: continua branca no PDF */
+            .doc-header input { color: #fff !important; -webkit-text-fill-color: #fff !important; }
         }
     </style>
 </head>
