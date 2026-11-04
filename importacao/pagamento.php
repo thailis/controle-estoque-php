@@ -140,6 +140,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'toggle_
 // liquidacao_na / situacao (aberto | fechado/finalizado).
 // Linha idêntica já existente (mesmo processo + Cod. Twin + Vencimento + Valor)
 // é pulada, pra reimportar o mesmo arquivo não duplicar.
+// Avulso: linha com coluna avulso = sim e processo que NÃO está em Processos
+// entra com PO, fornecedor, moeda e total do próprio CSV (status aberto). Sem
+// avulso = sim, processo inexistente continua sendo recusado (evita que erro de
+// digitação vire avulso). Se o processo existir, vale sempre o que está em Processos.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagamento'])) {
     $arquivoCsv = $_FILES['arquivo_csv_pagamento'];
     if ($arquivoCsv['error'] !== UPLOAD_ERR_OK) {
@@ -170,6 +174,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                 'rb' => ['rb'],
                 'oa' => ['oa', 'oa_link'],
                 'liquidacao_na' => ['liquidacao_na', 'situacao', 'status_pagamento'],
+                'avulso' => ['avulso'],
+                'po' => ['po'],
+                'fornecedor' => ['fornecedor'],
+                'moeda' => ['moeda'],
+                'total' => ['total'],
             ];
             $idx = [];
             foreach ($apelidos as $campo => $nomes) {
@@ -192,7 +201,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                     mysqli_begin_transaction($conn);
                     mysqli_query($conn, "DELETE FROM pagamento");
                 }
-                $stmtProcCsv = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE processo = ?");
+                $stmtProcCsv = mysqli_prepare($conn, "SELECT processo, status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?)) LIMIT 1");
+                $avulsosCsv = 0;
                 $stmtDupCsv = mysqli_prepare($conn, "
                     SELECT id FROM pagamento
                     WHERE processo = ? AND COALESCE(cod_twin, '') = ? AND COALESCE(numerario_inicial, '') = ?
@@ -222,10 +232,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                     mysqli_stmt_bind_param($stmtProcCsv, 's', $processoCsv);
                     mysqli_stmt_execute($stmtProcCsv);
                     $proc = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProcCsv));
-                    if (!$proc) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: processo \"$processoCsv\" não existe em Processos.";
-                        continue;
+                    if ($proc) {
+                        // usa o código como está em Processos (maiúscula/minúscula)
+                        $processoCsv = (string) $proc['processo'];
+                    } else {
+                        $marcaAvulso = normalizarTextoPagamento($pegar('avulso'));
+                        if (!in_array($marcaAvulso, ['sim', 's', 'x', 'yes', 'y', '1', 'true'], true)) {
+                            $erros++;
+                            $mensagens[] = "⚠️ Linha $linhaNum ignorada: processo \"$processoCsv\" não existe em Processos (se for avulso, preencha a coluna avulso = sim).";
+                            continue;
+                        }
+                        $totalBrutoCsv = $pegar('total');
+                        $totalAvulsoCsv = $totalBrutoCsv !== '' ? parseNumeroBrPagamento($totalBrutoCsv) : null;
+                        if ($totalBrutoCsv !== '' && $totalAvulsoCsv === null) {
+                            $erros++;
+                            $mensagens[] = "⚠️ Linha $linhaNum ignorada: total '$totalBrutoCsv' inválido.";
+                            continue;
+                        }
+                        $proc = [
+                            'status' => 'aberto',
+                            'po' => $pegar('po') !== '' ? $pegar('po') : null,
+                            'fornecedor' => $pegar('fornecedor') !== '' ? $pegar('fornecedor') : null,
+                            'moeda' => $pegar('moeda') !== '' ? strtoupper($pegar('moeda')) : null,
+                            'total' => $totalAvulsoCsv,
+                            'avulso' => true,
+                        ];
                     }
 
                     $dataTwinBruta = $pegar('data_twin');
@@ -269,6 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                     );
                     if (mysqli_stmt_execute($stmtInsCsv)) {
                         $importados++;
+                        if (!empty($proc['avulso'])) { $avulsosCsv++; }
                     } else {
                         $erros++;
                         $mensagens[] = "⚠️ Linha $linhaNum: " . mysqli_stmt_error($stmtInsCsv);
@@ -287,6 +319,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv_pagament
                     }
                 }
                 $mensagens[] = "✅ Importação concluída: $importados pagamento(s) incluído(s)"
+                    . ($avulsosCsv > 0 ? " ($avulsosCsv avulso(s))" : '')
                     . ($pulados > 0 ? ", $pulados já existente(s) pulado(s)" : '')
                     . ", $erros erro(s).";
             }
@@ -471,7 +504,8 @@ if (isset($_GET['exportar'])) {
         $like = '%' . $busca . '%';
         $params = [$like, $like, $like];
     }
-    $sqlExport = "SELECT * FROM pagamento $where ORDER BY criado_em DESC";
+    $sqlExport = "SELECT pagamento.*, NOT EXISTS (SELECT 1 FROM processos pr WHERE pr.processo = pagamento.processo) AS eh_avulso
+                  FROM pagamento $where ORDER BY criado_em DESC";
     if (!empty($params)) {
         $stmtExport = mysqli_prepare($conn, $sqlExport);
         mysqli_stmt_bind_param($stmtExport, 'sss', ...$params);
@@ -485,7 +519,7 @@ if (isset($_GET['exportar'])) {
     header('Content-Disposition: attachment; filename="pagamento.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['processo', 'status', 'po', 'fornecedor', 'cod_twin', 'data_twin', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa'], ';', '"', '');
+    fputcsv($saida, ['processo', 'status', 'po', 'fornecedor', 'cod_twin', 'data_twin', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa', 'avulso'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linha['processo'], $linha['status'], $linha['po'], $linha['fornecedor'], $linha['cod_twin'], $linha['data_twin'], $linha['moeda'],
@@ -499,6 +533,7 @@ if (isset($_GET['exportar'])) {
             $linha['valor_final'] !== null ? number_format((float) $linha['valor_final'], 2, ',', '') : '',
             $linha['diferenca'] !== null ? number_format((float) $linha['diferenca'], 2, ',', '') : '',
             $linha['liquidacao_na'], $linha['rb'], $linha['oa'],
+            !empty($linha['eh_avulso']) ? 'sim' : '',
         ], ';', '"', '');
     }
     fclose($saida);
@@ -716,6 +751,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                     Colunas (qualquer ordem): <code>processo, cod_twin, data_twin, numerario_inicial, valor_inicial, rb, oa</code> —
                     também aceita os nomes da tela: <code>Cod. Twin., Data, Vencimento, Valor, RB, OA</code>. Só <code>processo</code> é obrigatório
                     e ele precisa existir em Processos (Status, PO, Fornecedor, Moeda e Total vêm de lá). Opcional: <code>situacao</code> (aberto ou finalizado).
+                    <strong>Avulso</strong> (não está em Processos): preencha <code>avulso</code> = sim e, se quiser, <code>po, fornecedor, moeda, total</code> — entra como aberto.
                     Datas em dd/mm/aaaa; valores como 1.234,56. Linha igual a uma já cadastrada (mesmo processo, Cod. Twin, Vencimento e Valor) é pulada.
                     <strong>Limpar tabela</strong>: apaga todos os pagamentos e substitui pelo arquivo (se nenhuma linha for importada, a limpeza é desfeita).
                     Separador vírgula ou ponto e vírgula. O "Exportar CSV" desta tela serve de modelo.
