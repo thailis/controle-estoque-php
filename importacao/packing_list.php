@@ -316,6 +316,7 @@ try {
                 <a class="btn btn-outline-light btn-sm" href="comparativos.php">Comparativos</a>
                 <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Commercial Invoice</a>
                 <a class="btn btn-light btn-sm" href="packing_list.php">📦 Packing List</a>
+                <a class="btn btn-outline-light btn-sm" href="documentos.php" title="Invoice e Packing List na mesma janela">🗂️ Invoice + Packing</a>
                 <button type="button" class="btn btn-warning btn-sm" onclick="window.print()">⬇️ Baixar PDF</button>
             </nav>
         </div>
@@ -361,7 +362,7 @@ try {
                             <tr><td class="lbl">Address:</td><td><input type="text" id="exp_address" placeholder="Endereço"></td></tr>
                             <tr><td class="lbl">CEP:</td><td><input type="text" id="exp_cep" placeholder="00.000-000"></td></tr>
                             <tr><td class="lbl">Contact Person:</td><td><input type="text" id="exp_contato" value="Maria Lima"></td></tr>
-                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" placeholder="email@fornecedor.com"></td></tr>
+                            <tr><td class="lbl">E-mail:</td><td><input type="text" id="exp_email" value="marialima.br@yapp.com"></td></tr>
                         </table>
                     </td>
                     <td class="doc-logo-cell">
@@ -539,7 +540,8 @@ try {
             document.getElementById('exp_cnpj').value = opcao.dataset.cnpj || '';
             document.getElementById('exp_address').value = opcao.dataset.endereco || '';
             document.getElementById('exp_cep').value = opcao.dataset.cep || '';
-            document.getElementById('exp_email').value = opcao.dataset.email || '';
+            // E-mail do Exporter fixo (igual à Commercial Invoice), editável na tela
+            document.getElementById('exp_email').value = 'marialima.br@yapp.com';
             // Independente da filial/CNPJ escolhido, o responsável padrão é a Maria Lima
             // (mas pode ser editado depois, se precisar).
             document.getElementById('exp_contato').value = 'Maria Lima';

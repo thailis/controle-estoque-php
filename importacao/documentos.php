@@ -1,0 +1,258 @@
+<?php
+// importacao/documentos.php
+// Commercial Invoice + Packing List na MESMA janela (lado a lado ou um embaixo
+// do outro). Cada documento continua sendo a sua própria tela
+// (commercial_invoice.php / packing_list.php), carregada num quadro (iframe);
+// esta página só junta as duas e SINCRONIZA o que é comum entre elas:
+//   - Processo escolhido (carrega os itens nos dois)
+//   - Filial (Supplier) escolhida
+//   - Exporter, Importer, Currency, Freight/Insurance, Payment Terms, Freight
+//     Forwarder, Pick Up, Incoterms, Additional Information, Remarks, Cargo
+//     summary (Volume, CBM, Dimensions) e assinatura (nome/depto/data)
+//   - Net/Gross Weight calculados no Packing List vão pro Cargo summary da Invoice
+// Nada é salvo no banco (igual às telas originais).
+require_once 'conexao.php';
+require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
+?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Commercial Invoice + Packing List</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="assets/dashboard.css" rel="stylesheet">
+    <style>
+        html, body { height: 100%; }
+        body { background: #eef1f5; display: flex; flex-direction: column; }
+        .topbar { padding-top: 10px; padding-bottom: 10px; }
+        .topbar h1 { font-size: 1.35rem; margin: 0; }
+        .barra-docs {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+            padding: 8px 16px; background: #fff; border-bottom: 1px solid #dce4ec;
+            font-size: .85rem;
+        }
+        .barra-docs .form-select, .barra-docs .form-control { width: auto; min-height: auto; }
+        .barra-docs .sep { width: 1px; height: 24px; background: #dce4ec; margin: 0 4px; }
+        .quadros { flex: 1; display: flex; gap: 8px; padding: 8px; min-height: 0; }
+        .quadros.empilhado { flex-direction: column; }
+        .quadro { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+                  background: #fff; border: 1px solid #dce4ec; border-radius: 6px; overflow: hidden; }
+        .quadro-titulo { padding: 4px 10px; font-weight: 700; font-size: .8rem; background: #12304a; color: #fff;
+                         display: flex; justify-content: space-between; align-items: center; }
+        .quadro-titulo a { color: #cfe0f1; font-weight: 400; font-size: .75rem; }
+        .quadro iframe { flex: 1; width: 100%; border: 0; min-height: 0; }
+        .quadros.empilhado .quadro { min-height: 85vh; }
+        .quadros.empilhado { overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="container-fluid d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+                <span class="eyebrow">Controle de Importação • Documentos</span>
+                <h1>Commercial Invoice + Packing List</h1>
+            </div>
+            <nav class="d-flex flex-wrap gap-2" aria-label="Ações do sistema">
+                <a class="btn btn-outline-light btn-sm" href="follow.php">Follow</a>
+                <a class="btn btn-outline-light btn-sm" href="processos.php">Processos</a>
+                <a class="btn btn-outline-light btn-sm" href="commercial_invoice.php">📄 Só Invoice</a>
+                <a class="btn btn-outline-light btn-sm" href="packing_list.php">📦 Só Packing List</a>
+            </nav>
+        </div>
+    </header>
+
+    <div class="barra-docs">
+        <label class="fw-bold">Layout:</label>
+        <select id="layout" class="form-select form-select-sm" onchange="aplicarLayout()">
+            <option value="lado">Lado a lado</option>
+            <option value="empilhado">Um embaixo do outro</option>
+        </select>
+        <label class="fw-bold ms-2">Zoom:</label>
+        <select id="zoom" class="form-select form-select-sm" onchange="aplicarZoom()">
+            <option value="0.7">70%</option>
+            <option value="0.8" selected>80%</option>
+            <option value="0.9">90%</option>
+            <option value="1">100%</option>
+        </select>
+        <span class="sep"></span>
+        <label class="form-check-label d-flex align-items-center gap-1">
+            <input type="checkbox" id="sincronizar" class="form-check-input mt-0" checked>
+            Sincronizar campos comuns
+        </label>
+        <span class="text-muted" style="font-size:.78rem;">(processo, filial, exporter, importer, frete, rodapé, remarks, cargo e assinatura)</span>
+        <span class="sep"></span>
+        <button type="button" class="btn btn-warning btn-sm" onclick="imprimir('ci')">⬇️ PDF Invoice</button>
+        <button type="button" class="btn btn-warning btn-sm" onclick="imprimir('pl')">⬇️ PDF Packing List</button>
+    </div>
+
+    <div class="quadros" id="quadros">
+        <div class="quadro">
+            <div class="quadro-titulo">📄 Commercial Invoice <a href="commercial_invoice.php" target="_blank">abrir sozinha ↗</a></div>
+            <iframe id="frame-ci" src="commercial_invoice.php" title="Commercial Invoice"></iframe>
+        </div>
+        <div class="quadro">
+            <div class="quadro-titulo">📦 Packing List <a href="packing_list.php" target="_blank">abrir sozinha ↗</a></div>
+            <iframe id="frame-pl" src="packing_list.php" title="Packing List"></iframe>
+        </div>
+    </div>
+
+    <script>
+        // Campos com o MESMO id nas duas telas, copiados de uma pra outra ao digitar.
+        const CAMPOS_COMUNS = [
+            'exp_supplier', 'exp_cnpj', 'exp_address', 'exp_cep', 'exp_contato', 'exp_email',
+            'imp_taxid', 'imp_address', 'imp_cep', 'imp_contato', 'imp_email', 'imp_phone',
+            'moeda', 'valor_frete', 'valor_seguro',
+            'rodape_payment', 'rodape_ffw', 'rodape_pickup', 'rodape_incoterms', 'rodape_adicional',
+            'remarks', 'cargo_volume', 'cargo_cbm', 'cargo_dimensoes',
+            'assinatura_nome', 'assinatura_depto', 'assinatura_data',
+        ];
+        const frames = { ci: document.getElementById('frame-ci'), pl: document.getElementById('frame-pl') };
+        let copiando = false; // evita "eco" (uma tela copiando de volta pra outra sem fim)
+
+        function docDe(chave) {
+            try { return frames[chave].contentDocument; } catch (e) { return null; }
+        }
+        function janelaDe(chave) {
+            try { return frames[chave].contentWindow; } catch (e) { return null; }
+        }
+        function outra(chave) { return chave === 'ci' ? 'pl' : 'ci'; }
+        function sincronizando() { return document.getElementById('sincronizar').checked; }
+
+        // Deixa cada tela mais enxuta dentro do quadro: esconde título e links de
+        // navegação do cabeçalho (ficam só os botões/campos, ex.: PTAX e Exportar Planilha).
+        function enxugar(chave) {
+            const doc = docDe(chave);
+            if (!doc || doc.getElementById('estilo-embutido')) return;
+            const estilo = doc.createElement('style');
+            estilo.id = 'estilo-embutido';
+            estilo.textContent = `
+                .topbar { padding: 6px 0 !important; }
+                .topbar .eyebrow, .topbar h1, .topbar p, .topbar nav a { display: none !important; }
+                .doc-sheet { margin-top: 8px !important; }
+            `;
+            doc.head.appendChild(estilo);
+        }
+
+        function aplicarZoom() {
+            const z = document.getElementById('zoom').value;
+            ['ci', 'pl'].forEach(chave => {
+                const doc = docDe(chave);
+                if (doc && doc.body) doc.body.style.zoom = z;
+            });
+        }
+
+        function aplicarLayout() {
+            document.getElementById('quadros').classList.toggle('empilhado', document.getElementById('layout').value === 'empilhado');
+        }
+
+        function imprimir(chave) {
+            const jan = janelaDe(chave);
+            if (!jan) return;
+            // No PDF sai com 100% de zoom, independente do zoom da tela
+            const doc = docDe(chave);
+            const zoomAntes = doc.body.style.zoom;
+            doc.body.style.zoom = '1';
+            jan.focus();
+            jan.print();
+            doc.body.style.zoom = zoomAntes;
+        }
+
+        // Copia o valor de um campo pra tela vizinha e dispara o "input" lá
+        // (pra ela recalcular o que depende dele, ex.: Total da Invoice).
+        function copiarCampo(origem, id) {
+            const docOrigem = docDe(origem);
+            const docDestino = docDe(outra(origem));
+            if (!docOrigem || !docDestino) return;
+            const campoOrigem = docOrigem.getElementById(id);
+            const campoDestino = docDestino.getElementById(id);
+            if (!campoOrigem || !campoDestino || campoDestino.value === campoOrigem.value) return;
+            copiando = true;
+            campoDestino.value = campoOrigem.value;
+            campoDestino.dispatchEvent(new Event('input', { bubbles: true }));
+            copiando = false;
+        }
+
+        // Net/Gross Weight são calculados no Packing List → vão pro Cargo summary da Invoice
+        function copiarPesosPL() {
+            const docPl = docDe('pl'), docCi = docDe('ci');
+            if (!docPl || !docCi) return;
+            ['cargo_net_weight', 'cargo_gross_weight'].forEach(id => {
+                const de = docPl.getElementById(id), para = docCi.getElementById(id);
+                if (de && para && de.value !== '' && de.value !== '0,00') para.value = de.value;
+            });
+        }
+
+        function ligarSincronia(chave) {
+            const doc = docDe(chave);
+            const jan = janelaDe(chave);
+            if (!doc || !jan || doc.body.dataset.sincroniaLigada) return;
+            doc.body.dataset.sincroniaLigada = '1';
+
+            doc.addEventListener('input', function (ev) {
+                if (copiando || !sincronizando()) return;
+                const id = ev.target && ev.target.id;
+                if (id && CAMPOS_COMUNS.includes(id)) copiarCampo(chave, id);
+                if (chave === 'pl') copiarPesosPL();
+            });
+
+            // Processo e Filial: escolher numa tela escolhe na outra também
+            const selProcesso = doc.getElementById('select_processo');
+            if (selProcesso) {
+                selProcesso.addEventListener('change', function () {
+                    if (copiando || !sincronizando()) return;
+                    const docOutra = docDe(outra(chave));
+                    const janOutra = janelaDe(outra(chave));
+                    const selOutra = docOutra && docOutra.getElementById('select_processo');
+                    if (!selOutra || selOutra.value === selProcesso.value) return;
+                    copiando = true;
+                    selOutra.value = selProcesso.value;
+                    if (janOutra && typeof janOutra.carregarProcesso === 'function') janOutra.carregarProcesso();
+                    copiando = false;
+                });
+            }
+            const selFilial = doc.getElementById('select_filial');
+            if (selFilial) {
+                selFilial.addEventListener('change', function () {
+                    if (copiando || !sincronizando()) return;
+                    const docOutra = docDe(outra(chave));
+                    const janOutra = janelaDe(outra(chave));
+                    const selOutra = docOutra && docOutra.getElementById('select_filial');
+                    if (!selOutra) return;
+                    // As duas telas listam as mesmas filiais, mas com "value" diferente
+                    // (índice x nome) — casa pelo texto visível da opção.
+                    const texto = selFilial.options[selFilial.selectedIndex].text.trim();
+                    const opcao = Array.from(selOutra.options).find(o => o.text.trim() === texto);
+                    if (!opcao) return;
+                    copiando = true;
+                    selOutra.value = opcao.value;
+                    if (janOutra && typeof janOutra.aplicarFilial === 'function') janOutra.aplicarFilial();
+                    copiando = false;
+                });
+            }
+        }
+
+        // Valores CALCULADOS (sem digitação, então sem evento): a cada 1s copia
+        // Net Price/Total da Invoice pro Packing List e os pesos do Packing List
+        // pro Cargo summary da Invoice.
+        setInterval(function () {
+            if (!sincronizando()) return;
+            const docCi = docDe('ci'), docPl = docDe('pl');
+            if (!docCi || !docPl) return;
+            ['valor_net', 'valor_total'].forEach(id => {
+                const de = docCi.getElementById(id), para = docPl.getElementById(id);
+                if (de && para && para.value !== de.value && docPl.activeElement !== para) para.value = de.value;
+            });
+            copiarPesosPL();
+        }, 1000);
+
+        ['ci', 'pl'].forEach(chave => {
+            frames[chave].addEventListener('load', function () {
+                enxugar(chave);
+                aplicarZoom();
+                ligarSincronia(chave);
+            });
+        });
+    </script>
+</body>
+</html>
