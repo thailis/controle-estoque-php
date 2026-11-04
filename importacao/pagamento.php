@@ -313,17 +313,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
 // ---------- Cadastro manual ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastro_manual') {
     $processo = trim($_POST['processo_manual'] ?? '');
+    $avulso = !empty($_POST['avulso_manual']);
     if ($processo === '') {
-        $mensagens[] = '❌ Escolha um processo já cadastrado em Processos.';
+        $mensagens[] = $avulso ? '❌ Informe uma referência para o pagamento avulso.' : '❌ Digite um processo já cadastrado em Processos.';
     } else {
-        $stmtProc = mysqli_prepare($conn, "SELECT status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE processo = ?");
+        // Processo digitado (sem diferenciar maiúscula/minúscula) → usa o código como está em Processos
+        $stmtProc = mysqli_prepare($conn, "SELECT processo, status, po, fornecedor, moeda, total FROM (" . SQL_PROCESSO_AGRUPADO . ") pa WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?)) LIMIT 1");
         mysqli_stmt_bind_param($stmtProc, 's', $processo);
         mysqli_stmt_execute($stmtProc);
         $dadosProcesso = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProc));
         mysqli_stmt_close($stmtProc);
 
+        if ($dadosProcesso) {
+            $processo = (string) $dadosProcesso['processo'];
+        } elseif ($avulso) {
+            // Avulso: item que não está em Processos — PO, fornecedor, moeda e total digitados aqui
+            $totalAvulso = parseNumeroBrPagamento(trim($_POST['total_avulso'] ?? ''));
+            $dadosProcesso = [
+                'status' => 'aberto',
+                'po' => trim($_POST['po_avulso'] ?? '') ?: null,
+                'fornecedor' => trim($_POST['fornecedor_avulso'] ?? '') ?: null,
+                'moeda' => strtoupper(trim($_POST['moeda_avulso'] ?? '')) ?: null,
+                'total' => $totalAvulso,
+            ];
+        }
+
         if (!$dadosProcesso) {
-            $mensagens[] = "❌ O processo \"$processo\" não existe em Processos. Cadastre ele lá primeiro.";
+            $mensagens[] = "❌ O processo \"$processo\" não existe em Processos. Cadastre ele lá primeiro ou marque \"Avulso\".";
         } else {
         $stmt = mysqli_prepare($conn, "
             INSERT INTO pagamento (processo, status, po, fornecedor, cod_twin, data_twin, moeda, total, advanced1, advanced2, balance, liquidacao_or, despachante, numerario_inicial, valor_inicial, numerario_final, valor_final, diferenca, liquidacao_na, rb, oa)
@@ -614,39 +630,36 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                 <form method="POST" class="row g-3 mt-3">
                     <input type="hidden" name="acao" value="cadastro_manual">
                     <div class="col-md-3">
-                        <label class="form-label">Processo *</label>
-                        <select name="processo_manual" id="processo_manual" class="form-select" required onchange="atualizarPreviewProcessoPagamento();">
-                            <option value="">Escolha um processo já cadastrado...</option>
-                            <?php foreach ($processosDisponiveis as $p): ?>
-                                <option value="<?php echo h($p['processo']); ?>"
-                                    data-status="<?php echo h($p['status'] ?? ''); ?>"
-                                    data-po="<?php echo h($p['po'] ?? ''); ?>"
-                                    data-fornecedor="<?php echo h($p['fornecedor'] ?? ''); ?>"
-                                    data-moeda="<?php echo h($p['moeda'] ?? ''); ?>"
-                                    data-total="<?php echo h($p['total'] !== null ? number_format((float) $p['total'], 2, ',', '.') : ''); ?>">
-                                    <?php echo h($p['processo']); ?><?php echo $p['fornecedor'] ? ' — ' . h($p['fornecedor']) : ''; ?> (<?php echo (int) $p['componentes']; ?> comp.<?php echo $p['total'] !== null ? ' • ' . h($p['moeda'] ?? '') . ' ' . numeroBr($p['total']) : ''; ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <?php if (empty($processosDisponiveis)): ?>
-                            <small class="text-danger">Nenhum processo cadastrado ainda — <a href="processos.php">cadastre um processo primeiro</a>.</small>
-                        <?php endif; ?>
+                        <label class="form-label">Processo * <small class="text-muted" id="processo_manual_aviso"></small></label>
+                        <input type="text" name="processo_manual" id="processo_manual" class="form-control" required autocomplete="off"
+                               list="lista-processos-pag" placeholder="Digite o processo" oninput="atualizarPreviewProcessoPagamento()">
+                        <datalist id="lista-processos-pag">
+                            <?php foreach ($processosDisponiveis as $p): ?><option value="<?php echo h($p['processo']); ?>"><?php endforeach; ?>
+                        </datalist>
+                        <div class="form-check mt-1">
+                            <input class="form-check-input" type="checkbox" name="avulso_manual" value="1" id="avulso_manual" onchange="atualizarPreviewProcessoPagamento()">
+                            <label class="form-check-label small" for="avulso_manual">Avulso — não está em Processos (digite a referência, PO, fornecedor, moeda e total)</label>
+                        </div>
                     </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Status <small class="text-muted">(do processo)</small></label>
+                    <div class="col-md-1">
+                        <label class="form-label">Status</label>
                         <input type="text" id="preview_status" class="form-control" disabled placeholder="—">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">PO <small class="text-muted">(do processo)</small></label>
-                        <input type="text" id="preview_po" class="form-control" disabled placeholder="—">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Fornecedor <small class="text-muted">(do processo)</small></label>
-                        <input type="text" id="preview_fornecedor" class="form-control" disabled placeholder="—">
+                        <label class="form-label">PO</label>
+                        <input type="text" id="preview_po" name="po_avulso" class="form-control campo-avulso" disabled placeholder="—">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Moeda <small class="text-muted">(do processo)</small></label>
-                        <input type="text" id="preview_moeda" class="form-control" disabled placeholder="—">
+                        <label class="form-label">Fornecedor</label>
+                        <input type="text" id="preview_fornecedor" name="fornecedor_avulso" class="form-control campo-avulso" disabled placeholder="—">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Moeda</label>
+                        <input type="text" id="preview_moeda" name="moeda_avulso" class="form-control campo-avulso" disabled placeholder="—">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Total</label>
+                        <input type="text" id="preview_total" name="total_avulso" class="form-control campo-avulso" disabled placeholder="—">
                     </div>
                     <div class="col-12"><hr class="my-1"></div>
                     <div class="col-md-2">
@@ -782,7 +795,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                                             </form>
                                         <?php endif; ?>
                                     </td>
-                                    <td><span class="component-code"><?php echo h($r['processo']); ?></span></td>
+                                    <td><span class="component-code"><?php echo h($r['processo']); ?></span><?php if ($r['componentes_vivo'] === null): ?> <span class="badge bg-light text-secondary border" title="Pagamento avulso — não está em Processos">avulso</span><?php endif; ?></td>
                                     <td><?php echo h($r['po'] ?: '—'); ?></td>
                                     <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
                                     <td class="text-end text-nowrap" title="<?php echo (int) ($r['componentes_vivo'] ?? 0); ?> componente(s) no processo"><?php echo h($r['moeda'] ?: ''); ?> <?php echo numeroBr($r['total']); ?></td>
@@ -833,13 +846,35 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
         <footer class="dashboard-footer">Controle de Importação — site independente do MRP, integração via processo controlado.</footer>
     </main>
     <script>
+        // Processos cadastrados (chave em maiúsculas → busca sem diferenciar maiúscula/minúscula)
+        const PROCESSOS_PAG = <?php
+            $mapaPag = [];
+            foreach ($processosDisponiveis as $p) {
+                $mapaPag[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = [
+                    'processo' => (string) $p['processo'], 'status' => (string) ($p['status'] ?? ''), 'po' => (string) ($p['po'] ?? ''),
+                    'fornecedor' => (string) ($p['fornecedor'] ?? ''), 'moeda' => (string) ($p['moeda'] ?? ''),
+                    'total' => $p['total'] !== null ? number_format((float) $p['total'], 2, ',', '.') : '',
+                ];
+            }
+            echo json_encode($mapaPag ?: new stdClass(), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+        ?>;
         function atualizarPreviewProcessoPagamento() {
-            const select = document.getElementById('processo_manual');
-            const opcao = select.options[select.selectedIndex];
-            document.getElementById('preview_status').value = opcao.dataset.status || '—';
-            document.getElementById('preview_po').value = opcao.dataset.po || '—';
-            document.getElementById('preview_fornecedor').value = opcao.dataset.fornecedor || '—';
-            document.getElementById('preview_moeda').value = opcao.dataset.moeda || '—';
+            const digitado = document.getElementById('processo_manual').value.trim();
+            const achado = PROCESSOS_PAG[digitado.toUpperCase()];
+            const caixaAvulso = document.getElementById('avulso_manual');
+            const avulso = caixaAvulso.checked && !achado;
+            const aviso = document.getElementById('processo_manual_aviso');
+            aviso.textContent = digitado === '' ? '' : (achado ? '✓ processo encontrado' : (caixaAvulso.checked ? '(avulso)' : 'não encontrado — marque Avulso'));
+            // Processo encontrado: dados vêm dele (travados). Avulso: campos liberados pra digitar.
+            document.querySelectorAll('.campo-avulso').forEach(c => { c.disabled = !avulso; });
+            const campos = { preview_po: 'po', preview_fornecedor: 'fornecedor', preview_moeda: 'moeda', preview_total: 'total' };
+            Object.entries(campos).forEach(([id, chave]) => {
+                const campo = document.getElementById(id);
+                if (achado) { campo.value = achado[chave] || '—'; }
+                else if (!avulso) { campo.value = ''; }
+                else if (campo.value === '—') { campo.value = ''; }
+            });
+            document.getElementById('preview_status').value = achado ? (achado.status || '—') : (avulso ? 'aberto' : '');
         }
     </script>
     <script>
