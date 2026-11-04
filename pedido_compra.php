@@ -118,7 +118,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
                     WHERE TRIM(b.codigo_componente) = TRIM(p.codigo_componente)
                 ) AS descricao
             FROM programacao p
-            WHERE TRIM(p.po) = ?
+            WHERE UPPER(TRIM(p.po)) = UPPER(TRIM(?))
               AND COALESCE(p.atendido, 0) = 0
             ORDER BY p.id
         ");
@@ -210,12 +210,13 @@ if ($resProcessosProgramacao) {
         }
         .po-header input {
             background: transparent;
-            border: none;
+            border: 1px solid #4a6178;
+            border-radius: 3px;
             color: #ff9b7a;
             font-weight: 750;
             text-align: center;
-            width: 160px;
-            font-size: 1.05rem;
+            width: 220px;
+            font-size: .95rem;
         }
         .po-header input::placeholder { color: #ffd0bd; }
         .po-header select {
@@ -414,7 +415,7 @@ if ($resProcessosProgramacao) {
             table.po-tabela input { padding: 2px 0; }
             input { color: #000 !important; }
             .rodape-textarea { color: #000 !important; }
-            .po-header input, .po-header select { color: var(--destaque) !important; }
+            .po-header input, .po-header select { color: var(--destaque) !important; border: none !important; }
             .po-invoice-texto textarea { color: var(--destaque) !important; }
             table.po-info input.sup-ref { color: #1f5fbf !important; }
             table.po-info input.sup-ref::-webkit-calendar-picker-indicator { display: none !important; }
@@ -449,12 +450,11 @@ if ($resProcessosProgramacao) {
     <div class="po-sheet" id="po-sheet">
         <div class="po-header">
             Purchase Order:
-            <select id="select_processo" onchange="carregarProcessoProgramacao()">
-                <option value="">Selecione uma PO...</option>
-                <?php foreach ($processosProgramacao as $p): ?>
-                    <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
-                <?php endforeach; ?>
-            </select>
+            <input type="text" id="select_processo" list="lista-pos" autocomplete="off" placeholder="Digite a PO..." onchange="carregarProcessoProgramacao()">
+            <datalist id="lista-pos">
+                <?php foreach ($processosProgramacao as $p): ?><option value="<?php echo htmlspecialchars($p); ?>"><?php endforeach; ?>
+            </datalist>
+            <small id="po_aviso" class="no-print" style="display:block; font-size:.72rem; font-weight:400; color:#cfe0f1;"></small>
         </div>
 
         <div class="po-secao-titulo">Customer</div>
@@ -658,6 +658,11 @@ if ($resProcessosProgramacao) {
         });
 
         let contadorLinhas = 0;
+        const POS_PROGRAMACAO = <?php
+            $mapaPos = [];
+            foreach ($processosProgramacao as $p) { $mapaPos[mb_strtoupper(trim((string) $p), 'UTF-8')] = trim((string) $p); }
+            echo json_encode($mapaPos ?: new stdClass(), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+        ?>;
 
         const filiaisMap = <?php echo json_encode(array_column($filiais, null, 'id'), JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
 
@@ -982,8 +987,20 @@ if ($resProcessosProgramacao) {
         // Programação (editáveis por duplo clique), e o Net Price já vem
         // preenchido também, mas continua sempre editável direto.
         function carregarProcessoProgramacao() {
-            const processo = document.getElementById('select_processo').value;
-            if (!processo) return;
+            // PO digitada (sem diferenciar maiúscula/minúscula) → código como está na Programação.
+            // PO que não está na lista fica como digitada (itens preenchidos à mão).
+            const campoPo = document.getElementById('select_processo');
+            const aviso = document.getElementById('po_aviso');
+            const digitado = campoPo.value.trim();
+            aviso.textContent = '';
+            if (!digitado) return;
+            const processo = POS_PROGRAMACAO[digitado.toUpperCase()];
+            if (!processo) {
+                document.title = 'PO_' + digitado.replace(/\s+/g, '_');
+                aviso.textContent = 'PO não está em aberto na Programação — preencha os itens à mão';
+                return;
+            }
+            campoPo.value = processo;
 
             // O nome sugerido pelo navegador ao "Baixar PDF" (window.print → Salvar
             // como PDF) vem do <title> da página — atualiza aqui pro PDF já sair com
