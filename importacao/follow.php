@@ -457,7 +457,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="follow-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Agente', 'Rastreio (TRK)', 'FT (dias)', 'Transit (dias)', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
+    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Agente', 'Rastreio (TRK)', 'FT (dias)', 'TT', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
     $dataCsv = fn($d) => ($d === null || $d === '') ? '' : dataBr($d);
     while ($r = mysqli_fetch_assoc($resExp)) {
         // Mesmas regras de Status e Condição da tabela
@@ -571,6 +571,9 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 220px; } /* OBS */
         .table-follow th:nth-child(17), .table-follow td:nth-child(17) { width: 80px; }
         .table-follow td.col-obs { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* tudo centralizado: conteúdo alinhado com o cabeçalho */
+        .table-follow th, .table-follow td { text-align: center !important; vertical-align: middle; }
+        .table-follow td.celula-editavel input { text-align: center; }
         .table-follow td.celula-editavel {
             overflow-wrap: break-word;
         }
@@ -658,7 +661,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <input type="text" name="ft_dias_manual" class="form-control">
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label">Transit (dias)</label>
+                        <label class="form-label" title="Transit time (dias)">TT</label>
                         <input type="text" name="transit_dias_manual" id="transit_dias_manual" class="form-control" oninput="calcularDatasFollow()">
                     </div>
                     <div class="col-md-3">
@@ -686,7 +689,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                         <input type="text" name="etd_manual" id="etd_manual" class="form-control" placeholder="dd/mm/aaaa" oninput="calcularDatasFollow()">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">ETA <small class="text-muted">(ETD + transit)</small></label>
+                        <label class="form-label">ETA <small class="text-muted">(ETD + TT)</small></label>
                         <input type="text" id="eta_manual_display" class="form-control" readonly placeholder="—">
                         <input type="hidden" name="eta_manual" id="eta_manual">
                     </div>
@@ -783,7 +786,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th title="Agente de carga (FFW) — duplo clique para editar">Agente</th>
                             <th>Rastreio (TRK)</th>
                             <th>FT (dias)</th>
-                            <th>Transit (dias)</th>
+                            <th title="Transit time (dias)">TT</th>
                             <th>ETD</th>
                             <th>ETA</th>
                             <th>Prevista</th>
@@ -852,8 +855,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="etd" data-valor-bruto="<?php echo $r['etd'] ? h(dataBr($r['etd'])) : ''; ?>"><?php echo dataBr($r['etd']); ?></td>
-                                    <td class="col-eta text-muted" title="Calculado automaticamente: ETD + Transit (dias) — edite o ETD ou o Transit pra mudar isso"><?php echo dataBr($r['eta']); ?></td>
-                                    <td class="col-prevista text-muted" title="Calculado automaticamente: ETA + 7 dias — edite o ETD ou o Transit pra mudar isso"><?php echo dataBr($r['prevista']); ?></td>
+                                    <td class="col-eta text-muted" title="Calculado automaticamente: ETD + TT (dias) — edite o ETD ou o TT pra mudar isso"><?php echo dataBr($r['eta']); ?></td>
+                                    <td class="col-prevista text-muted" title="Calculado automaticamente: ETA + 7 dias — edite o ETD ou o TT pra mudar isso"><?php echo dataBr($r['prevista']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="efetiva" data-valor-bruto="<?php echo $r['efetiva'] ? h(dataBr($r['efetiva'])) : ''; ?>"><?php echo dataBr($r['efetiva']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="requerente" data-valor-bruto="<?php echo h($r['requerente'] ?? ''); ?>"><?php echo h($r['requerente'] ?: '—'); ?></td>
                                     <td><span class="status-badge <?php echo $condicaoClasse; ?>"><?php echo h($condicaoTexto); ?></span></td>
