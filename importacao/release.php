@@ -10,14 +10,14 @@
 // diferentes saem como Spot 1, Spot 2, Spot 3...
 //   SAP / Description / FORECAST (qtd) / Planta / Modal → Processos
 //   ETD / ETA / ETA YAPP (Prevista)                    → Follow
-//   PICK UP                                            → ETD − 20 dias
+//   PICK UP                                            → ETD − 15 dias
 //   unit pack, U PRICE, L/W/H, weight, G WEIGHT        → Parâmetros da Importação
 //   PACK, CBM, PRICE, volume, N WEIGHT                 → fórmulas da planilha
 // Nada é salvo no banco por aqui — tudo pode ser ajustado na tela antes de exportar.
 require_once 'conexao.php';
 require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
-const PICKUP_DIAS_ANTES_ETD = 20;
+const PICKUP_DIAS_ANTES_ETD = 15;
 // Na BOM completa só entram os componentes deste fornecedor (os que vêm da China)
 const FORNECEDOR_BOM_RELEASE = 'YAPP CN';
 
