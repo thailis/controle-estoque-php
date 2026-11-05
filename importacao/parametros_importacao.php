@@ -38,6 +38,30 @@ function parseNumeroParam(string $valor): ?float
     return is_numeric($valor) ? (float) $valor : null;
 }
 
+// Conexão (só leitura) com o banco do MRP, pra puxar a descrição da BOM.
+// Mesmas credenciais MRP_DB_* da Release / Confirmar entrega.
+function conectarMrpParametros(): ?mysqli
+{
+    try {
+        $host = getenv('MRP_DB_HOST') ?: '';
+        $user = getenv('MRP_DB_USER') ?: '';
+        $pass = getenv('MRP_DB_PASSWORD') ?: '';
+        if ($host === '' || $user === '' || $pass === '') {
+            return null;
+        }
+        $c = mysqli_init();
+        mysqli_options($c, MYSQLI_OPT_CONNECT_TIMEOUT, 5);
+        mysqli_ssl_set($c, null, null, getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt', null, null);
+        if (!@mysqli_real_connect($c, $host, $user, $pass, getenv('MRP_DB_NAME') ?: 'controle_mrp', (int) (getenv('MRP_DB_PORT') ?: 4000), null, MYSQLI_CLIENT_SSL)) {
+            return null;
+        }
+        mysqli_set_charset($c, 'utf8mb4');
+        return $c;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
 // Campos numéricos editáveis => rótulo
 const CAMPOS_PARAM_IMPORTACAO = [
     'unit_pack'     => 'Unit pack',
@@ -327,6 +351,36 @@ if ($tabelaExiste) {
     $resDesc = mysqli_query($conn, "SELECT TRIM(codigo_componente) AS c, MAX(NULLIF(TRIM(descricao), '')) AS d FROM processos GROUP BY TRIM(codigo_componente)");
     while ($rd = mysqli_fetch_assoc($resDesc)) {
         $descricoes[(string) $rd['c']] = (string) $rd['d'];
+    }
+
+    // Componente sem descrição em Processos (ex.: ainda não teve processo) → busca na BOM do MRP
+    $semDescricao = [];
+    foreach ($registros as $r) {
+        $cod = trim((string) $r['codigo_componente']);
+        if ($cod !== '' && trim((string) ($descricoes[$cod] ?? '')) === '') {
+            $semDescricao[$cod] = true;
+        }
+    }
+    if ($semDescricao) {
+        $connMrp = conectarMrpParametros();
+        if ($connMrp) {
+            try {
+                $codigosBom = array_keys($semDescricao);
+                $stmtBom = mysqli_prepare($connMrp, "SELECT TRIM(codigo_componente) AS c, MAX(NULLIF(TRIM(descricao), '')) AS d FROM bomnova WHERE TRIM(codigo_componente) IN (" . implode(',', array_fill(0, count($codigosBom), '?')) . ") GROUP BY TRIM(codigo_componente)");
+                mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($codigosBom)), ...$codigosBom);
+                mysqli_stmt_execute($stmtBom);
+                $resBom = mysqli_stmt_get_result($stmtBom);
+                while ($rb = mysqli_fetch_assoc($resBom)) {
+                    if (trim((string) $rb['d']) !== '') {
+                        $descricoes[(string) $rb['c']] = (string) $rb['d'];
+                    }
+                }
+                mysqli_stmt_close($stmtBom);
+            } catch (Throwable $e) {
+                // sem BOM: fica o "—"
+            }
+            mysqli_close($connMrp);
+        }
     }
 }
 ?>
