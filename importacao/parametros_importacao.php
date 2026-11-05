@@ -353,31 +353,38 @@ if ($tabelaExiste) {
         $descricoes[(string) $rd['c']] = (string) $rd['d'];
     }
 
-    // Componente sem descrição em Processos (ex.: ainda não teve processo) → busca na BOM do MRP
-    $semDescricao = [];
-    foreach ($registros as $r) {
-        $cod = trim((string) $r['codigo_componente']);
-        if ($cod !== '' && trim((string) ($descricoes[$cod] ?? '')) === '') {
-            $semDescricao[$cod] = true;
-        }
-    }
-    if ($semDescricao) {
+    // BOM do MRP (só leitura): Fornecedor e Projeto de cada componente e a descrição
+    // dos que não têm descrição em Processos (ex.: ainda não tiveram processo).
+    // Componente em mais de um projeto/fornecedor mostra todos, separados por vírgula.
+    $bomInfo = [];
+    $bomConectada = false;
+    $codigosBom = array_values(array_unique(array_filter(array_map(fn($r) => trim((string) $r['codigo_componente']), $registros), fn($c) => $c !== '')));
+    if ($codigosBom) {
         $connMrp = conectarMrpParametros();
         if ($connMrp) {
             try {
-                $codigosBom = array_keys($semDescricao);
-                $stmtBom = mysqli_prepare($connMrp, "SELECT TRIM(codigo_componente) AS c, MAX(NULLIF(TRIM(descricao), '')) AS d FROM bomnova WHERE TRIM(codigo_componente) IN (" . implode(',', array_fill(0, count($codigosBom), '?')) . ") GROUP BY TRIM(codigo_componente)");
+                $stmtBom = mysqli_prepare($connMrp, "
+                    SELECT TRIM(codigo_componente) AS c,
+                           MAX(NULLIF(TRIM(descricao), '')) AS d,
+                           GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores,
+                           GROUP_CONCAT(DISTINCT NULLIF(TRIM(projeto), '') ORDER BY TRIM(projeto) SEPARATOR ', ') AS projetos
+                    FROM bomnova
+                    WHERE TRIM(codigo_componente) IN (" . implode(',', array_fill(0, count($codigosBom), '?')) . ")
+                    GROUP BY TRIM(codigo_componente)");
                 mysqli_stmt_bind_param($stmtBom, str_repeat('s', count($codigosBom)), ...$codigosBom);
                 mysqli_stmt_execute($stmtBom);
                 $resBom = mysqli_stmt_get_result($stmtBom);
                 while ($rb = mysqli_fetch_assoc($resBom)) {
-                    if (trim((string) $rb['d']) !== '') {
-                        $descricoes[(string) $rb['c']] = (string) $rb['d'];
+                    $cod = (string) $rb['c'];
+                    $bomInfo[$cod] = ['fornecedores' => (string) ($rb['fornecedores'] ?? ''), 'projetos' => (string) ($rb['projetos'] ?? '')];
+                    if (trim((string) ($descricoes[$cod] ?? '')) === '' && trim((string) $rb['d']) !== '') {
+                        $descricoes[$cod] = (string) $rb['d'];
                     }
                 }
                 mysqli_stmt_close($stmtBom);
+                $bomConectada = true;
             } catch (Throwable $e) {
-                // sem BOM: fica o "—"
+                // sem BOM: Fornecedor/Projeto ficam com "—"
             }
             mysqli_close($connMrp);
         }
@@ -396,10 +403,11 @@ if ($tabelaExiste) {
         #tabela-param td, #tabela-param th { padding: 10px 12px; font-size: .85rem; }
         #tabela-param td.num, #tabela-param th.num { text-align: right; }
         /* colunas com largura fixa: SAP e Description à esquerda, números todos do mesmo tamanho */
-        #tabela-param { table-layout: fixed; width: 100%; min-width: 1100px; }
+        #tabela-param { table-layout: fixed; width: 100%; min-width: 1350px; }
+        #tabela-param td.txt-bom { white-space: normal; }
         #tabela-param th { text-align: left; }
         #tabela-param td, #tabela-param th { overflow: hidden; text-overflow: ellipsis; }
-        #tabela-param th.num { white-space: nowrap; }
+        #tabela-param th { white-space: normal; text-overflow: clip; }
         .celula-editavel { cursor: cell; }
         .celula-editavel:hover { background: #eef4fb; box-shadow: inset 0 0 0 1px #b9d3ef; }
         .celula-editavel input { width: 100%; text-align: right; }
@@ -530,33 +538,41 @@ if ($tabelaExiste) {
                 <div>
                     <span class="eyebrow text-primary">Resultado</span>
                     <h2>Componentes</h2>
-                    <p><?php echo count($registros); ?> componente(s) — dê <strong>duplo clique</strong> num valor pra editar</p>
+                    <p><?php echo count($registros); ?> componente(s) — dê <strong>duplo clique</strong> num valor pra editar · Fornecedor e Projeto vêm da BOM do MRP</p>
+                    <?php if ($registros && !$bomConectada): ?><p class="text-warning mb-0">Não consegui acessar a BOM do MRP agora — Fornecedor e Projeto ficaram em branco.</p><?php endif; ?>
                 </div>
             </div>
             <div class="table-responsive">
                 <table class="table mrp-table mb-0" id="tabela-param">
                     <colgroup>
+                        <col style="width:8%">
+                        <col style="width:18%">
                         <col style="width:9%">
-                        <col style="width:24%">
-                        <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><col style="width:9%"><?php endforeach; ?>
-                        <col style="width:4%">
+                        <col style="width:9%">
+                        <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><col style="width:7.5%"><?php endforeach; ?>
+                        <col style="width:3.5%">
                     </colgroup>
                     <thead>
                         <tr>
                             <th>SAP</th>
                             <th>Description</th>
+                            <th title="Da BOM do MRP">Fornecedor</th>
+                            <th title="Da BOM do MRP">Projeto</th>
                             <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><th class="num"><?php echo h($rotulo); ?></th><?php endforeach; ?>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (!$registros): ?>
-                            <tr><td colspan="<?php echo count(CAMPOS_PARAM_IMPORTACAO) + 3; ?>" class="empty-state">Nenhum componente cadastrado.</td></tr>
+                            <tr><td colspan="<?php echo count(CAMPOS_PARAM_IMPORTACAO) + 5; ?>" class="empty-state">Nenhum componente cadastrado.</td></tr>
                         <?php endif; ?>
                         <?php foreach ($registros as $r): ?>
                             <tr>
                                 <td><span class="component-code"><?php echo h($r['codigo_componente']); ?></span></td>
                                 <td><?php echo h($descricoes[trim($r['codigo_componente'])] ?? '—'); ?></td>
+                                <?php $infoBom = $bomInfo[trim($r['codigo_componente'])] ?? ['fornecedores' => '', 'projetos' => '']; ?>
+                                <td class="txt-bom" title="<?php echo h($infoBom['fornecedores']); ?>"><?php echo h($infoBom['fornecedores'] !== '' ? $infoBom['fornecedores'] : '—'); ?></td>
+                                <td class="txt-bom" title="<?php echo h($infoBom['projetos']); ?>"><?php echo h($infoBom['projetos'] !== '' ? $infoBom['projetos'] : '—'); ?></td>
                                 <?php foreach (array_keys(CAMPOS_PARAM_IMPORTACAO) as $campo): ?>
                                     <td class="num celula-editavel" data-codigo="<?php echo h($r['codigo_componente']); ?>" data-campo="<?php echo $campo; ?>" data-valor-bruto="<?php echo $r[$campo] === null ? '' : h(numeroBrParam($r[$campo], 6)); ?>"><?php echo numeroBrParam($r[$campo], 6); ?></td>
                                 <?php endforeach; ?>
