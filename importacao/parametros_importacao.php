@@ -328,17 +328,12 @@ if ($tabelaExiste && ($_GET['exportar'] ?? '') === 'csv') {
 $busca = trim((string) ($_GET['busca'] ?? ''));
 $registros = [];
 if ($tabelaExiste) {
-    $where = '';
-    $params = [];
-    $termos = array_values(array_filter(array_map('trim', explode(';', $busca)), fn($t) => $t !== ''));
-    if ($termos) {
-        $where = 'WHERE ' . implode(' OR ', array_fill(0, count($termos), 'LOWER(codigo_componente) LIKE ?'));
-        $params = array_map(fn($t) => '%' . mb_strtolower($t, 'UTF-8') . '%', $termos);
-    }
-    $stmt = mysqli_prepare($conn, "SELECT * FROM parametros_importacao $where ORDER BY codigo_componente");
-    if ($params) {
-        mysqli_stmt_bind_param($stmt, str_repeat('s', count($params)), ...$params);
-    }
+    // Busca livre (sem diferenciar maiúscula/minúscula): procura o texto no SAP,
+    // na descrição, no fornecedor e no projeto. Vários termos separados por ";"
+    // = mostra o que bater com qualquer um. O filtro é aplicado mais abaixo,
+    // depois de juntar descrição/fornecedor/projeto (que vêm de outros lugares).
+    $termos = array_values(array_filter(array_map(fn($t) => mb_strtolower(trim($t), 'UTF-8'), explode(';', $busca)), fn($t) => $t !== ''));
+    $stmt = mysqli_prepare($conn, "SELECT * FROM parametros_importacao ORDER BY codigo_componente");
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
     while ($r = mysqli_fetch_assoc($res)) {
@@ -388,6 +383,24 @@ if ($tabelaExiste) {
             }
             mysqli_close($connMrp);
         }
+    }
+
+    if ($termos) {
+        $registros = array_values(array_filter($registros, function ($r) use ($termos, $descricoes, $bomInfo) {
+            $cod = trim((string) $r['codigo_componente']);
+            $texto = mb_strtolower(implode(' | ', [
+                $cod,
+                $descricoes[$cod] ?? '',
+                $bomInfo[$cod]['fornecedores'] ?? '',
+                $bomInfo[$cod]['projetos'] ?? '',
+            ]), 'UTF-8');
+            foreach ($termos as $t) {
+                if (str_contains($texto, $t)) {
+                    return true;
+                }
+            }
+            return false;
+        }));
     }
 }
 ?>
@@ -524,7 +537,7 @@ if ($tabelaExiste) {
         <section class="filter-panel mb-4">
             <form method="GET" class="row g-2 align-items-end">
                 <div class="col-md-4">
-                    <label class="form-label small mb-1">Buscar componente (vários separados por ;)</label>
+                    <label class="form-label small mb-1">Buscar (SAP, descrição, fornecedor ou projeto — vários separados por ;)</label>
                     <input type="text" name="busca" value="<?php echo h($busca); ?>" class="form-control form-control-sm">
                 </div>
                 <div class="col-auto"><button class="btn btn-primary btn-sm">Filtrar</button></div>
