@@ -19,7 +19,12 @@ exigirLogin();
 // existir no banco — veja sql_filiais.sql. Cada opção do dropdown carrega o
 // endereço/CEP já formatados, aplicados nos campos "Delivery at" via JS.
 $filiais = [];
-$resFiliais = mysqli_query($conn, "SELECT id, nome, razao_social, cnpj, endereco, cep, responsavel, email FROM filiais ORDER BY nome");
+// "telefone" = Phone do Buyer. Se a coluna ainda não existir, busca sem ela.
+try {
+    $resFiliais = mysqli_query($conn, "SELECT id, nome, razao_social, cnpj, endereco, cep, responsavel, email, telefone FROM filiais ORDER BY nome");
+} catch (Throwable $erroFiliais) {
+    $resFiliais = mysqli_query($conn, "SELECT id, nome, razao_social, cnpj, endereco, cep, responsavel, email FROM filiais ORDER BY nome");
+}
 if ($resFiliais) {
     while ($linhaFilial = mysqli_fetch_assoc($resFiliais)) {
         $filiais[] = $linhaFilial;
@@ -677,6 +682,7 @@ if ($resProcessosProgramacao) {
             document.getElementById('cli_buyer').value = filial.responsavel;
             document.getElementById('assinatura_nome').value = filial.responsavel;
             document.getElementById('cli_email').value = filial.email;
+            document.getElementById('cli_phone').value = filial.telefone || '';
             document.getElementById('rodape_delivery1').value = filial.nome + ' - ' + filial.endereco;
             document.getElementById('rodape_delivery2').value = filial.cep;
         }
