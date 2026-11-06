@@ -522,11 +522,12 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 }
 
 $sql = "SELECT p.codigo_componente, p.moq, p.frozen_zone_dias, p.transit_time_dias, p.estoque_min_dias, p.estoque_max_dias, p.setup, p.congelamento_dias,
-               bg.fornecedores
+               bg.fornecedores, bg.projetos
         FROM parametros_compra p
         LEFT JOIN (
             SELECT TRIM(codigo_componente) AS codigo_componente,
-                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores
+                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores,
+                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(projeto), '') ORDER BY TRIM(projeto) SEPARATOR ', ') AS projetos
             FROM bomnova
             GROUP BY TRIM(codigo_componente)
         ) bg ON bg.codigo_componente = TRIM(p.codigo_componente)
@@ -632,14 +633,14 @@ if (!empty($rows)) {
         .table th.text-end { text-align: center !important; }
         /* Cabeçalhos de MOQ até "Estoque Segurança (calculado)": largura limitada pra
            forçar a quebra em ~2 linhas em vez de esticar a tabela toda. */
-        .table th:nth-child(3),
         .table th:nth-child(4),
         .table th:nth-child(5),
         .table th:nth-child(6),
         .table th:nth-child(7),
         .table th:nth-child(8),
-        .table th:nth-child(9) { max-width: 95px; }
-        .table th:nth-child(10) { max-width: 115px; }
+        .table th:nth-child(9),
+        .table th:nth-child(10) { max-width: 95px; }
+        .table th:nth-child(11) { max-width: 115px; }
         .table td { white-space: nowrap; text-align: center; }
         .table td.text-end { text-align: center !important; }
         .btn-remover-linha { border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; line-height: 1; }
@@ -817,6 +818,7 @@ if (!empty($rows)) {
                         <tr>
                             <th>Componente</th>
                             <th>Fornecedor</th>
+                            <th title="Da BOM">Projeto</th>
                             <th class="text-end">MOQ</th>
                             <th class="text-end">Lead Time (dias)</th>
                             <th class="text-end">Transit Time (dias)</th>
@@ -830,7 +832,7 @@ if (!empty($rows)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="11" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="12" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -841,6 +843,7 @@ if (!empty($rows)) {
                                 <tr id="linha-<?php echo h($codigoLinha); ?>">
                                     <td><strong><?php echo h($codigoLinha); ?></strong></td>
                                     <td title="<?php echo h($row['fornecedores'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['fornecedores'] ?? '—'); ?></span></td>
+                                    <td title="<?php echo h($row['projetos'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo h($row['projetos'] ?? '—'); ?></span></td>
 
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="moq" data-valor-bruto="<?php echo h($row['moq'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['moq'] !== null ? number_format((float) $row['moq'], 0, ',', '.') : '—'; ?></td>
                                     <td class="text-end celula-editavel" data-id="<?php echo h($codigoLinha); ?>" data-campo="frozen" data-valor-bruto="<?php echo h($row['frozen_zone_dias'] ?? '0'); ?>" title="Duplo clique para editar"><?php echo $row['frozen_zone_dias'] ?? '—'; ?></td>
