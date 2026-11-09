@@ -124,11 +124,18 @@ try {
     $parametros = [];
     $tipos = '';
 
-    if ($busca !== '') {
-        $condicoes[] = '(TRIM(b.codigo_componente) LIKE ? OR b.descricao LIKE ? OR b.fornecedor LIKE ? OR TRIM(b.material) LIKE ?)';
-        $termo = '%' . $busca . '%';
-        array_push($parametros, $termo, $termo, $termo, $termo);
-        $tipos .= 'ssss';
+    // Busca: vários termos separados por ";" (ex.: 12000259;12010498) — mostra
+    // os componentes que batem com QUALQUER um deles.
+    $termosBusca = array_values(array_filter(array_map('trim', explode(';', $busca)), fn($t) => $t !== ''));
+    if ($termosBusca) {
+        $partesBusca = [];
+        foreach ($termosBusca as $termoBusca) {
+            $partesBusca[] = '(TRIM(b.codigo_componente) LIKE ? OR b.descricao LIKE ? OR b.fornecedor LIKE ? OR TRIM(b.material) LIKE ?)';
+            $termo = '%' . $termoBusca . '%';
+            array_push($parametros, $termo, $termo, $termo, $termo);
+            $tipos .= 'ssss';
+        }
+        $condicoes[] = '(' . implode(' OR ', $partesBusca) . ')';
     }
     if ($fornecedor !== '') {
         $condicoes[] = 'TRIM(b.fornecedor) = ?';
@@ -749,8 +756,8 @@ try {
             </div>
             <form method="GET" class="row g-3 align-items-end">
                 <div class="col-12 col-lg-4">
-                    <label class="form-label" for="busca">Componente, material ou descrição</label>
-                    <input class="form-control" id="busca" name="busca" value="<?php echo h($busca); ?>" placeholder="Ex.: 12057429 ou clip">
+                    <label class="form-label" for="busca">Componente, material ou descrição <small class="text-muted">(vários separados por ;)</small></label>
+                    <input class="form-control" id="busca" name="busca" value="<?php echo h($busca); ?>" placeholder="Ex.: 12057429;12010498 ou clip">
                 </div>
                 <div class="col-6 col-md-4 col-lg-3">
                     <label class="form-label" for="fornecedor">Fornecedor</label>
