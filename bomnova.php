@@ -1087,6 +1087,24 @@ if ($resFornecedoresDisp) {
     }
 }
 
+// Fornecedores pro FILTRO — se um Projeto estiver escolhido, só os fornecedores dele
+// (a lista completa acima continua sendo usada na sugestão do cadastro manual).
+$fornecedoresFiltro = $fornecedoresDisponiveis;
+if ($projetoFiltro !== '') {
+    $fornecedoresFiltro = [];
+    $stmtFornFiltro = mysqli_prepare($conn, "SELECT DISTINCT fornecedor FROM bomnova WHERE fornecedor IS NOT NULL AND fornecedor <> '' AND projeto = ? ORDER BY fornecedor");
+    mysqli_stmt_bind_param($stmtFornFiltro, 's', $projetoFiltro);
+    mysqli_stmt_execute($stmtFornFiltro);
+    $resFornFiltro = mysqli_stmt_get_result($stmtFornFiltro);
+    while ($linhaFornFiltro = mysqli_fetch_assoc($resFornFiltro)) {
+        $fornecedoresFiltro[] = $linhaFornFiltro['fornecedor'];
+    }
+    mysqli_stmt_close($stmtFornFiltro);
+    if ($fornecedorFiltro !== '' && !in_array($fornecedorFiltro, $fornecedoresFiltro, true)) {
+        $fornecedoresFiltro[] = $fornecedorFiltro; // mantém o escolhido visível mesmo se trocar o projeto
+    }
+}
+
 // Modelos pro filtro — se um Projeto estiver escolhido, só os modelos dele.
 $modelosDisponiveis = [];
 $sqlModelosDisp = "SELECT DISTINCT TRIM(modelo) AS modelo FROM bomnova WHERE modelo IS NOT NULL AND TRIM(modelo) <> ''"
@@ -1532,7 +1550,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
                 <div class="col-12 col-md-auto" style="min-width: 200px;">
                     <label class="form-label small text-muted mb-1">Projeto</label>
-                    <select name="projeto" class="form-select">
+                    <select name="projeto" class="form-select" onchange="this.form.submit()" title="Ao trocar o projeto, a lista de Fornecedor e Modelo é atualizada">
                         <option value="">Todos</option>
                         <?php foreach ($projetosDisponiveis as $opcaoProjeto): ?>
                             <option value="<?php echo htmlspecialchars($opcaoProjeto); ?>" <?php echo $projetoFiltro === $opcaoProjeto ? 'selected' : ''; ?>><?php echo htmlspecialchars($opcaoProjeto); ?></option>
@@ -1543,7 +1561,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <label class="form-label small text-muted mb-1">Fornecedor</label>
                     <select name="fornecedor" class="form-select">
                         <option value="">Todos</option>
-                        <?php foreach ($fornecedoresDisponiveis as $opcaoFornecedor): ?>
+                        <?php foreach ($fornecedoresFiltro as $opcaoFornecedor): ?>
                             <option value="<?php echo htmlspecialchars($opcaoFornecedor); ?>" <?php echo $fornecedorFiltro === $opcaoFornecedor ? 'selected' : ''; ?>><?php echo htmlspecialchars($opcaoFornecedor); ?></option>
                         <?php endforeach; ?>
                     </select>
