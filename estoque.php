@@ -472,7 +472,7 @@ while ($linhaPlanta = mysqli_fetch_assoc($resPlantas)) {
 }
 // Plantas que aparecem SEMPRE como coluna (mesmo sem nenhum valor ainda),
 // pra poder lançar estoque nelas direto com duplo clique.
-$plantasFixas = ['2403', '2404'];
+$plantasFixas = ['2402', '2403', '2404'];
 $plantas = array_values(array_unique(array_merge(array_map('trim', $plantas), $plantasFixas)));
 sort($plantas, SORT_NATURAL);
 
