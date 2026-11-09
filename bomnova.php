@@ -201,7 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
-    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo', 'substitui', 'ncm'];
+    $camposEditaveis = ['planta', 'projeto', 'material', 'tipo', 'fornecedor', 'codigo_componente', 'pn', 'descricao', 'consumo', 'um', 'net_price', 'ipi', 'pis', 'cofins', 'icms', 'moeda', 'modelo', 'substitui', 'ncm', 'comprador'];
     $campo = (string) ($_POST['campo'] ?? '');
     $novoValor = trim((string) ($_POST['valor'] ?? ''));
 
@@ -762,14 +762,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     if ($componenteNovo !== null && !$invalido) {
         $stmtNovo = mysqli_prepare($conn, "
             INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao,
-                                 consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, ncm)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, ncm, comprador)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ");
         $valoresNovo = [
             $txt('m_planta'), $txt('m_projeto'), $txt('m_material'), $txt('m_tipo'), $txt('m_fornecedor'),
             $componenteNovo, $txt('m_pn'), $txt('m_modelo'), $txt('m_descricao'),
             $consumoNovo, $txt('m_um'), $netNovo, $ipiNovo, $pisNovo, $cofinsNovo, $icmsNovo,
-            $moedaNovo, $mrpNovo, $planNovo, $txt('m_ncm'),
+            $moedaNovo, $mrpNovo, $planNovo, $txt('m_ncm'), $txt('m_comprador'),
         ];
         mysqli_stmt_bind_param($stmtNovo, str_repeat('s', count($valoresNovo)), ...$valoresNovo);
         try {
@@ -837,7 +837,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         }, $valores);
                         $linhasSql[] = '(' . implode(', ', $escapados) . ')';
                     }
-                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, modelo, mrp, planejamento, ncm) VALUES "
+                    $sql = "INSERT INTO bomnova (planta, projeto, material, tipo, fornecedor, codigo_componente, pn, descricao, consumo, um, net_price, ipi, pis, cofins, icms, moeda, modelo, mrp, planejamento, ncm, comprador) VALUES "
                         . implode(', ', $linhasSql);
 
                     if (mysqli_query($conn, $sql)) {
@@ -916,6 +916,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     // NCM opcional no CSV
                     $ncm = trim((string) ($pegar('ncm') ?? ''));
                     $ncm = $ncm !== '' ? $ncm : null;
+                    // Comprador opcional no CSV
+                    $comprador = trim((string) ($pegar('comprador', 'buyer') ?? ''));
+                    $comprador = $comprador !== '' ? $comprador : null;
                     $mrp = $pegar('mrp');
                     if ($mrp !== null) {
                         $mrp = strtoupper(trim($mrp));
@@ -933,7 +936,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $planejamento = 'S';
                     }
 
-                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $modelo, $mrp, $planejamento, $ncm];
+                    $lote[] = [$planta, $projeto, $material, $tipo, $fornecedor, $codigo_componente, $pn, $descricao, $consumo, $um, $netPrice, $ipi, $pis, $cofins, $icms, $moeda, $modelo, $mrp, $planejamento, $ncm, $comprador];
 
                     if (count($lote) >= $tamanhoLote) {
                         $flushLote();
@@ -1116,7 +1119,7 @@ $totalPaginas = max(1, ceil($total / $porPagina));
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
+    $sqlExport = "SELECT planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, comprador, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
                   FROM bomnova $where
                   ORDER BY projeto, material, codigo_componente";
     if ($temFiltro) {
@@ -1132,7 +1135,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Comprador', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -1142,7 +1145,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         fputcsv($saida, [
             $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
             $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['modelo'] ?? '', $linhaExport['descricao'], $linhaExport['ncm'] ?? '',
-            $linhaExport['consumo'], $linhaExport['um'],
+            $linhaExport['consumo'], $linhaExport['um'], $linhaExport['comprador'] ?? '',
             formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
             formatarNumeroBomnovaTaxExibicao($pisExport, BOMNOVA_CASAS_DECIMAIS['pis']),
@@ -1165,7 +1168,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     exit;
 }
 
-$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
+$sql = "SELECT _tidb_rowid AS rid, planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, comprador, net_price, ipi, pis, cofins, icms, moeda, mrp, planejamento, status, substitui
         FROM bomnova $where
         ORDER BY projeto, material, codigo_componente
         LIMIT ? OFFSET ?";
@@ -1329,6 +1332,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <div class="col-6 col-md-1"><label class="form-label small mb-1">NCM</label><input type="text" name="m_ncm" id="m_ncm" class="form-control form-control-sm"></div>
                     <div class="col-4 col-md-1"><label class="form-label small mb-1">Consumo</label><input type="text" name="m_consumo" class="form-control form-control-sm text-end" placeholder="1"></div>
                     <div class="col-4 col-md-1"><label class="form-label small mb-1">U.M.</label><input type="text" name="m_um" list="lista_bom_unidades" class="form-control form-control-sm" placeholder="PC"></div>
+                    <div class="col-4 col-md-1"><label class="form-label small mb-1">Comprador</label><input type="text" name="m_comprador" class="form-control form-control-sm"></div>
                     <div class="col-4 col-md-2"><label class="form-label small mb-1">Net Price</label><input type="text" name="m_net_price" class="form-control form-control-sm text-end" placeholder="0,0000"></div>
 
                     <div class="col-3 col-md-1"><label class="form-label small mb-1">IPI %</label><input type="text" name="m_ipi" class="form-control form-control-sm text-end"></div>
@@ -1580,6 +1584,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>NCM</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
+                            <th>Comprador</th>
                             <th class="text-end">Net Price</th>
                             <th class="text-end">IPI %</th>
                             <th class="text-end">PIS %</th>
@@ -1594,7 +1599,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="24" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="25" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1655,6 +1660,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="ncm" data-valor-bruto="<?php echo htmlspecialchars($row['ncm'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['ncm'] ?? ''); ?></td>
                                     <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-campo="comprador" data-valor-bruto="<?php echo htmlspecialchars($row['comprador'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['comprador'] ?? ''); ?></td>
                                     <?php
                                         // PIS e COFINS: se vierem em branco do banco, usa o valor padrão
                                         // (1,65% e 7,60%) tanto na exibição quanto no cálculo do Preço.

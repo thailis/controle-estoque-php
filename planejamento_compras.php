@@ -95,6 +95,7 @@ try {
             MAX(COALESCE(NULLIF(TRIM(b.descricao), ''), 'Sem descrição')) AS descricao,
             GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.fornecedor), '') ORDER BY TRIM(b.fornecedor) SEPARATOR ', ') AS fornecedores,
             GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.projeto), '') ORDER BY TRIM(b.projeto) SEPARATOR ', ') AS projetos,
+            GROUP_CONCAT(DISTINCT NULLIF(TRIM(b.comprador), '') ORDER BY TRIM(b.comprador) SEPARATOR ', ') AS compradores,
             COUNT(DISTINCT NULLIF(TRIM(b.planta), '')) AS qtd_plantas,
             MAX(NULLIF(TRIM(b.planta), '')) AS planta,
             COALESCE(MAX(est.estoque_atual), 0) AS estoque_atual,
@@ -291,6 +292,7 @@ try {
                     'descricao' => $comp['descricao'],
                     'fornecedores' => $comp['fornecedores'],
                     'projetos' => $comp['projetos'],
+                    'compradores' => $comp['compradores'] ?? '',
                     // Planta da BOM só quando o componente é de UMA planta só (com mais
                     // de uma, fica em branco pra você escolher antes de importar).
                     'planta' => (int) $comp['qtd_plantas'] === 1 ? (string) $comp['planta'] : '',
@@ -337,13 +339,14 @@ try {
         // As demais colunas são só informativas e a importação ignora.
         // Só pode haver UMA coluna com "Quantidade" no nome (a importação pareia
         // a quantidade com a coluna "Data").
-        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Buyer', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             fputcsv($saida, [
                 $r['codigo_componente'],
                 $r['descricao'],
                 $r['fornecedores'],
                 $r['projetos'],
+                $r['compradores'],
                 numeroBr($r['estoque_atual'], 0),
                 numeroBr($r['quantidade'], 0),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
@@ -384,6 +387,9 @@ try {
            Reduz só aqui (sem alterar dashboard.css, usado também no Dashboard) e
            trava a largura das colunas de texto, com reticências para texto longo. */
         .mrp-table { min-width: 1100px; }
+        /* Tela larga, igual à Programação (98% da largura da janela) */
+        .dashboard-container { max-width: 98vw !important; }
+        .mrp-table td:nth-child(6), .mrp-table th:nth-child(6) { max-width: 160px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
         .mrp-table td:nth-child(3), .mrp-table th:nth-child(3) { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
         .mrp-table td:nth-child(4), .mrp-table th:nth-child(4) { max-width: 160px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
         .mrp-table td:nth-child(5), .mrp-table th:nth-child(5) { max-width: 200px; overflow: hidden; text-overflow: ellipsis; text-align: center; }
@@ -495,6 +501,7 @@ try {
                             <th>Descrição</th>
                             <th>Fornecedor</th>
                             <th>Projeto</th>
+                            <th title="Da BOM">Comprador</th>
                             <th class="text-center">Estoque hoje</th>
                             <th class="text-center">Quantidade sugerida</th>
                             <th class="text-center" title="Quando o material precisa chegar (data de necessidade)">Data de entrega</th>
@@ -504,7 +511,7 @@ try {
                     </thead>
                     <tbody>
                         <?php if (empty($resultados)): ?>
-                            <tr><td colspan="10" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
+                            <tr><td colspan="11" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
                         <?php else: ?>
                             <?php $mesAtual = null; ?>
                             <?php foreach ($resultados as $r): ?>
@@ -513,7 +520,7 @@ try {
                                     if ($mesLabel !== $mesAtual):
                                         $mesAtual = $mesLabel;
                                 ?>
-                                    <tr class="mes-divisor"><td colspan="10"><?php echo h($mesLabel); ?></td></tr>
+                                    <tr class="mes-divisor"><td colspan="11"><?php echo h($mesLabel); ?></td></tr>
                                 <?php endif; ?>
                                 <tr>
                                     <?php /* Sempre mostra a data de necessidade, mesmo quando "urgente" — o badge de Status já
@@ -534,6 +541,7 @@ try {
                                     <td title="<?php echo h($r['descricao']); ?>"><?php echo h($r['descricao']); ?></td>
                                     <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
+                                    <td title="<?php echo h($r['compradores'] ?: '—'); ?>"><?php echo h($r['compradores'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
                                     <td class="text-center" title="Necessidade: <?php echo numeroBr($r['quantidade_base'], 0); ?><?php if ($r['setup'] > 0): ?> + <?php echo numeroBr($r['setup'], 0); ?>% de setup<?php endif; ?><?php if ($r['moq'] > 0): ?> → arredondado pro múltiplo do MOQ (<?php echo numeroBr($r['moq'], 0); ?>)<?php endif; ?>">
                                         <span class="qtd-sugerida-wrap">
