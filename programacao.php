@@ -208,15 +208,23 @@ function detectarColunaPreco(array $cabecalhoNormalizado, int $indiceQtd): ?int
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
-    $modo = $_POST['modo'] ?? 'adicionar';
-    if (!in_array($modo, ['adicionar', 'sem_duplicar', 'atualizar'], true)) {
-        $modo = 'adicionar';
-    }
+    // Única opção de importação: adicionar sem duplicar (Componente + Data + PO +
+    // Processo que já existe no banco é ignorado; só entram as linhas novas).
+    $modo = 'sem_duplicar';
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
         $mensagens[] = "❌ Erro no upload do arquivo.";
     } else {
-        $handle = fopen($arquivo, 'r');
+        // Normaliza a quebra de linha: CSV salvo no Excel do Mac ("CSV Macintosh")
+        // usa só \r, e o PHP lia o arquivo inteiro como uma linha só (0 importadas).
+        $conteudoCsv = @file_get_contents($arquivo);
+        $handle = false;
+        if ($conteudoCsv !== false) {
+            $conteudoCsv = preg_replace("/\r\n?/", "\n", $conteudoCsv);
+            $handle = fopen('php://temp', 'r+');
+            fwrite($handle, $conteudoCsv);
+            rewind($handle);
+        }
 
         if ($handle === false) {
             $mensagens[] = "❌ Não foi possível abrir o arquivo.";
@@ -281,6 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $stmtUpdatePlanta = mysqli_prepare($conn, "UPDATE programacao SET planta = ? WHERE id = ?");
                 // Chave de "já existe": Componente + Data + PO + Processo (vazio = vazio).
                 // Mesmo componente e data, mas com outro PO ou processo, é outro pedido → entra.
+                $idsInseridosNestaImportacao = [];
                 $stmtVerifica = mysqli_prepare($conn, "
                     SELECT id FROM programacao
                     WHERE TRIM(codigo_componente) = ? AND data = ?
@@ -376,6 +385,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             $idExistente = $linhaExistente['id'] ?? null;
                         }
 
+                        // Linha repetida DENTRO do próprio arquivo (ex.: mesmo componente/data/PO
+                        // com 2 quantidades) entra normalmente — só é ignorado o que já existia
+                        // no banco ANTES desta importação.
+                        if ($idExistente !== null && isset($idsInseridosNestaImportacao[(int) $idExistente])) {
+                            $idExistente = null;
+                        }
                         if ($modo === 'sem_duplicar' && $idExistente !== null) {
                             $ignorados++;
                             continue;
@@ -407,7 +422,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         mysqli_stmt_bind_param($stmtInsert, "ssssddss", $codigoComponente, $poLinha, $processoLinha, $data, $quantidade, $preco, $moedaLinha, $plantaLinha);
                         if (mysqli_stmt_execute($stmtInsert)) {
                             $importados++;
-                            marcarOrigemProgramacao($conn, (int) mysqli_stmt_insert_id($stmtInsert), 'csv');
+                            $idNovoImportado = (int) mysqli_stmt_insert_id($stmtInsert);
+                            $idsInseridosNestaImportacao[$idNovoImportado] = true;
+                            marcarOrigemProgramacao($conn, $idNovoImportado, 'csv');
                         } else {
                             $erros++;
                             $mensagens[] = "⚠️ Erro na linha $linhaNum: " . mysqli_stmt_error($stmtInsert);
@@ -1806,29 +1823,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <input type="file" name="arquivo_csv" accept=".csv" class="form-control" required>
                         </div>
 
-                        <label class="form-label"><strong>O que fazer com os dados?</strong></label>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_adicionar" value="adicionar" checked>
-                            <label class="form-check-label" for="modo_adicionar">
-                                <strong>Adicionar</strong> — insere as linhas do arquivo, mesmo se já existirem (pode duplicar)
-                            </label>
-                        </div>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_sem_duplicar" value="sem_duplicar">
-                            <label class="form-check-label" for="modo_sem_duplicar">
-                                <strong>Adicionar sem duplicar</strong> — ignora linhas cujo Componente + Data + PO + Processo já existe
-                            </label>
-                        </div>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_atualizar" value="atualizar">
-                            <label class="form-check-label" for="modo_atualizar">
-                                <strong>Adicionar e atualizar</strong> — se já existir (mesmo Componente + Data + PO + Processo), atualiza a quantidade; senão insere novo
-                            </label>
-                        </div>
-
+                        <input type="hidden" name="modo" value="sem_duplicar">
+                        <p class="small text-muted mb-1"><strong>Adicionar sem duplicar</strong> — só entram as linhas novas. Se já existir no banco uma linha com o mesmo Componente + Data + PO + Processo, ela é ignorada.</p>
 
                         <button type="submit" class="btn btn-primary mt-2">Importar</button>
                     </form>
