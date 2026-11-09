@@ -45,6 +45,11 @@ function parseDataProgramacao(string $valor): ?string
     foreach ($formatos as $formato) {
         $data = DateTimeImmutable::createFromFormat('!' . $formato, $valor);
         if ($data instanceof DateTimeImmutable) {
+            // Ano com 2 dígitos (ex.: 13/11/26 vinha como 13/11/0026) → 2026
+            $ano = (int) $data->format('Y');
+            if ($ano < 100) {
+                $data = $data->setDate($ano + 2000, (int) $data->format('m'), (int) $data->format('d'));
+            }
             return $data->format('Y-m-d');
         }
     }
@@ -1713,6 +1718,9 @@ while ($row = mysqli_fetch_assoc($result)) {
             padding-bottom: 10px;
         }
         .table td { white-space: nowrap; vertical-align: middle; }
+        /* Mais respiro entre as colunas e linhas da tabela (estava amontoado) */
+        .table.table-sm > :not(caption) > * > * { padding: 9px 14px; }
+        .table.table-sm > thead > tr > th { padding-top: 12px; padding-bottom: 12px; }
         .form-check { padding: 10px; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 8px; }
         .form-check:hover { background: #f8f9fa; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
@@ -2066,8 +2074,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <div style="font-size:.7rem; color:<?php echo $seloSync[1]; ?>; white-space:nowrap;" title="Última sincronização com os Processos que mexeu nesta linha">
                                                 <?php echo $seloSync[0]; ?> · <?php echo h($quandoSyncLinha); ?>
                                             </div>
-                                        <?php elseif ($seloOrigem): ?>
-                                            <div style="font-size:.7rem; color:#6c757d; white-space:nowrap;"><?php echo $seloOrigem; ?></div>
                                         <?php endif; ?>
                                     </td>
                                     <?php $podeEditarLinha = !$estaAtendido; ?>
