@@ -1204,6 +1204,24 @@ $rows = [];
 while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
+
+// Coluna "Parâmetros": componentes desta página que já têm cadastro em Parâmetros de Compra
+$comParametroCompra = [];
+$codigosPaginaBom = array_values(array_unique(array_filter(array_map(fn($r) => trim((string) ($r['codigo_componente'] ?? '')), $rows), fn($c) => $c !== '')));
+if ($codigosPaginaBom) {
+    try {
+        $stmtParamBom = mysqli_prepare($conn, "SELECT DISTINCT TRIM(codigo_componente) AS c FROM parametros_compra WHERE TRIM(codigo_componente) IN (" . implode(',', array_fill(0, count($codigosPaginaBom), '?')) . ")");
+        mysqli_stmt_bind_param($stmtParamBom, str_repeat('s', count($codigosPaginaBom)), ...$codigosPaginaBom);
+        mysqli_stmt_execute($stmtParamBom);
+        $resParamBom = mysqli_stmt_get_result($stmtParamBom);
+        while ($lp = mysqli_fetch_assoc($resParamBom)) {
+            $comParametroCompra[(string) $lp['c']] = true;
+        }
+        mysqli_stmt_close($stmtParamBom);
+    } catch (Throwable $e) {
+        // sem a tabela de parâmetros: coluna fica em branco
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1599,7 +1617,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th title="Código antigo que este componente substitui (duplo clique pra editar). O antigo para de gerar compra e o estoque dele é consumido primeiro.">Substitui</th>
                             <th>PN</th>
                             <th>Descrição</th>
-                            <th>NCM</th>
                             <th class="text-end">Consumo</th>
                             <th>U.M.</th>
                             <th>Comprador</th>
@@ -1612,6 +1629,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Moeda</th>
                             <th>MRP</th>
                             <th title="Planejamento">Plan</th>
+                            <th title="Se o componente já tem cadastro em Parâmetros de Compra">Parâmetros</th>
                             <th title="Excluir">Excluir</th>
                         </tr>
                     </thead>
@@ -1675,8 +1693,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-campo="substitui" data-valor-bruto="<?php echo htmlspecialchars($row['substitui'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Código antigo que este componente substitui — duplo clique para editar"><?php echo htmlspecialchars($row['substitui'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="pn" data-valor-bruto="<?php echo htmlspecialchars($row['pn'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['pn'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="descricao" data-valor-bruto="<?php echo htmlspecialchars($row['descricao'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['descricao'] ?? ''); ?></td>
-                                    <td class="celula-editavel" data-campo="ncm" data-valor-bruto="<?php echo htmlspecialchars($row['ncm'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['ncm'] ?? ''); ?></td>
-                                    <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
+                                                                        <td class="text-end celula-editavel" data-campo="consumo" data-valor-bruto="<?php echo htmlspecialchars($row['consumo'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['consumo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="um" data-valor-bruto="<?php echo htmlspecialchars($row['um'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>'><?php echo htmlspecialchars($row['um'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-campo="comprador" data-valor-bruto="<?php echo htmlspecialchars($row['comprador'] ?? ''); ?>" data-extra='<?php echo $contextoLinha; ?>' title="Duplo clique para editar"><?php echo htmlspecialchars($row['comprador'] ?? ''); ?></td>
                                     <?php
@@ -1762,6 +1779,16 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <?php echo htmlspecialchars($planejamento); ?>
                                             </button>
                                         </form>
+                                    </td>
+                                    <?php $codParamBom = trim((string) ($row['codigo_componente'] ?? '')); ?>
+                                    <td class="text-center">
+                                        <?php if ($codParamBom === ''): ?>
+                                            —
+                                        <?php elseif (isset($comParametroCompra[$codParamBom])): ?>
+                                            <a href="parametros_compra.php?busca=<?php echo urlencode($codParamBom); ?>" class="badge text-decoration-none" style="background:#eaf8f0; color:#247a4d;" title="Ver em Parâmetros de Compra">Cadastrado</a>
+                                        <?php else: ?>
+                                            <a href="parametros_compra.php?novo=<?php echo urlencode($codParamBom); ?>" class="badge text-decoration-none" style="background:#fff7df; color:#a96600;" title="Abrir o cadastro em Parâmetros de Compra já com este componente">Cadastrar</a>
+                                        <?php endif; ?>
                                     </td>
                                     <td>
                                         <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir esta linha do BOM? Apaga só esta combinação (planta/projeto/material). O histórico de compras não é afetado. Essa ação não pode ser desfeita.');">

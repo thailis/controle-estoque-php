@@ -393,6 +393,8 @@ $busca = isset($_GET['busca']) ? trim($_GET['busca']) : '';
 $fornecedorFiltro = isset($_GET['fornecedor']) ? trim($_GET['fornecedor']) : '';
 $editando = isset($_GET['editar']) ? trim($_GET['editar']) : '';
 $flash = isset($_GET['flash']) ? trim($_GET['flash']) : '';
+// Vindo da BOM pelo botão "Cadastrar": abre o cadastro manual já com o componente
+$componenteNovo = isset($_GET['novo']) ? trim($_GET['novo']) : '';
 
 $flashMap = [
     'inserido'   => ['success', '✅ Componente cadastrado/atualizado com sucesso.'],
@@ -741,7 +743,7 @@ if (!empty($rows)) {
         </div>
 
         <div class="card p-3 mb-4">
-            <details>
+            <details <?php echo $componenteNovo !== '' ? 'open' : ''; ?> id="cadastro-manual">
                 <summary>➕ Novo componente (cadastro manual)</summary>
                 <form method="POST" class="row g-2 align-items-end mt-3">
                     <input type="hidden" name="acao" value="inserir_manual">
@@ -750,7 +752,7 @@ if (!empty($rows)) {
                     <input type="hidden" name="fornecedor_atual" value="<?php echo h($fornecedorFiltro); ?>">
                     <div class="col-auto">
                         <label class="form-label small mb-1">Componente *</label>
-                        <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" style="width:150px" required>
+                        <input type="text" name="componente_manual" list="lista_componentes" class="form-control form-control-sm" style="width:150px" value="<?php echo h($componenteNovo); ?>" required>
                     </div>
                     <div class="col-auto">
                         <label class="form-label small mb-1">MOQ</label>
@@ -902,6 +904,15 @@ if (!empty($rows)) {
         // já deveria fazer isso sozinha, mas algumas combinações de navegador/
         // cabeçalho fixo não respeitam isso direito. Isso força o scroll de
         // verdade, centralizando a linha na tela em vez de jogar ela pro topo.
+        // Vindo da BOM ("Cadastrar"): rola até o cadastro manual e foca no MOQ
+        <?php if ($componenteNovo !== ''): ?>
+        (function () {
+            const bloco = document.getElementById('cadastro-manual');
+            if (bloco) { bloco.scrollIntoView({ block: 'center' }); }
+            const moq = document.querySelector('input[name="moq_manual"]');
+            if (moq) { moq.focus(); }
+        })();
+        <?php endif; ?>
         if (window.location.hash) {
             const alvo = document.querySelector(window.location.hash);
             if (alvo) {
