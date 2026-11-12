@@ -867,8 +867,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo', 'evento'], true)) {
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo', 'evento', 'material'], true)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
+        exit;
+    }
+
+    if ($campo === 'material') {
+        // Trocar o material com duplo clique (vale só pra essa linha). Se o EDI já
+        // estiver Atendido, a baixa do estoque foi feita pelos componentes do material
+        // antigo — então só deixa trocar depois de voltar pra Pendente.
+        if ($valor === '') {
+            echo json_encode(['ok' => false, 'erro' => 'O material não pode ficar vazio.']);
+            exit;
+        }
+        $stmtAt = mysqli_prepare($conn, "SELECT COALESCE(atendido, 0) AS atendido FROM edi WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtAt, 'i', $id);
+        mysqli_stmt_execute($stmtAt);
+        $linhaAt = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAt));
+        mysqli_stmt_close($stmtAt);
+        if (!$linhaAt) {
+            echo json_encode(['ok' => false, 'erro' => 'Linha não encontrada.']);
+            exit;
+        }
+        if ((int) $linhaAt['atendido'] === 1) {
+            echo json_encode(['ok' => false, 'erro' => 'Este EDI está Atendido (o estoque já foi baixado pelo material atual). Volte para Pendente antes de trocar o material.']);
+            exit;
+        }
+        $materialEditado = mb_substr($valor, 0, 100);
+        $stmt = mysqli_prepare($conn, "UPDATE edi SET material = ? WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $materialEditado, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $materialEditado]);
         exit;
     }
 
@@ -1812,7 +1842,7 @@ unset($r);
                                             </button>
                                         </form>
                                     </td>
-                                    <td><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" title="Duplo clique para editar — <?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
