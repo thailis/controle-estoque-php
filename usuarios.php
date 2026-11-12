@@ -21,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'criar')
     $nome = trim($_POST['nome'] ?? '');
     $usuario = trim($_POST['usuario'] ?? '');
     $senha = (string) ($_POST['senha'] ?? '');
-    $papel = in_array($_POST['papel'] ?? '', ['comprador', 'administrador'], true) ? $_POST['papel'] : 'visualizador';
+    $papel = in_array($_POST['papel'] ?? '', ['comprador', 'administrador', 'producao'], true) ? $_POST['papel'] : 'visualizador';
 
     if ($nome === '' || $usuario === '' || $senha === '') {
         $erros[] = 'Preencha nome, usuário e senha.';
@@ -43,11 +43,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'criar')
     }
 }
 
-// Trocar o papel (comprador <-> visualizador)
+// Trocar o papel (visualizador / comprador / produção / administrador)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'trocar_papel') {
     exigirAdministrador();
     $id = (int) ($_POST['id'] ?? 0);
-    $novoPapel = in_array($_POST['novo_papel'] ?? '', ['comprador', 'administrador'], true) ? $_POST['novo_papel'] : 'visualizador';
+    $novoPapel = in_array($_POST['novo_papel'] ?? '', ['comprador', 'administrador', 'producao'], true) ? $_POST['novo_papel'] : 'visualizador';
     $stmt = mysqli_prepare($conn, "UPDATE usuarios SET papel = ? WHERE id = ?");
     mysqli_stmt_bind_param($stmt, 'si', $novoPapel, $id);
     mysqli_stmt_execute($stmt);
@@ -152,6 +152,7 @@ while ($linha = mysqli_fetch_assoc($res)) {
                     <select name="papel" class="form-select">
                         <option value="visualizador">Visualizador</option>
                         <option value="comprador">Comprador</option>
+                        <option value="producao">Produção</option>
                         <option value="administrador">Administrador</option>
                     </select>
                 </div>
@@ -191,6 +192,7 @@ while ($linha = mysqli_fetch_assoc($res)) {
                                     <select name="novo_papel" class="form-select form-select-sm" onchange="this.form.submit()" style="width:auto;">
                                         <option value="visualizador" <?php echo $u['papel'] === 'visualizador' ? 'selected' : ''; ?>>Visualizador</option>
                                         <option value="comprador" <?php echo $u['papel'] === 'comprador' ? 'selected' : ''; ?>>Comprador</option>
+                                        <option value="producao" <?php echo $u['papel'] === 'producao' ? 'selected' : ''; ?>>Produção</option>
                                         <option value="administrador" <?php echo $u['papel'] === 'administrador' ? 'selected' : ''; ?>>Administrador</option>
                                     </select>
                                 </form>
