@@ -1153,7 +1153,17 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Comprador', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui'], ';', '"', '');
+    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Comprador', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui', 'Parâmetros'], ';', '"', '');
+    // Coluna "Parâmetros": componentes que já têm cadastro em Parâmetros de Compra
+    $comParametroExport = [];
+    try {
+        $resParamExport = mysqli_query($conn, "SELECT DISTINCT TRIM(codigo_componente) AS c FROM parametros_compra");
+        while ($lpe = mysqli_fetch_assoc($resParamExport)) {
+            $comParametroExport[(string) $lpe['c']] = true;
+        }
+    } catch (Throwable $e) {
+        // sem a tabela de parâmetros: coluna sai em branco
+    }
     while ($linhaExport = mysqli_fetch_assoc($resultExport)) {
         $pisExport = aplicarValorPadraoBomnova($linhaExport['pis'] ?? null, 'pis');
         $cofinsExport = aplicarValorPadraoBomnova($linhaExport['cofins'] ?? null, 'cofins');
@@ -1180,6 +1190,9 @@ if (($_GET['exportar'] ?? '') === 'csv') {
                 return strtolower(trim((string) ($l['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project';
             })($linhaExport),
             $linhaExport['substitui'] ?? '',
+            trim((string) ($linhaExport['codigo_componente'] ?? '')) === ''
+                ? ''
+                : (isset($comParametroExport[trim((string) $linhaExport['codigo_componente'])]) ? 'Cadastrado' : 'Não cadastrado'),
         ], ';', '"', '');
     }
     fclose($saida);
