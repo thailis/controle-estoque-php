@@ -3,6 +3,24 @@
 require_once 'conexao.php';
 require_once __DIR__ . '/auth_importacao.php'; // exige login (o mesmo do MRP)
 
+// NCM automático: linha de processo (aberta) com NCM em branco recebe o NCM
+// cadastrado em Parâmetros da Importação pro mesmo componente. Só preenche o que
+// está vazio — NCM digitado/importado em Processos nunca é sobrescrito. Roda a cada
+// abertura da tela, então vale também pra NCM cadastrado depois em Parâmetros.
+// (A Commercial Invoice lê o NCM daqui, então ela também passa a sair preenchida.)
+try {
+    mysqli_query($conn, "
+        UPDATE processos p
+        JOIN parametros_importacao pi ON TRIM(pi.codigo_componente) = TRIM(p.codigo_componente)
+        SET p.ncm = TRIM(pi.ncm)
+        WHERE (p.ncm IS NULL OR TRIM(p.ncm) = '')
+          AND pi.ncm IS NOT NULL AND TRIM(pi.ncm) <> ''
+          AND LOWER(TRIM(COALESCE(p.status, 'aberto'))) <> 'finalizado'
+    ");
+} catch (Throwable $e) {
+    // coluna ncm ainda não criada em parametros_importacao: segue sem preencher
+}
+
 function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');

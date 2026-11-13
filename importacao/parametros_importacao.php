@@ -2,7 +2,7 @@
 // importacao/parametros_importacao.php
 // Parâmetros por COMPONENTE (independente de processo/projeto) usados na tela
 // Release: unit pack, U PRICE, medidas da embalagem (LENGTH/WIDTH/HEIGHT em cm),
-// peso unitário (weight of component, kg) e G WEIGHT.
+// peso unitário (weight of component, kg), G WEIGHT e NCM (preenche o NCM vazio em Processos).
 // PACK, CBM, T PRICE e N WEIGHT NÃO ficam aqui — são calculados na Release.
 // Tabela: parametros_importacao (ver SQL no README da tela / conversa).
 require_once 'conexao.php';
@@ -159,6 +159,20 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
     $codigo = trim((string) ($_POST['codigo'] ?? ''));
     $campo = (string) ($_POST['campo'] ?? '');
     $valorTxt = trim((string) ($_POST['valor'] ?? ''));
+    // NCM é texto (ex.: 3926.90.90), não número
+    if ($codigo !== '' && $campo === 'ncm') {
+        try {
+            $ncmGravar = $valorTxt !== '' ? mb_substr($valorTxt, 0, 20) : null;
+            $stmtNcm = mysqli_prepare($conn, 'INSERT INTO parametros_importacao (codigo_componente, ncm) VALUES (?, ?) ON DUPLICATE KEY UPDATE ncm = VALUES(ncm)');
+            mysqli_stmt_bind_param($stmtNcm, 'ss', $codigo, $ncmGravar);
+            mysqli_stmt_execute($stmtNcm);
+            mysqli_stmt_close($stmtNcm);
+            echo json_encode(['ok' => true, 'exibido' => $ncmGravar ?? '—', 'bruto' => $ncmGravar ?? '']);
+        } catch (Throwable $e) {
+            echo json_encode(['ok' => false, 'erro' => 'Erro ao salvar: ' . $e->getMessage()]);
+        }
+        exit;
+    }
     if ($codigo === '' || !array_key_exists($campo, CAMPOS_PARAM_IMPORTACAO)) {
         echo json_encode(['ok' => false, 'erro' => 'Campo inválido.']);
         exit;
@@ -192,6 +206,8 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
                 $erro = "$rotulo inválido.";
             }
         }
+        $ncmManual = trim((string) ($_POST['ncm'] ?? ''));
+        $valores['ncm'] = $ncmManual !== '' ? mb_substr($ncmManual, 0, 20) : null;
         if ($erro) {
             $mensagens[] = '❌ ' . $erro;
         } else {
@@ -243,6 +259,7 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
             'height_cm' => ['height', 'height_cm', 'altura'],
             'peso_unitario' => ['weight', 'weight of component', 'weight of component (kg)', 'weight of component（kg）', 'weight un', 'weight un (kg)', 'peso_unitario', 'peso'],
             'g_weight' => ['g weight', 'g_weight', 'gross weight'],
+            'ncm' => ['ncm', 'hs code', 'hscode', 'hs_code'],
         ];
         $indices = [];
         foreach ($apelidos as $campo => $nomes) {
@@ -287,6 +304,10 @@ if ($tabelaExiste && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ??
                             $erros[] = 'linha ' . ($n + 2) . ": valor inválido em $campo";
                         }
                     }
+                    if (isset($indices['ncm'])) {
+                        $ncmCsv = trim((string) ($cols[$indices['ncm']] ?? ''));
+                        $valores['ncm'] = $ncmCsv !== '' ? mb_substr($ncmCsv, 0, 20) : null;
+                    }
                     if ($valores) {
                         salvarParametroImportacao($conn, $codigo, $valores);
                         $gravados++;
@@ -311,10 +332,10 @@ if ($tabelaExiste && ($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="parametros_importacao.csv"');
     $saida = fopen('php://output', 'w');
     fwrite($saida, "\xEF\xBB\xBF");
-    fputcsv($saida, ['componente', 'unit pack', 'u price', 'length', 'width', 'height', 'weight', 'g weight'], ';', '"', '');
+    fputcsv($saida, ['componente', 'ncm', 'unit pack', 'u price', 'length', 'width', 'height', 'weight', 'g weight'], ';', '"', '');
     $res = mysqli_query($conn, 'SELECT * FROM parametros_importacao ORDER BY codigo_componente');
     while ($r = mysqli_fetch_assoc($res)) {
-        $linha = [$r['codigo_componente']];
+        $linha = [$r['codigo_componente'], (string) ($r['ncm'] ?? '')];
         foreach (array_keys(CAMPOS_PARAM_IMPORTACAO) as $campo) {
             $linha[] = $r[$campo] === null ? '' : str_replace('.', ',', rtrim(rtrim((string) $r[$campo], '0'), '.'));
         }
@@ -390,6 +411,7 @@ if ($tabelaExiste) {
             $cod = trim((string) $r['codigo_componente']);
             $texto = mb_strtolower(implode(' | ', [
                 $cod,
+                (string) ($r['ncm'] ?? ''),
                 $descricoes[$cod] ?? '',
                 $bomInfo[$cod]['fornecedores'] ?? '',
                 $bomInfo[$cod]['projetos'] ?? '',
@@ -424,6 +446,7 @@ if ($tabelaExiste) {
         .celula-editavel { cursor: cell; }
         .celula-editavel:hover { background: #eef4fb; box-shadow: inset 0 0 0 1px #b9d3ef; }
         .celula-editavel input { width: 100%; text-align: right; }
+        .celula-editavel.cel-texto input { text-align: left; }
         .btn-remover-linha { border: none; background: none; color: #c53535; font-size: 1.05rem; cursor: pointer; }
     </style>
 </head>
@@ -503,6 +526,10 @@ if ($tabelaExiste) {
                         <label class="form-label small mb-1">Componente (SAP)</label>
                         <input type="text" name="codigo_componente" class="form-control form-control-sm" required>
                     </div>
+                    <div class="col-md-1" style="min-width:120px">
+                        <label class="form-label small mb-1">NCM</label>
+                        <input type="text" name="ncm" class="form-control form-control-sm" placeholder="3926.90.90">
+                    </div>
                     <?php foreach (CAMPOS_PARAM_IMPORTACAO as $campo => $rotulo): ?>
                         <div class="col-md-1" style="min-width:120px">
                             <label class="form-label small mb-1"><?php echo h($rotulo); ?></label>
@@ -530,7 +557,7 @@ if ($tabelaExiste) {
                     </div>
                     <div class="col-auto"><button type="submit" class="btn btn-primary btn-sm">Importar</button></div>
                 </form>
-                <small class="text-muted d-block mt-2">Cabeçalho (separado por <code>;</code>): <code>componente; unit pack; u price; length; width; height; weight; g weight</code>. Sem marcar "Limpar tudo": componente que já existe é atualizado e os outros continuam. Marcando: a tabela fica só com o que está no CSV. Dá pra mandar só algumas colunas (ex.: componente; length; width; height).</small>
+                <small class="text-muted d-block mt-2">Cabeçalho (separado por <code>;</code>): <code>componente; ncm; unit pack; u price; length; width; height; weight; g weight</code>. O NCM preenche sozinho o NCM em branco das linhas abertas de Processos. Sem marcar "Limpar tudo": componente que já existe é atualizado e os outros continuam. Marcando: a tabela fica só com o que está no CSV. Dá pra mandar só algumas colunas (ex.: componente; length; width; height).</small>
             </details>
         </section>
 
@@ -560,10 +587,11 @@ if ($tabelaExiste) {
                     <colgroup>
                         <col style="width:8%">
                         <col style="width:18%">
-                        <col style="width:9%">
-                        <col style="width:9%">
-                        <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><col style="width:7.5%"><?php endforeach; ?>
-                        <col style="width:3.5%">
+                        <col style="width:8%">
+                        <col style="width:8%">
+                        <col style="width:7%">
+                        <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><col style="width:7%"><?php endforeach; ?>
+                        <col style="width:3%">
                     </colgroup>
                     <thead>
                         <tr>
@@ -571,13 +599,14 @@ if ($tabelaExiste) {
                             <th>Description</th>
                             <th title="Da BOM do MRP">Fornecedor</th>
                             <th title="Da BOM do MRP">Projeto</th>
+                            <th title="Preenche sozinho o NCM em branco nas linhas abertas de Processos">NCM</th>
                             <?php foreach (CAMPOS_PARAM_IMPORTACAO as $rotulo): ?><th class="num"><?php echo h($rotulo); ?></th><?php endforeach; ?>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (!$registros): ?>
-                            <tr><td colspan="<?php echo count(CAMPOS_PARAM_IMPORTACAO) + 5; ?>" class="empty-state">Nenhum componente cadastrado.</td></tr>
+                            <tr><td colspan="<?php echo count(CAMPOS_PARAM_IMPORTACAO) + 6; ?>" class="empty-state">Nenhum componente cadastrado.</td></tr>
                         <?php endif; ?>
                         <?php foreach ($registros as $r): ?>
                             <tr>
@@ -586,6 +615,7 @@ if ($tabelaExiste) {
                                 <?php $infoBom = $bomInfo[trim($r['codigo_componente'])] ?? ['fornecedores' => '', 'projetos' => '']; ?>
                                 <td class="txt-bom" title="<?php echo h($infoBom['fornecedores']); ?>"><?php echo h($infoBom['fornecedores'] !== '' ? $infoBom['fornecedores'] : '—'); ?></td>
                                 <td class="txt-bom" title="<?php echo h($infoBom['projetos']); ?>"><?php echo h($infoBom['projetos'] !== '' ? $infoBom['projetos'] : '—'); ?></td>
+                                <td class="celula-editavel cel-texto" data-codigo="<?php echo h($r['codigo_componente']); ?>" data-campo="ncm" data-valor-bruto="<?php echo h($r['ncm'] ?? ''); ?>"><?php echo h(($r['ncm'] ?? '') !== '' ? $r['ncm'] : '—'); ?></td>
                                 <?php foreach (array_keys(CAMPOS_PARAM_IMPORTACAO) as $campo): ?>
                                     <td class="num celula-editavel" data-codigo="<?php echo h($r['codigo_componente']); ?>" data-campo="<?php echo $campo; ?>" data-valor-bruto="<?php echo $r[$campo] === null ? '' : h(numeroBrParam($r[$campo], 6)); ?>"><?php echo numeroBrParam($r[$campo], 6); ?></td>
                                 <?php endforeach; ?>
