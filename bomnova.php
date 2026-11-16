@@ -815,6 +815,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     return strtolower(trim($c));
                 }, $cabecalho);
 
+                // ---------- TRAVA: toda linha precisa de Material, Componente, Descrição e
+                // Quantidade (consumo). Confere o arquivo INTEIRO antes de gravar qualquer
+                // coisa (e antes do "Limpar tabela") — se faltar em alguma linha, nada é importado.
+                $posDepoisCabecalho = ftell($handle);
+                $obrigatorios = [
+                    'Material'   => ['material'],
+                    'Componente' => ['codigo_componente', 'componente', 'codigo do componente', 'codigo componente', 'part number'],
+                    'Descrição'  => ['descricao', 'description'],
+                    'Quantidade' => ['consumo', 'quantidade'],
+                ];
+                $cabNormTrava = array_map(fn($c) => normalizarCabecalhoBomnova((string) $c), $cabecalho);
+                $colunaTrava = [];
+                $colunasAusentes = [];
+                foreach ($obrigatorios as $rotuloTrava => $nomesTrava) {
+                    $colunaTrava[$rotuloTrava] = null;
+                    foreach ($nomesTrava as $nomeTrava) {
+                        $posTrava = array_search(normalizarCabecalhoBomnova($nomeTrava), $cabNormTrava, true);
+                        if ($posTrava !== false) { $colunaTrava[$rotuloTrava] = $posTrava; break; }
+                    }
+                    if ($colunaTrava[$rotuloTrava] === null) { $colunasAusentes[] = $rotuloTrava; }
+                }
+                $linhasComFalta = [];
+                if (!$colunasAusentes) {
+                    $numTrava = 1;
+                    while (($linhaTrava = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
+                        $numTrava++;
+                        if (count(array_filter($linhaTrava, fn($v) => trim((string) $v) !== '')) === 0) {
+                            continue; // linha totalmente vazia: ignorada normalmente
+                        }
+                        $faltaNaLinha = [];
+                        foreach ($colunaTrava as $rotuloTrava => $posTrava) {
+                            $valorTrava = trim((string) ($linhaTrava[$posTrava] ?? ''));
+                            if ($valorTrava === '' || ($rotuloTrava === 'Quantidade' && parseNumeroBr($valorTrava) === null)) {
+                                $faltaNaLinha[] = $rotuloTrava;
+                            }
+                        }
+                        if ($faltaNaLinha) {
+                            $linhasComFalta[] = "linha $numTrava: falta " . implode(', ', $faltaNaLinha);
+                        }
+                    }
+                    fseek($handle, $posDepoisCabecalho);
+                }
+                $csvBloqueado = false;
+                if ($colunasAusentes) {
+                    $csvBloqueado = true;
+                    $mensagens[] = "❌ Importação bloqueada: o CSV não tem a(s) coluna(s) " . implode(', ', $colunasAusentes) . ". Nada foi importado.";
+                } elseif ($linhasComFalta) {
+                    $csvBloqueado = true;
+                    $mensagens[] = "❌ Importação bloqueada: " . count($linhasComFalta) . " linha(s) sem Material, Componente, Descrição ou Quantidade. Corrija o arquivo e importe de novo — nada foi importado (nem a tabela foi limpa).";
+                    foreach (array_slice($linhasComFalta, 0, 15) as $msgFalta) {
+                        $mensagens[] = "⚠️ " . $msgFalta;
+                    }
+                    if (count($linhasComFalta) > 15) {
+                        $mensagens[] = "… e mais " . (count($linhasComFalta) - 15) . " linha(s).";
+                    }
+                }
+
+                if (!$csvBloqueado) {
                 if (isset($_POST['limpar_tabela'])) {
                     mysqli_query($conn, "TRUNCATE TABLE bomnova");
                     $mensagens[] = "🗑️ Tabela 'bomnova' esvaziada antes da importação.";
@@ -891,7 +949,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $codigo_componente = $pegar('codigo_componente', 'componente', 'codigo do componente', 'codigo componente', 'part number');
                     $pn = $pegar('pn');
                     $descricao = $pegar('descricao', 'description');
-                    $consumoBruto = $pegar('consumo') ?? '';
+                    $consumoBruto = $pegar('consumo', 'quantidade') ?? '';
                     $consumo = $consumoBruto !== '' ? parseNumeroBr((string) $consumoBruto) : null;
                     $um = $pegar('um', 'unidade');
                     // Net Price e os impostos (%) são opcionais no CSV — se não vierem,
@@ -948,6 +1006,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 mysqli_autocommit($conn, true);
 
                 $mensagens[] = "✅ Importação concluída: $importados linha(s) importada(s), $erros erro(s).";
+                } // fim do if (!$csvBloqueado)
             }
             fclose($handle);
         }
