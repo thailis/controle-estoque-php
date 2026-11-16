@@ -1349,8 +1349,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
             SELECT MAX(status) AS status, MIN(solicitacao) AS solicitacao, MAX(categoria) AS categoria,
                    MAX(planta) AS planta, MAX(modal) AS modal, MAX(po) AS po, MAX(projeto) AS projeto,
                    MAX(fornecedor) AS fornecedor, MAX(moeda) AS moeda, MAX(tipo) AS tipo, MAX(ffw) AS ffw,
-                   COUNT(*) AS linhas
-            FROM processos WHERE processo = ?
+                   COUNT(*) AS linhas, MAX(TRIM(processo)) AS codigo
+            FROM processos WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?))
         ");
         mysqli_stmt_bind_param($stmtBase, 's', $processoExistente);
         mysqli_stmt_execute($stmtBase);
@@ -1363,7 +1363,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
         } elseif ($statusBase === 'finalizado' || $statusBase === 'cancelado') {
             $mensagens[] = "❌ O processo \"$processoExistente\" está $statusBase — não dá pra incluir componentes nele.";
         } else {
-            $processo = $processoExistente;
+            // código como está gravado (o digitado pode vir em minúscula)
+            $processo = (string) ($base['codigo'] ?: $processoExistente);
             $solicitacao = $solicitacao ?? $base['solicitacao'];
             $categoria = $categoria ?? $base['categoria'];
             $planta = $planta ?? $base['planta'];
@@ -1748,13 +1749,14 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <input type="hidden" name="acao" value="cadastro_manual">
                     <div class="col-md-4">
                         <label class="form-label">Incluir em</label>
-                        <select name="processo_existente" id="processo_existente" class="form-select" onchange="escolherProcessoExistente()">
-                            <option value="">➕ Novo processo (gera código novo)</option>
+                        <input type="text" name="processo_existente" id="processo_existente" class="form-control" list="lista-processos-abertos" autocomplete="off"
+                               placeholder="Em branco = novo processo (gera código novo)" oninput="escolherProcessoExistente()" onchange="escolherProcessoExistente()">
+                        <datalist id="lista-processos-abertos">
                             <?php foreach ($processosAbertos as $codAberto => $pa): ?>
-                                <option value="<?php echo h($codAberto); ?>"><?php echo h($codAberto . ($pa['po'] ? ' — PO ' . $pa['po'] : '') . ($pa['fornecedor'] ? ' — ' . $pa['fornecedor'] : '')); ?></option>
+                                <option value="<?php echo h($codAberto); ?>"><?php echo h(($pa['po'] ? 'PO ' . $pa['po'] : '') . ($pa['fornecedor'] ? ' — ' . $pa['fornecedor'] : '')); ?></option>
                             <?php endforeach; ?>
-                        </select>
-                        <small class="text-muted">Escolha um processo em aberto pra adicionar um componente nele, com o mesmo código.</small>
+                        </datalist>
+                        <small class="text-muted" id="aviso_processo_existente">Digite um processo em aberto pra adicionar um componente nele, com o mesmo código. Em branco = processo novo.</small>
                     </div>
                     <div class="col-md-8"></div>
                     <div class="col-md-2">
@@ -2193,9 +2195,27 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         // preenche o cabeçalho com os dados dele (dá pra mudar se quiser) e
         // tira a obrigatoriedade de Solicitação/Categoria/Planta/Modal.
         // Voltando pra "Novo processo", limpa o cabeçalho e volta ao normal.
+        // Mapa MAIÚSCULO → código como está gravado (digitação sem diferenciar maiúscula/minúscula)
+        const processosAbertosMapa = {};
+        Object.keys(processosAbertos).forEach((c) => { processosAbertosMapa[c.trim().toUpperCase()] = c; });
+        let processoExistenteAnterior = null;
+
         function escolherProcessoExistente() {
-            const codigo = document.getElementById('processo_existente').value;
-            const form = document.getElementById('processo_existente').form;
+            const campoExistente = document.getElementById('processo_existente');
+            const digitado = campoExistente.value.trim();
+            const codigo = digitado ? (processosAbertosMapa[digitado.toUpperCase()] || '') : '';
+            const aviso = document.getElementById('aviso_processo_existente');
+            if (aviso) {
+                aviso.textContent = digitado && !codigo
+                    ? '⚠️ Processo não encontrado entre os abertos — confira o código (ou deixe em branco pra criar um novo).'
+                    : 'Digite um processo em aberto pra adicionar um componente nele, com o mesmo código. Em branco = processo novo.';
+                aviso.classList.toggle('text-danger', !!(digitado && !codigo));
+            }
+            // só mexe no cabeçalho quando o processo reconhecido muda (evita limpar a cada letra)
+            if (codigo === processoExistenteAnterior) return;
+            processoExistenteAnterior = codigo;
+            if (codigo && campoExistente.value !== codigo && document.activeElement !== campoExistente) campoExistente.value = codigo;
+            const form = campoExistente.form;
             const dados = codigo ? processosAbertos[codigo] : null;
             Object.entries(camposCabecalhoProcesso).forEach(([chave, nome]) => {
                 const campo = form.querySelector('[name="' + nome + '"]');
@@ -2216,8 +2236,9 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
         function buscarPreviewCodigoProcesso() {
             const campoPreview = document.getElementById('preview_codigo_processo');
             const existente = document.getElementById('processo_existente');
-            if (existente && existente.value) {
-                if (campoPreview) campoPreview.value = existente.value;
+            const codigoExistente = existente && existente.value.trim() ? (processosAbertosMapa[existente.value.trim().toUpperCase()] || '') : '';
+            if (codigoExistente) {
+                if (campoPreview) campoPreview.value = codigoExistente;
                 return;
             }
             const categoria = (document.getElementById('categoria_manual').value || '').trim();
