@@ -339,7 +339,7 @@ try {
         // As demais colunas são só informativas e a importação ignora.
         // Só pode haver UMA coluna com "Quantidade" no nome (a importação pareia
         // a quantidade com a coluna "Data").
-        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Buyer', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Original date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Buyer', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             fputcsv($saida, [
                 $r['codigo_componente'],
@@ -352,8 +352,6 @@ try {
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
                 // Order date: data pra enviar o pedido (informativa — a importação da Programação usa "Data")
                 $r['data_pedido']->format('d/m/Y'),
-                // Original date: só preenchida quando a data foi recalculada (a original já tinha passado)
-                ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface) ? $r['data_original']->format('d/m/Y') : '',
                 $r['data']->format('d/m/Y'),
                 '',
                 '',
@@ -551,10 +549,6 @@ try {
                                     </td>
                                     <td class="text-center">
                                         <?php echo h($r['data']->format('d/m/Y')); ?>
-                                        <?php if ($r['recalculada'] && $r['data_original'] instanceof DateTimeInterface): ?>
-                                            <span class="badge bg-light text-danger border ms-1" title="Era para chegar em <?php echo h($r['data_original']->format('d/m/Y')); ?>, mas não há pedido programado. Nova data = hoje + Lead Time + Transit Time.">recalculada</span>
-                                            <small class="d-block text-muted">era <?php echo h($r['data_original']->format('d/m/Y')); ?></small>
-                                        <?php endif; ?>
                                     </td>
                                     <td class="text-center"><span class="status-badge status-<?php echo h($r['status']); ?>" <?php if ($r['estoque_seguranca_qtd'] > 0): ?>title="Estoque de segurança calculado: <?php echo numeroBr($r['estoque_seguranca_qtd'], 0); ?> unidades"<?php endif; ?>><?php echo $r['status'] === 'urgente' ? 'Urgente' : 'Planejar'; ?></span></td>
                                     <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($r['codigo_componente']); ?>">Ver evolução</a></td>

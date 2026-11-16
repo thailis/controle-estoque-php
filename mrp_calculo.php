@@ -2,9 +2,9 @@
 
 // Folga entre o RECEBIMENTO do material e o dia da DEMANDA (receber, conferir e
 // disponibilizar): data de necessidade = data da demanda − este número de dias.
-// Era 30; passou pra 20. (Os comentários abaixo que falam em "30 dias" se referem a esta folga.)
+// Era 30; passou pra 20; agora 15. (Os comentários abaixo que falam em "30 dias" se referem a esta folga.)
 if (!defined('MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA')) {
-    define('MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA', 20);
+    define('MRP_DIAS_RECEBIMENTO_ANTES_DEMANDA', 15);
 }
 
 // Funções de cálculo do MRP compartilhadas entre telas (Planejamento de Compras e
