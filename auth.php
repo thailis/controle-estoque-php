@@ -38,16 +38,21 @@ if (PHP_SAPI !== 'cli') {
         }
         $widget = <<<'HTML'
 <div id="seletor-idioma-site" class="notranslate no-print" title="Idioma / Language / 语言">
-    <span>🌐</span><div id="google_translate_element"></div>
+    <span>🌐</span>
+    <select id="seletor-idioma-select" aria-label="Idioma">
+        <option value="pt">Português</option>
+        <option value="en">English</option>
+        <option value="zh-CN">中文</option>
+    </select>
+    <div id="google_translate_element" style="display:none"></div>
 </div>
 <style>
     #seletor-idioma-site { position: fixed; right: 14px; bottom: 14px; z-index: 9999; background: #fff;
         border: 1px solid #dce4ec; border-radius: 10px; box-shadow: 0 4px 14px rgba(18,48,74,.15);
         padding: 4px 8px; display: flex; align-items: center; gap: 6px; font-size: 13px; }
-    #seletor-idioma-site .goog-te-gadget { font-size: 0; }
-    #seletor-idioma-site .goog-te-gadget select { font-size: 13px; padding: 2px 4px; border: 1px solid #dce4ec; border-radius: 6px; }
+    #seletor-idioma-select { font-size: 13px; padding: 2px 4px; border: 1px solid #dce4ec; border-radius: 6px; background: #fff; cursor: pointer; }
     /* esconde a barra do Google no topo, que empurrava o site pra baixo */
-    .goog-te-banner-frame, iframe.skiptranslate { display: none !important; }
+    .goog-te-banner-frame, body > .skiptranslate { display: none !important; }
     body { top: 0 !important; }
     @media print { #seletor-idioma-site { display: none !important; } }
 </style>
@@ -58,14 +63,24 @@ if (PHP_SAPI !== 'cli') {
         if (window.self !== window.top) { document.getElementById('seletor-idioma-site').style.display = 'none'; }
         // dados ficam sem traduzir
         document.querySelectorAll('tbody, datalist, input, textarea, .component-code').forEach(function (el) { el.classList.add('notranslate'); });
+
+        // Idioma escolhido = cookie "googtrans" (/pt/en, /pt/zh-CN). Trocar = grava o
+        // cookie e recarrega; o Google Tradutor aplica sozinho ao abrir a página.
+        var atual = (document.cookie.match(/(?:^|;\s*)googtrans=\/[^\/;]*\/([^;]+)/) || [])[1] || 'pt';
+        var seletor = document.getElementById('seletor-idioma-select');
+        seletor.value = ['en', 'zh-CN'].indexOf(atual) >= 0 ? atual : 'pt';
+        seletor.addEventListener('change', function () {
+            var host = location.hostname;
+            var expira = this.value === 'pt' ? '; expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
+            var valor = this.value === 'pt' ? '' : '/pt/' + this.value;
+            document.cookie = 'googtrans=' + valor + '; path=/' + expira;
+            document.cookie = 'googtrans=' + valor + '; path=/; domain=' + host + expira;
+            document.cookie = 'googtrans=' + valor + '; path=/; domain=.' + host + expira;
+            location.reload();
+        });
     })();
     function googleTranslateElementInit() {
-        new google.translate.TranslateElement({
-            pageLanguage: 'pt',
-            includedLanguages: 'pt,en,zh-CN',
-            layout: google.translate.TranslateElement.InlineLayout.SIMPLE,
-            autoDisplay: false
-        }, 'google_translate_element');
+        new google.translate.TranslateElement({ pageLanguage: 'pt', includedLanguages: 'pt,en,zh-CN', autoDisplay: false }, 'google_translate_element');
     }
 </script>
 <script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
