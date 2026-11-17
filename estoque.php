@@ -104,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 // Colunas que o próprio "Exportar CSV" desta tela gera e que NÃO são
                 // planta — ignoradas pra o CSV exportado poder ser reimportado sem
                 // virar estoque falso. "Sem planta" vira estoque sem planta (NULL).
-                $colunasIgnoradas = ['total', 'demanda', 'mrp', 'atendidos'];
+                $colunasIgnoradas = ['total', 'demanda', 'mrp', 'atendidos', 'fornecedor'];
                 $colunasPlanta = [];
                 foreach ($cabecalhoOriginal as $indice => $nomeOriginal) {
                     if ($indice === $idxCodigo || $indice === $idxDescricao || $indice === $idxEstoqueTotal) {
@@ -534,12 +534,14 @@ function montarSqlComponentes(string $where): string
                    COALESCE(MAX(bom.descricao), MAX(NULLIF(TRIM(e.descricao), ''))) AS descricao,
                    SUM(COALESCE(CAST(e.estoque AS DECIMAL(18,4)), 0)) AS total,
                    MAX(bom.tem_ativo) AS tem_ativo,
-                   MAX(bom.total_linhas) AS total_linhas
+                   MAX(bom.total_linhas) AS total_linhas,
+                   MAX(bom.fornecedores) AS fornecedores
             FROM estoque e
             LEFT JOIN (
                 SELECT TRIM(codigo_componente) AS codigo_componente,
                        MAX(CASE WHEN mrp IS NULL OR TRIM(mrp) = '' OR UPPER(TRIM(mrp)) <> 'N' THEN 1 ELSE 0 END) AS tem_ativo,
                        COUNT(*) AS total_linhas,
+                       GROUP_CONCAT(DISTINCT NULLIF(TRIM(fornecedor), '') ORDER BY TRIM(fornecedor) SEPARATOR ', ') AS fornecedores,
                        COALESCE(
                            MAX(CASE WHEN mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N' THEN NULLIF(TRIM(descricao), '') END),
                            MAX(NULLIF(TRIM(descricao), ''))
@@ -652,7 +654,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
 
-    $cabecalhoCsv = ['Componente', 'Descrição'];
+    $cabecalhoCsv = ['Componente', 'Descrição', 'Fornecedor'];
     foreach ($plantas as $p) { $cabecalhoCsv[] = $p; }
     if ($temSemPlanta) { $cabecalhoCsv[] = 'Ajustes'; }
     $cabecalhoCsv[] = 'Atendidos';
@@ -663,7 +665,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 
     foreach ($componentesExport as $codigo => $linha) {
         [, $mrpTexto] = statusMrp($linha['total_linhas'] !== null ? (int) $linha['total_linhas'] : null, $linha['tem_ativo'] !== null ? (int) $linha['tem_ativo'] : null);
-        $linhaCsv = [$codigo, $linha['descricao']];
+        $linhaCsv = [$codigo, $linha['descricao'], $linha['fornecedores'] ?? ''];
         // Estoque vem do banco com ponto decimal (ex.: 1234.5600). O Excel em português
         // espera vírgula decimal e lê o ponto como separador de milhar, concatenando os
         // dígitos (1234.5600 vira 12.345.600). Formatando aqui com vírgula e sem
@@ -759,6 +761,7 @@ if (!empty($componentes)) {
             max-width: 380px; min-width: 220px;
             overflow: hidden; text-overflow: ellipsis;
         }
+        .tabela-estoque .col-fornecedor { max-width: 200px; min-width: 120px; overflow: hidden; text-overflow: ellipsis; }
         .tabela-estoque .col-mrp { padding-left: 22px; min-width: 120px; }
         .tabela-estoque .col-excluir { text-align: center; width: 70px; }
         .tabela-estoque tbody tr:nth-child(even) { background: #fbfcfd; }
@@ -845,7 +848,7 @@ if (!empty($componentes)) {
                         <strong>Formato por planta</strong> (uma coluna de estoque por planta, como no Excel):<br>
                         <code>codigo_componente, 2401, 2402, 2403, ...</code><br>
                         A <strong>descrição vem da BOM</strong> — não precisa (nem adianta) mandar no CSV; se vier uma coluna <code>descricao</code>, ela é ignorada.<br>
-                        Qualquer coluna que não seja <code>codigo_componente</code>, <code>descricao</code> ou <code>estoque</code> é tratada como uma planta — exceto <code>Total</code>, <code>Atendidos</code>, <code>Demanda</code> e <code>MRP</code> (ignoradas) e <code>Ajustes</code>/<code>Sem planta</code> (estoque sem planta). Assim o próprio CSV exportado por esta tela pode ser reimportado. A coluna <code>estoque</code> (total) não é gravada nesse formato — o sistema soma sozinho o valor de todas as plantas.<br><br>
+                        Qualquer coluna que não seja <code>codigo_componente</code>, <code>descricao</code> ou <code>estoque</code> é tratada como uma planta — exceto <code>Fornecedor</code>, <code>Total</code>, <code>Atendidos</code>, <code>Demanda</code> e <code>MRP</code> (ignoradas) e <code>Ajustes</code>/<code>Sem planta</code> (estoque sem planta). Assim o próprio CSV exportado por esta tela pode ser reimportado. A coluna <code>estoque</code> (total) não é gravada nesse formato — o sistema soma sozinho o valor de todas as plantas.<br><br>
                         Números aceitam formato "1234.56" ou "1.234,56". Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
@@ -909,6 +912,7 @@ if (!empty($componentes)) {
                         <tr>
                             <th>Componente</th>
                             <th class="col-descricao">Descrição</th>
+                            <th class="col-fornecedor" title="Da BOM">Fornecedor</th>
                             <?php foreach ($plantas as $p): ?>
                                 <th class="text-end" title="Estoque da planta <?php echo h($p); ?> — duplo clique na célula para editar"><?php echo h($p); ?></th>
                             <?php endforeach; ?>
@@ -924,7 +928,7 @@ if (!empty($componentes)) {
                     </thead>
                     <tbody>
                         <?php if (empty($componentes)): ?>
-                            <tr><td colspan="<?php echo 7 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="<?php echo 8 + count($plantas) + ($temSemPlanta ? 1 : 0); ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($componentes as $codigo => $linha): ?>
                                 <?php
@@ -942,6 +946,7 @@ if (!empty($componentes)) {
                                 <tr id="linha-<?php echo h($codigo); ?>">
                                     <td><strong><?php echo h($codigo); ?></strong></td>
                                     <td class="col-descricao" title="<?php echo h($linha['descricao'] ?? ''); ?>"><?php echo h($linha['descricao'] ?? ''); ?></td>
+                                    <td class="col-fornecedor" title="<?php echo h($linha['fornecedores'] ?? ''); ?>"><?php echo h(($linha['fornecedores'] ?? '') !== '' ? $linha['fornecedores'] : '—'); ?></td>
 
                                     <?php foreach ($plantas as $p): ?>
                                         <?php $valorPlanta = $porPlanta[$codigo][$p] ?? 0.0; ?>
