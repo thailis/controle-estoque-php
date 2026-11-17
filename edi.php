@@ -227,7 +227,8 @@ function formatarDataBr(?string $data): string
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
     $arquivo = $_FILES['arquivo_csv']['tmp_name'];
-    $modo = $_POST['modo'] ?? 'adicionar';
+    // Única opção de importação: Adicionar (insere todas as linhas do arquivo).
+    $modo = 'adicionar';
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
         $mensagens[] = "❌ Erro no upload do arquivo.";
@@ -1565,35 +1566,8 @@ unset($r);
                             <input type="file" name="arquivo_csv" accept=".csv" class="form-control" required>
                         </div>
 
-                        <label class="form-label"><strong>O que fazer com os dados?</strong></label>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_adicionar" value="adicionar" checked>
-                            <label class="form-check-label" for="modo_adicionar">
-                                <strong>Adicionar</strong> — insere as linhas do arquivo, mesmo se já existirem (pode duplicar)
-                            </label>
-                        </div>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_sem_duplicar" value="sem_duplicar">
-                            <label class="form-check-label" for="modo_sem_duplicar">
-                                <strong>Adicionar sem duplicar</strong> — ignora linhas cujo Material+Semana+Evento já existe
-                            </label>
-                        </div>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_atualizar" value="atualizar">
-                            <label class="form-check-label" for="modo_atualizar">
-                                <strong>Adicionar e atualizar</strong> — se já existir (mesmo Material+Semana+Evento), atualiza os dados; senão insere novo
-                            </label>
-                        </div>
-
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="modo" id="modo_substituir" value="substituir">
-                            <label class="form-check-label" for="modo_substituir">
-                                <strong>Substituir pendentes</strong> — apaga os eventos <strong>pendentes</strong> e importa o arquivo no lugar; os já Atendidos ficam (e linha igual a um Atendido é ignorada)
-                            </label>
-                        </div>
+                        <input type="hidden" name="modo" value="adicionar">
+                        <p class="small text-muted mb-1"><strong>Adicionar</strong> — insere todas as linhas do arquivo (se já existirem, ficam duplicadas).</p>
 
                         <button type="submit" class="btn btn-primary mt-2">Importar</button>
                     </form>
