@@ -16,9 +16,62 @@
 //                      não pode usar "Limpar tabela antes de importar" (nem "Limpar
 //                      tudo" / "Excluir e substituir") em nenhuma importação
 //   'visualizador'  -> só enxerga, não pode alterar nada nem ver a tela de usuários
+//
+// Também injeta o seletor de idioma (Português / English / 中文) em todas as telas.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
+}
+
+// ---------- Tradução das telas (Português / English / 中文) ----------
+// Seletor de idioma fixo no canto de TODAS as telas (MRP e Importação), via Google
+// Tradutor. Fica aqui porque toda página inclui o auth.php. Traduz títulos, menus,
+// botões, rótulos e cabeçalhos de tabela; os DADOS (linhas das tabelas, campos
+// digitados, listas de sugestão) ficam de fora (classe notranslate), pra códigos,
+// descrições e nomes de fornecedor não serem "traduzidos" errado.
+// O idioma escolhido fica guardado no navegador e vale pras outras telas.
+// Só mexe em páginas HTML (CSV, JSON e PDF não são tocados).
+if (PHP_SAPI !== 'cli') {
+    ob_start(function (string $html): string {
+        if (stripos($html, '</body>') === false || stripos($html, 'id="seletor-idioma-site"') !== false) {
+            return $html;
+        }
+        $widget = <<<'HTML'
+<div id="seletor-idioma-site" class="notranslate no-print" title="Idioma / Language / 语言">
+    <span>🌐</span><div id="google_translate_element"></div>
+</div>
+<style>
+    #seletor-idioma-site { position: fixed; right: 14px; bottom: 14px; z-index: 9999; background: #fff;
+        border: 1px solid #dce4ec; border-radius: 10px; box-shadow: 0 4px 14px rgba(18,48,74,.15);
+        padding: 4px 8px; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    #seletor-idioma-site .goog-te-gadget { font-size: 0; }
+    #seletor-idioma-site .goog-te-gadget select { font-size: 13px; padding: 2px 4px; border: 1px solid #dce4ec; border-radius: 6px; }
+    /* esconde a barra do Google no topo, que empurrava o site pra baixo */
+    .goog-te-banner-frame, iframe.skiptranslate { display: none !important; }
+    body { top: 0 !important; }
+    @media print { #seletor-idioma-site { display: none !important; } }
+</style>
+<script>
+    (function () {
+        // dentro de um quadro (ex.: CI / PL) o seletor fica escondido — a tradução
+        // escolhida na tela principal continua valendo lá dentro
+        if (window.self !== window.top) { document.getElementById('seletor-idioma-site').style.display = 'none'; }
+        // dados ficam sem traduzir
+        document.querySelectorAll('tbody, datalist, input, textarea, .component-code').forEach(function (el) { el.classList.add('notranslate'); });
+    })();
+    function googleTranslateElementInit() {
+        new google.translate.TranslateElement({
+            pageLanguage: 'pt',
+            includedLanguages: 'pt,en,zh-CN',
+            layout: google.translate.TranslateElement.InlineLayout.SIMPLE,
+            autoDisplay: false
+        }, 'google_translate_element');
+    }
+</script>
+<script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
+HTML;
+        return str_ireplace('</body>', $widget . '</body>', $html);
+    });
 }
 
 // ---------- Restrições do papel Produção (valem pra TODAS as telas, MRP e Importação) ----------
