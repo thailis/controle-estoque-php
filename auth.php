@@ -64,6 +64,34 @@ if (PHP_SAPI !== 'cli') {
         // dados ficam sem traduzir
         document.querySelectorAll('tbody, datalist, input, textarea, .component-code').forEach(function (el) { el.classList.add('notranslate'); });
 
+        // Siglas nunca traduzidas (ex.: BOM virava "GOOD"). Só em MAIÚSCULAS, como palavra inteira.
+        var siglas = /\b(BOM|MRP|EDI|MOQ|NCM|SAP|PO|FFW|ETA|ETD|TT|FT|CI|PL|CBM|RB|OA|UnM|U\.M\.)\b/g;
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+            acceptNode: function (n) {
+                var pai = n.parentNode;
+                if (!pai || /^(SCRIPT|STYLE|TEXTAREA|OPTION)$/.test(pai.nodeName) || pai.closest('.notranslate')) return NodeFilter.FILTER_REJECT;
+                siglas.lastIndex = 0;
+                return siglas.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+            }
+        });
+        var nos = [];
+        while (walker.nextNode()) nos.push(walker.currentNode);
+        nos.forEach(function (n) {
+            var frag = document.createDocumentFragment();
+            var texto = n.nodeValue, ultimo = 0, m;
+            siglas.lastIndex = 0;
+            while ((m = siglas.exec(texto)) !== null) {
+                if (m.index > ultimo) frag.appendChild(document.createTextNode(texto.slice(ultimo, m.index)));
+                var span = document.createElement('span');
+                span.className = 'notranslate';
+                span.textContent = m[0];
+                frag.appendChild(span);
+                ultimo = m.index + m[0].length;
+            }
+            if (ultimo < texto.length) frag.appendChild(document.createTextNode(texto.slice(ultimo)));
+            n.parentNode.replaceChild(frag, n);
+        });
+
         // Idioma escolhido = cookie "googtrans" (/pt/en, /pt/zh-CN). Trocar = grava o
         // cookie e recarrega; o Google Tradutor aplica sozinho ao abrir a página.
         var atual = (document.cookie.match(/(?:^|;\s*)googtrans=\/[^\/;]*\/([^;]+)/) || [])[1] || 'pt';
