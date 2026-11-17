@@ -135,6 +135,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                 $tamanhoLote = 200;
                 $lote = [];
 
+                // Descrição vem SEMPRE da BOM (a coluna "descricao" do CSV, se vier, é ignorada).
+                $descricoesBomCsv = [];
+                $resDescBomCsv = mysqli_query($conn, "SELECT TRIM(codigo_componente) AS c, MAX(NULLIF(TRIM(descricao), '')) AS d FROM bomnova WHERE codigo_componente IS NOT NULL GROUP BY TRIM(codigo_componente)");
+                if ($resDescBomCsv) {
+                    while ($ld = mysqli_fetch_assoc($resDescBomCsv)) {
+                        $descricoesBomCsv[(string) $ld['c']] = (string) ($ld['d'] ?? '');
+                    }
+                }
+
                 $flushLote = function () use ($conn, &$lote, &$importados, &$erros, &$mensagens) {
                     if (empty($lote)) {
                         return;
@@ -179,7 +188,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $mensagens[] = "⚠️ Linha $linhaNum ignorada: componente vazio.";
                         continue;
                     }
-                    $descricao = $idxDescricao !== null ? ($linha[$idxDescricao] ?? '') : '';
+                    $descricao = $descricoesBomCsv[$codigo_componente] ?? '';
 
                     $gravouAlgumaPlanta = false;
                     foreach ($colunasPlanta as $indice => $nomePlanta) {
@@ -832,9 +841,10 @@ if (!empty($componentes)) {
                     <hr>
                     <small class="text-muted">
                         <strong>Formato simples</strong> (uma linha por componente):<br>
-                        <code>codigo_componente, descricao, estoque</code><br><br>
+                        <code>codigo_componente, estoque</code><br><br>
                         <strong>Formato por planta</strong> (uma coluna de estoque por planta, como no Excel):<br>
-                        <code>codigo_componente, descricao, estoque, 2401, 2403, ...</code><br>
+                        <code>codigo_componente, 2401, 2402, 2403, ...</code><br>
+                        A <strong>descrição vem da BOM</strong> — não precisa (nem adianta) mandar no CSV; se vier uma coluna <code>descricao</code>, ela é ignorada.<br>
                         Qualquer coluna que não seja <code>codigo_componente</code>, <code>descricao</code> ou <code>estoque</code> é tratada como uma planta — exceto <code>Total</code>, <code>Atendidos</code>, <code>Demanda</code> e <code>MRP</code> (ignoradas) e <code>Ajustes</code>/<code>Sem planta</code> (estoque sem planta). Assim o próprio CSV exportado por esta tela pode ser reimportado. A coluna <code>estoque</code> (total) não é gravada nesse formato — o sistema soma sozinho o valor de todas as plantas.<br><br>
                         Números aceitam formato "1234.56" ou "1.234,56". Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
