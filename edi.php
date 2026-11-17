@@ -1283,11 +1283,17 @@ if ($resProjetos) {
 }
 
 $eventosDisponiveis = [];
-$resEventos = mysqli_query($conn, "SELECT DISTINCT TRIM(evento) AS evento FROM edi WHERE evento IS NOT NULL AND TRIM(evento) <> '' ORDER BY evento");
+// Só eventos EM ABERTO (com pelo menos uma linha ainda Pendente). Evento com
+// tudo Atendido sai da lista — mas, se estiver escolhido no filtro, continua
+// aparecendo pra não sumir da tela.
+$resEventos = mysqli_query($conn, "SELECT DISTINCT TRIM(evento) AS evento FROM edi WHERE evento IS NOT NULL AND TRIM(evento) <> '' AND (atendido = 0 OR atendido IS NULL) ORDER BY evento");
 if ($resEventos) {
     while ($linhaEvento = mysqli_fetch_assoc($resEventos)) {
         $eventosDisponiveis[] = $linhaEvento['evento'];
     }
+}
+if ($eventoFiltro !== '' && !in_array($eventoFiltro, $eventosDisponiveis, true)) {
+    $eventosDisponiveis[] = $eventoFiltro;
 }
 
 $modelosDisponiveis = [];
