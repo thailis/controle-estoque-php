@@ -519,21 +519,16 @@ if (isset($_GET['exportar'])) {
     header('Content-Disposition: attachment; filename="pagamento.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['processo', 'status', 'po', 'fornecedor', 'cod_twin', 'data_twin', 'moeda', 'total', 'advanced1', 'advanced2', 'balance', 'liquidacao_or', 'despachante', 'numerario_inicial', 'valor_inicial', 'numerario_final', 'valor_final', 'diferenca', 'liquidacao_na', 'rb', 'oa', 'avulso'], ';', '"', '');
+    // Só as colunas pedidas — e com os mesmos nomes que a importação reconhece.
+    fputcsv($saida, ['processo', 'cod_twin', 'vencimento', 'valor', 'rb', 'oa'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
-            $linha['processo'], $linha['status'], $linha['po'], $linha['fornecedor'], $linha['cod_twin'], $linha['data_twin'], $linha['moeda'],
-            $linha['total'] !== null ? number_format((float) $linha['total'], 2, ',', '') : '',
-            $linha['advanced1'] !== null ? number_format((float) $linha['advanced1'], 2, ',', '') : '',
-            $linha['advanced2'] !== null ? number_format((float) $linha['advanced2'], 2, ',', '') : '',
-            $linha['balance'] !== null ? number_format((float) $linha['balance'], 2, ',', '') : '',
-            $linha['liquidacao_or'], $linha['despachante'], $linha['numerario_inicial'],
+            $linha['processo'],
+            $linha['cod_twin'],
+            $linha['data_twin'] ? dataBr($linha['data_twin']) : '',
             $linha['valor_inicial'] !== null ? number_format((float) $linha['valor_inicial'], 2, ',', '') : '',
-            $linha['numerario_final'],
-            $linha['valor_final'] !== null ? number_format((float) $linha['valor_final'], 2, ',', '') : '',
-            $linha['diferenca'] !== null ? number_format((float) $linha['diferenca'], 2, ',', '') : '',
-            $linha['liquidacao_na'], $linha['rb'], $linha['oa'],
-            !empty($linha['eh_avulso']) ? 'sim' : '',
+            $linha['rb'],
+            $linha['oa'],
         ], ';', '"', '');
     }
     fclose($saida);
