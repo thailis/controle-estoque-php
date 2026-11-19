@@ -17,15 +17,16 @@
 //                      tudo" / "Excluir e substituir") em nenhuma importação
 //   'visualizador'  -> só enxerga, não pode alterar nada nem ver a tela de usuários
 //
-// Também injeta o seletor de idioma (Português / English / 中文) em todas as telas.
+// Também aplica em todas as telas o idioma escolhido no login (Português / English / 中文).
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
 // ---------- Tradução das telas (Português / English / 中文) ----------
-// Seletor de idioma fixo no canto de TODAS as telas (MRP e Importação), via Google
-// Tradutor. Fica aqui porque toda página inclui o auth.php. Traduz títulos, menus,
+// O idioma é escolhido na tela de LOGIN (login.php) e fica guardado no navegador;
+// aqui o Google Tradutor só APLICA esse idioma em todas as telas (MRP e Importação),
+// sem mostrar seletor. Fica aqui porque toda página inclui o auth.php. Traduz títulos, menus,
 // botões, rótulos e cabeçalhos de tabela; os DADOS (linhas das tabelas, campos
 // digitados, listas de sugestão) ficam de fora (classe notranslate), pra códigos,
 // descrições e nomes de fornecedor não serem "traduzidos" errado.
@@ -37,30 +38,14 @@ if (PHP_SAPI !== 'cli') {
             return $html;
         }
         $widget = <<<'HTML'
-<div id="seletor-idioma-site" class="notranslate no-print" title="Idioma / Language / 语言">
-    <span>🌐</span>
-    <select id="seletor-idioma-select" aria-label="Idioma">
-        <option value="pt">Português</option>
-        <option value="en">English</option>
-        <option value="zh-CN">中文</option>
-    </select>
-    <div id="google_translate_element" style="display:none"></div>
-</div>
+<div id="seletor-idioma-site" class="notranslate no-print" style="display:none"><div id="google_translate_element"></div></div>
 <style>
-    #seletor-idioma-site { position: fixed; right: 14px; bottom: 14px; z-index: 9999; background: #fff;
-        border: 1px solid #dce4ec; border-radius: 10px; box-shadow: 0 4px 14px rgba(18,48,74,.15);
-        padding: 4px 8px; display: flex; align-items: center; gap: 6px; font-size: 13px; }
-    #seletor-idioma-select { font-size: 13px; padding: 2px 4px; border: 1px solid #dce4ec; border-radius: 6px; background: #fff; cursor: pointer; }
     /* esconde a barra do Google no topo, que empurrava o site pra baixo */
     .goog-te-banner-frame, body > .skiptranslate { display: none !important; }
     body { top: 0 !important; }
-    @media print { #seletor-idioma-site { display: none !important; } }
 </style>
 <script>
     (function () {
-        // dentro de um quadro (ex.: CI / PL) o seletor fica escondido — a tradução
-        // escolhida na tela principal continua valendo lá dentro
-        if (window.self !== window.top) { document.getElementById('seletor-idioma-site').style.display = 'none'; }
         // dados ficam sem traduzir
         document.querySelectorAll('tbody, datalist, input, textarea, .component-code').forEach(function (el) { el.classList.add('notranslate'); });
 
@@ -92,20 +77,7 @@ if (PHP_SAPI !== 'cli') {
             n.parentNode.replaceChild(frag, n);
         });
 
-        // Idioma escolhido = cookie "googtrans" (/pt/en, /pt/zh-CN). Trocar = grava o
-        // cookie e recarrega; o Google Tradutor aplica sozinho ao abrir a página.
-        var atual = (document.cookie.match(/(?:^|;\s*)googtrans=\/[^\/;]*\/([^;]+)/) || [])[1] || 'pt';
-        var seletor = document.getElementById('seletor-idioma-select');
-        seletor.value = ['en', 'zh-CN'].indexOf(atual) >= 0 ? atual : 'pt';
-        seletor.addEventListener('change', function () {
-            var host = location.hostname;
-            var expira = this.value === 'pt' ? '; expires=Thu, 01 Jan 1970 00:00:00 GMT' : '';
-            var valor = this.value === 'pt' ? '' : '/pt/' + this.value;
-            document.cookie = 'googtrans=' + valor + '; path=/' + expira;
-            document.cookie = 'googtrans=' + valor + '; path=/; domain=' + host + expira;
-            document.cookie = 'googtrans=' + valor + '; path=/; domain=.' + host + expira;
-            location.reload();
-        });
+        // O idioma é escolhido na tela de LOGIN (cookie "googtrans"); aqui só é aplicado.
     })();
     function googleTranslateElementInit() {
         new google.translate.TranslateElement({ pageLanguage: 'pt', includedLanguages: 'pt,en,zh-CN', autoDisplay: false }, 'google_translate_element');
