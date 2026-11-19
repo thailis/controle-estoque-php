@@ -619,6 +619,19 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
         .mrp-table .btn-remover-linha:hover { color: #a12727; }
         .celula-editavel { cursor: text; }
         .celula-editavel:hover { background: #f7faff; }
+
+        /* Espaçamento da tabela de pagamentos: larguras fixas por coluna,
+           respiro igual dos lados e texto sem quebrar. */
+        .tabela-pagamento { table-layout: fixed; }
+        .tabela-pagamento th, .tabela-pagamento td {
+            padding: 12px 14px; vertical-align: middle; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .tabela-pagamento th { font-size: .78rem; }
+        .tabela-pagamento .col-centro { text-align: center; }
+        .tabela-pagamento .col-num { text-align: right; }
+        .tabela-pagamento .status-badge { padding: 4px 14px; min-width: 92px; text-align: center; }
+        .tabela-pagamento .badge { font-size: .65rem; margin-left: 4px; }
     </style>
 </head>
 <body>
@@ -778,21 +791,35 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" style="min-width: 1350px;">
+                <table class="table mrp-table tabela-pagamento mb-0" style="min-width: 1400px;">
+                    <colgroup>
+                        <col style="width: 8%">   <!-- Status -->
+                        <col style="width: 12%">  <!-- Processo -->
+                        <col style="width: 9%">   <!-- PO -->
+                        <col style="width: 9%">   <!-- Fornecedor -->
+                        <col style="width: 10%">  <!-- Total processo -->
+                        <col style="width: 8%">   <!-- Cod. Twin. -->
+                        <col style="width: 7.5%"> <!-- Data -->
+                        <col style="width: 7.5%"> <!-- Vencimento -->
+                        <col style="width: 9%">   <!-- Valor -->
+                        <col style="width: 11%">  <!-- RB -->
+                        <col style="width: 4.5%"> <!-- OA -->
+                        <col style="width: 4.5%"> <!-- Excluir -->
+                    </colgroup>
                     <thead>
                         <tr>
-                            <th>Status</th>
+                            <th class="col-centro">Status</th>
                             <th>Processo</th>
                             <th>PO</th>
                             <th>Fornecedor</th>
-                            <th class="text-end" title="Soma do total de todos os componentes do processo (sem os cancelados)">Total processo</th>
-                            <th>Cod. Twin.</th>
-                            <th>Data</th>
-                            <th>Vencimento</th>
-                            <th>Valor</th>
+                            <th class="col-num" title="Soma do total de todos os componentes do processo (sem os cancelados)">Total processo</th>
+                            <th class="col-centro">Cod. Twin.</th>
+                            <th class="col-centro">Data</th>
+                            <th class="col-centro">Vencimento</th>
+                            <th class="col-num">Valor</th>
                             <th>RB</th>
-                            <th>OA</th>
-                            <th class="no-print">Excluir</th>
+                            <th class="col-centro">OA</th>
+                            <th class="no-print col-centro">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -813,7 +840,7 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                                     }
                                 ?>
                                 <tr>
-                                    <td>
+                                    <td class="col-centro">
                                         <?php if ($processoCancelado): ?>
                                             <span class="status-badge <?php echo $statusClasse; ?>"><?php echo h($statusTexto); ?></span>
                                         <?php else: ?>
@@ -827,22 +854,22 @@ $totais = mysqli_fetch_assoc(mysqli_query($conn, "
                                         <?php endif; ?>
                                     </td>
                                     <td><span class="component-code"><?php echo h($r['processo']); ?></span><?php if ($r['componentes_vivo'] === null): ?> <span class="badge bg-light text-secondary border" title="Pagamento avulso — não está em Processos">avulso</span><?php endif; ?></td>
-                                    <td><?php echo h($r['po'] ?: '—'); ?></td>
-                                    <td><?php echo h($r['fornecedor'] ?: '—'); ?></td>
-                                    <td class="text-end text-nowrap" title="<?php echo (int) ($r['componentes_vivo'] ?? 0); ?> componente(s) no processo"><?php echo h($r['moeda'] ?: ''); ?> <?php echo numeroBr($r['total']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="cod_twin" data-valor-bruto="<?php echo h($r['cod_twin'] ?? ''); ?>"><?php echo h($r['cod_twin'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="data_twin" data-valor-bruto="<?php echo $r['data_twin'] ? h(dataBr($r['data_twin'])) : ''; ?>"><?php echo dataBr($r['data_twin']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="valor_inicial" data-valor-bruto="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>"><?php echo numeroBr($r['valor_inicial']); ?></td>
+                                    <td title="<?php echo h($r['po'] ?? ''); ?>"><?php echo h($r['po'] ?: '—'); ?></td>
+                                    <td title="<?php echo h($r['fornecedor'] ?? ''); ?>"><?php echo h($r['fornecedor'] ?: '—'); ?></td>
+                                    <td class="col-num" title="<?php echo (int) ($r['componentes_vivo'] ?? 0); ?> componente(s) no processo"><?php echo h($r['moeda'] ?: ''); ?> <?php echo numeroBr($r['total']); ?></td>
+                                    <td class="celula-editavel col-centro" data-id="<?php echo $id; ?>" data-campo="cod_twin" data-valor-bruto="<?php echo h($r['cod_twin'] ?? ''); ?>"><?php echo h($r['cod_twin'] ?: '—'); ?></td>
+                                    <td class="celula-editavel col-centro" data-id="<?php echo $id; ?>" data-campo="data_twin" data-valor-bruto="<?php echo $r['data_twin'] ? h(dataBr($r['data_twin'])) : ''; ?>"><?php echo dataBr($r['data_twin']); ?></td>
+                                    <td class="celula-editavel col-centro" data-id="<?php echo $id; ?>" data-campo="numerario_inicial" data-valor-bruto="<?php echo $r['numerario_inicial'] ? h(dataBr($r['numerario_inicial'])) : ''; ?>"><?php echo dataBr($r['numerario_inicial']); ?></td>
+                                    <td class="celula-editavel col-num" data-id="<?php echo $id; ?>" data-campo="valor_inicial" data-valor-bruto="<?php echo $r['valor_inicial'] !== null ? numeroBr($r['valor_inicial']) : ''; ?>"><?php echo numeroBr($r['valor_inicial']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="rb" data-valor-bruto="<?php echo h($r['rb'] ?? ''); ?>"><?php echo h($r['rb'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>">
+                                    <td class="celula-editavel col-centro" data-id="<?php echo $id; ?>" data-campo="oa" data-valor-bruto="<?php echo h($r['oa'] ?? ''); ?>">
                                         <?php if (!empty($r['oa'])): ?>
                                             <a href="<?php echo h($r['oa']); ?>" target="_blank" rel="noopener" onclick="event.stopPropagation();">Abrir</a>
                                         <?php else: ?>
                                             —
                                         <?php endif; ?>
                                     </td>
-                                    <td class="no-print">
+                                    <td class="no-print col-centro">
                                         <form method="POST" class="d-inline m-0" onsubmit="return confirm('Excluir este pagamento? Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_pagamento">
                                             <input type="hidden" name="id" value="<?php echo $id; ?>">
