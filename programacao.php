@@ -521,6 +521,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
 
     $jaAtendido = (int) $itemProg['atendido'] === 1;
 
+    // Sem planta preenchida não marca Atendido (a quantidade não vai para o estoque).
+    if (!$jaAtendido && trim((string) ($itemProg['planta'] ?? '')) === '') {
+        echo json_encode(['ok' => false, 'erro' => '⚠️ Preencha a Planta desta linha antes de marcar como Atendido — sem planta a quantidade não vai para o estoque.']);
+        exit;
+    }
+
     mysqli_begin_transaction($conn);
     try {
         if ($jaAtendido) {
@@ -551,7 +557,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
             $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
             mysqli_stmt_close($stmtDesc);
 
-            $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : 'Recebido'; // planta da programação (sem planta = "Recebido")
+            $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : null; // planta da programação (obrigatória)
             $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
             mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
             mysqli_stmt_execute($stmtInsEstoque);
@@ -578,7 +584,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
         'classe' => $novoAtendido ? 'is-atendido' : 'is-pendente',
         'title' => $novoAtendido
             ? 'Clique para reabrir (remove a entrada do estoque)'
-            : 'Clique para marcar como atendido (soma no estoque)',
+            : 'Clique para marcar como atendido (soma no estoque da planta)',
         'dataFormatada' => $itemProg['data'] ? (new DateTimeImmutable($itemProg['data']))->format('d/m/Y') : '',
         'quantidadeFormatada' => number_format((float) $itemProg['quantidade'], 2, ',', ''),
     ]);
@@ -629,6 +635,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
         $itemProg = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtBuscaItem));
         mysqli_stmt_close($stmtBuscaItem);
 
+        if ($itemProg && (int) $itemProg['atendido'] !== 1 && trim((string) ($itemProg['planta'] ?? '')) === '') {
+            header('Location: programacao.php?flash=erro_sem_planta#linha-' . $idAlternar);
+            exit;
+        }
+
         if ($itemProg) {
             $jaAtendido = (int) $itemProg['atendido'] === 1;
 
@@ -662,7 +673,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'alterna
                     $descricaoComponente = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDesc))['descricao'] ?? '';
                     mysqli_stmt_close($stmtDesc);
 
-                    $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : 'Recebido'; // planta da programação (sem planta = "Recebido")
+                    $plantaRecebimento = trim((string) ($itemProg['planta'] ?? '')) !== '' ? trim((string) $itemProg['planta']) : null; // planta da programação (obrigatória)
                     $stmtInsEstoque = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
                     mysqli_stmt_bind_param($stmtInsEstoque, 'ssdsi', $codigoComponente, $descricaoComponente, $quantidadeRecebida, $plantaRecebimento, $idAlternar);
                     mysqli_stmt_execute($stmtInsEstoque);
@@ -812,8 +823,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
         while ($l = mysqli_fetch_assoc($resLinhasLote)) { $linhasLote[] = $l; }
         mysqli_stmt_close($stmtLinhasLote);
 
+        $semPlantaLote = $marcarAtendido
+            ? count(array_filter($linhasLote, fn($l) => trim((string) ($l['planta'] ?? '')) === ''))
+            : 0;
+
         if (empty($linhasLote)) {
             $flashLote = 'lote_nada';
+        } elseif ($semPlantaLote > 0) {
+            // Bloqueia o lote inteiro: nenhuma linha vai para o estoque enquanto houver linha sem planta.
+            $flashLote = 'lote_sem_planta';
+            $qtdLote = $semPlantaLote;
         } else {
             mysqli_begin_transaction($conn);
             try {
@@ -829,7 +848,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'situaca
                         $descLote = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtDescLote))['descricao'] ?? '';
                         mysqli_stmt_close($stmtDescLote);
 
-                        $plantaLote = trim((string) ($l['planta'] ?? '')) !== '' ? trim((string) $l['planta']) : 'Recebido'; // planta da programação
+                        $plantaLote = trim((string) ($l['planta'] ?? '')) !== '' ? trim((string) $l['planta']) : null; // planta da programação (obrigatória)
                         $stmtInsLote = mysqli_prepare($conn, "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem_programacao_id) VALUES (?, ?, ?, ?, ?)");
                         mysqli_stmt_bind_param($stmtInsLote, 'ssdsi', $codigoLote, $descLote, $qtdRecebidaLote, $plantaLote, $idLote);
                         mysqli_stmt_execute($stmtInsLote);
@@ -1463,6 +1482,8 @@ $flashMap = [
     'lote_liberado' => ['success', '✅ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) Liberada(s) — voltam a aparecer na Evolução geral e no Detalhe do componente.'],
     'lote_excluido' => ['success', '🗑️ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) excluída(s) (e as entradas de estoque geradas por elas removidas).'],
     'lote_data_invalida' => ['danger', '❌ Data inválida. Use dd/mm/aaaa.'],
+    'erro_sem_planta' => ['warning', '⚠️ Preencha a Planta desta linha antes de marcar como Atendido — sem planta a quantidade não vai para o estoque.'],
+    'lote_sem_planta' => ['warning', '⚠️ ' . (int) ($_GET['lote_qtd'] ?? 0) . ' linha(s) desse Processo/PO estão sem Planta. Preencha a Planta antes de marcar como Atendido — nada foi enviado ao estoque.'],
     'lote_nada'     => ['warning', '⚠️ Nenhuma linha pra alterar — confira se o Processo/PO foi digitado exatamente igual, ou se as linhas já estão nessa situação.'],
     'lote_erro'     => ['danger', '❌ Não foi possível alterar a situação em lote. Informe o Processo/PO e a situação.'],
     'sinc_ok'       => [
@@ -2054,7 +2075,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                             <input type="hidden" name="sync_atual" value="<?php echo h($syncFiltro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
-                                                    title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque)'; ?>">
+                                                    title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque da planta)'; ?>">
                                                 <span class="dot"></span>
                                                 <?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?>
                                             </button>

@@ -475,7 +475,8 @@ if ($busca !== '') {
 
 // Lista de plantas existentes na base (vira uma coluna por planta na tabela)
 $plantas = [];
-$resPlantas = mysqli_query($conn, "SELECT DISTINCT planta FROM estoque WHERE planta IS NOT NULL AND TRIM(planta) <> '' ORDER BY planta");
+// "Recebido" não é mais coluna: a Programação só manda para o estoque com a planta preenchida.
+$resPlantas = mysqli_query($conn, "SELECT DISTINCT planta FROM estoque WHERE planta IS NOT NULL AND TRIM(planta) <> '' AND UPPER(TRIM(planta)) <> 'RECEBIDO' ORDER BY planta");
 while ($linhaPlanta = mysqli_fetch_assoc($resPlantas)) {
     $plantas[] = $linhaPlanta['planta'];
 }
@@ -920,7 +921,7 @@ if (!empty($componentes)) {
                                 <th class="text-end" title="Ajustes manuais e estoque importado sem planta (não inclui EDIs).">Ajustes</th>
                             <?php endif; ?>
                             <th class="text-end" title="Consumo dos EDIs CONFIRMADOS (Atendido): quantidade do EDI × consumo da BOM. Reabrir um EDI tira o valor dele daqui. É subtraído do Total.">Atendidos</th>
-                            <th class="text-end col-total" title="Estoque das plantas (inclui Recebido) + Ajustes − Atendidos">Total</th>
+                            <th class="text-end col-total" title="Estoque das plantas + Ajustes − Atendidos">Total</th>
                             <th class="text-end" title="Previsão: EDIs ainda NÃO confirmados × consumo da BOM. Só pra visualizar — NÃO é descontada do Total.">Demanda</th>
                             <th class="col-mrp">MRP</th>
                             <th class="col-excluir" title="Excluir">Excluir</th>
