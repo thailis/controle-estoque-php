@@ -1788,15 +1788,11 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                         <input type="text" name="projeto_manual" class="form-control">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label">Material</label>
-                        <input type="text" name="material_manual" class="form-control">
-                    </div>
-                    <div class="col-md-2">
                         <label class="form-label">Componente</label>
                         <input type="text" name="codigo_componente_manual" id="codigo_componente_manual" class="form-control" oninput="buscarDescricaoBomProcesso()" onchange="buscarDescricaoBomProcesso(true)">
                         <small id="status_descricao_bom" class="text-muted"></small>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                         <label class="form-label">Descrição</label>
                         <input type="text" name="descricao_manual" id="descricao_manual" class="form-control" oninput="this.dataset.auto = ''">
                     </div>
