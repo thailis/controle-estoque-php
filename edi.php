@@ -1091,7 +1091,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
         exit;
     };
 
-    $operacoesValidas = ['excluir', 'renomear_evento', 'data', 'quantidade', 'atendido', 'pendente'];
+    // Ações em massa só mexem em itens PENDENTES (os Atendidos ficam intactos).
+    $operacoesValidas = ['excluir', 'renomear_evento', 'data', 'quantidade', 'atendido'];
     if (($mProjeto === '' && $mEvento === '') || !in_array($operacao, $operacoesValidas, true)) {
         $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Selecione um Projeto e/ou Evento no filtro e escolha a ação.']);
     }
@@ -1129,9 +1130,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
     $linhasMassa = mysqli_fetch_all(mysqli_stmt_get_result($stmtSel), MYSQLI_ASSOC);
     mysqli_stmt_close($stmtSel);
 
+    // Só os PENDENTES entram na ação em massa; os Atendidos são só contados no aviso.
+    $qtdAtendidosMantidos = count(array_filter($linhasMassa, fn($l) => (int) ($l['atendido'] ?? 0) === 1));
+    $linhasMassa = array_values(array_filter($linhasMassa, fn($l) => (int) ($l['atendido'] ?? 0) !== 1));
     $ids = array_map(fn($l) => (int) $l['id'], $linhasMassa);
     if (empty($ids)) {
-        $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Nenhum registro encontrado com esse filtro.']);
+        $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Nenhum registro PENDENTE com esse filtro — a ação em massa não mexe nos Atendidos.']);
     }
 
     // Executa um UPDATE/DELETE com "... IN (ids)" em blocos de 500
@@ -1156,11 +1160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
             case 'excluir':
                 // Exclusão em massa só apaga eventos PENDENTES — os já Atendidos
                 // (que já baixaram estoque) ficam intactos e são só contados no aviso.
-                $idsPendentes = array_map(
-                    fn($l) => (int) $l['id'],
-                    array_filter($linhasMassa, fn($l) => (int) ($l['atendido'] ?? 0) !== 1)
-                );
-                $qtdAtendidosMantidos = count($ids) - count($idsPendentes);
+                $idsPendentes = $ids;
                 if (!empty($idsPendentes)) {
                     $executarEmLotes("DELETE FROM estoque WHERE origem_edi_id", '', [], $idsPendentes);
                     $qtdAfetada = $executarEmLotes("DELETE FROM edi WHERE _tidb_rowid", '', [], $idsPendentes);
@@ -1187,19 +1187,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
 
             case 'quantidade':
                 $executarEmLotes("UPDATE edi SET quantidade = ? WHERE _tidb_rowid", 'd', [(float) $novaQuantidade], $ids);
-                // Os que já estão Atendidos têm o estoque recalculado com a quantidade nova
-                foreach ($linhasMassa as $l) {
-                    if ((int) $l['atendido'] === 1) {
-                        aplicarDemandaEdiNoEstoque($conn, (int) $l['id'], (string) $l['material'], (float) $novaQuantidade, false);
-                        aplicarDemandaEdiNoEstoque($conn, (int) $l['id'], (string) $l['material'], (float) $novaQuantidade, true);
-                    }
-                }
                 $qtdAfetada = count($ids);
                 break;
 
             case 'atendido':
-            case 'pendente':
-                $marcarAtendido = $operacao === 'atendido';
+                $marcarAtendido = true;
                 // Só mexe nas linhas que realmente mudam de situação (as que já
                 // estão na situação desejada são puladas, pra não lançar o estoque 2x)
                 $alvo = array_values(array_filter($linhasMassa, fn($l) => ((int) $l['atendido'] === 1) !== $marcarAtendido));
@@ -1251,7 +1243,7 @@ $flashMap = [
         'atendido'        => 'Marcado(s) como Atendido',
         'pendente'        => 'Marcado(s) como Pendente',
     ][$_GET['massa_op'] ?? ''] ?? 'Ação aplicada em') . ': ' . (int) ($_GET['massa_qtd'] ?? 0) . ' registro(s).'
-        . ((int) ($_GET['massa_mantidos'] ?? 0) > 0 ? ' ' . (int) $_GET['massa_mantidos'] . ' já Atendido(s) foram mantidos (a exclusão em massa só apaga pendentes).' : '')],
+        . ((int) ($_GET['massa_mantidos'] ?? 0) > 0 ? ' ' . (int) $_GET['massa_mantidos'] . ' já Atendido(s) não foram alterados (a ação em massa só mexe nos pendentes).' : '')],
 ];
 
 // Lista de materiais existentes na BOM, pra sugerir no campo de inclusão manual
@@ -1317,6 +1309,19 @@ if (!empty($params)) {
 }
 $total = mysqli_fetch_assoc($resultTotal)['total'];
 $totalPaginas = max(1, ceil($total / $porPagina));
+
+// Quantos dos filtrados estão PENDENTES (só eles entram nas ações em massa)
+$totalPendentesMassa = 0;
+if ($projetoFiltro !== '' || $eventoFiltro !== '') {
+    if ($filtro !== 'atendido') {
+        [$wPend, $pPend, $tPend] = montarFiltroEdi($busca, 'pendente', $anoFiltro, $projetoFiltro, $modeloFiltro, $eventoFiltro);
+        $stmtPend = mysqli_prepare($conn, "SELECT COUNT(*) AS n FROM edi $wPend");
+        if (!empty($pPend)) { mysqli_stmt_bind_param($stmtPend, $tPend, ...$pPend); }
+        mysqli_stmt_execute($stmtPend);
+        $totalPendentesMassa = (int) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmtPend))['n'] ?? 0);
+        mysqli_stmt_close($stmtPend);
+    }
+}
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
@@ -1697,7 +1702,7 @@ unset($r);
 
         <div class="card p-3 mb-4 border-warning">
             <details <?php echo ($projetoFiltro !== '' || $eventoFiltro !== '') ? 'open' : ''; ?>>
-                <summary>⚡ Ações em massa (sobre os registros filtrados)</summary>
+                <summary>⚡ Ações em massa (sobre os registros PENDENTES filtrados)</summary>
                 <?php if ($projetoFiltro === '' && $eventoFiltro === ''): ?>
                     <div class="alert alert-secondary py-2 mt-3 mb-0">
                         Selecione um <strong>Projeto</strong> e/ou um <strong>Evento</strong> nos filtros acima para liberar as ações em massa.
@@ -1714,7 +1719,8 @@ unset($r);
                         <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
                         <div class="col-12">
                             <small class="text-muted">
-                                Vai afetar <strong><?php echo number_format($total, 0, ',', '.'); ?> registro(s)</strong>
+                                Vai afetar <strong><?php echo number_format($totalPendentesMassa, 0, ',', '.'); ?> registro(s) pendente(s)</strong>
+                                <?php if ((int) $total - $totalPendentesMassa > 0): ?>(<?php echo number_format((int) $total - $totalPendentesMassa, 0, ',', '.'); ?> Atendido(s) ficam de fora)<?php endif; ?>
                                 <?php if ($projetoFiltro !== ''): ?> · Projeto: <strong><?php echo htmlspecialchars($projetoFiltro); ?></strong><?php endif; ?>
                                 <?php if ($eventoFiltro !== ''): ?> · Evento: <strong><?php echo htmlspecialchars($eventoFiltro); ?></strong><?php endif; ?>
                                 <?php if ($anoFiltro !== ''): ?> · Ano: <strong><?php echo htmlspecialchars($anoFiltro); ?></strong><?php endif; ?>
@@ -1731,8 +1737,7 @@ unset($r);
                                 <option value="data">Alterar data</option>
                                 <option value="quantidade">Alterar quantidade</option>
                                 <option value="atendido">Marcar como Atendido</option>
-                                <option value="pendente">Marcar como Pendente</option>
-                                <option value="excluir">🗑️ Excluir (só pendentes)</option>
+                                <option value="excluir">🗑️ Excluir</option>
                             </select>
                         </div>
                         <div class="col-auto" id="massa-valor-box" style="display:none">
@@ -1749,7 +1754,7 @@ unset($r);
                             const box = document.getElementById('massa-valor-box');
                             const lbl = document.getElementById('massa-valor-label');
                             const inp = document.getElementById('massa-valor');
-                            const total = <?php echo (int) $total; ?>;
+                            const total = <?php echo (int) $totalPendentesMassa; ?>;
                             const config = {
                                 renomear_evento: ['Novo nome do evento', ''],
                                 data: ['Nova data', 'dd/mm/aaaa'],
@@ -1763,9 +1768,9 @@ unset($r);
                             });
                             document.getElementById('form-acao-massa').addEventListener('submit', function (e) {
                                 const texto = sel.options[sel.selectedIndex].text.replace('🗑️ ', '');
-                                let msg = texto + ' em ' + total + ' registro(s) filtrado(s)?';
+                                let msg = texto + ' em ' + total + ' registro(s) PENDENTE(S)?\n(Os Atendidos não são alterados.)';
                                 if (config[sel.value]) msg += '\nNovo valor: ' + inp.value;
-                                if (sel.value === 'excluir') msg += '\n\nATENÇÃO: só os eventos PENDENTES serão excluídos (os Atendidos ficam). A exclusão não pode ser desfeita.';
+                                if (sel.value === 'excluir') msg += '\n\nATENÇÃO: a exclusão não pode ser desfeita.';
                                 if (!confirm(msg)) e.preventDefault();
                             });
                         })();
