@@ -940,6 +940,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
     $idsAtualizadas = [];
     $sincSemPo = [];
     $sincSemMudanca = 0;
+    $sincRemovidas = 0;
+    $sincRemovidasLista = [];
     $flashSinc = 'sinc_ok';
     // Carimbo desta sincronização (horário de Brasília) — vai em cada linha
     // criada/alterada, pra dar pra filtrar depois ("Sincronização" na busca).
@@ -973,6 +975,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         $linhasProc = [];
         while ($l = mysqli_fetch_assoc($resProc)) {
             $linhasProc[] = $l;
+        }
+
+        // Mapa do que existe hoje em Processos (qualquer status), pra limpar da
+        // Programação o componente que foi EXCLUÍDO (ou cancelado) de um processo.
+        //   $procExiste[P]       = o processo P ainda existe em Processos
+        //   $procAberto[P]       = P tem pelo menos uma linha em aberto
+        //   $compAberto[P][C]    = o componente C está em aberto dentro de P
+        $procExiste = [];
+        $procAberto = [];
+        $compAberto = [];
+        $resMapa = mysqli_query($connImp, "
+            SELECT UPPER(TRIM(processo)) AS p, UPPER(TRIM(COALESCE(codigo_componente, ''))) AS c,
+                   MAX(CASE WHEN COALESCE(NULLIF(LOWER(TRIM(status)), ''), 'aberto') = 'aberto' THEN 1 ELSE 0 END) AS aberto
+            FROM processos
+            WHERE processo IS NOT NULL AND TRIM(processo) <> ''
+            GROUP BY UPPER(TRIM(processo)), UPPER(TRIM(COALESCE(codigo_componente, '')))
+        ");
+        while ($l = mysqli_fetch_assoc($resMapa)) {
+            $procExiste[$l['p']] = true;
+            if ((int) $l['aberto'] === 1) {
+                $procAberto[$l['p']] = true;
+                if ($l['c'] !== '') { $compAberto[$l['p']][$l['c']] = true; }
+            }
         }
         mysqli_close($connImp);
 
@@ -1103,6 +1128,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
             $idsCriadas[] = $idNova;
             $marcarSync($idNova, 'criada');
         }
+
+        // Remoção: linha PENDENTE da Programação cujo componente não está mais no
+        // processo (foi excluído ou cancelado em Processos) é apagada.
+        //   - processo ainda em aberto em Processos, mas sem esse componente → apaga;
+        //   - processo que nem existe mais em Processos → apaga só se a linha veio
+        //     da sincronização (origem = sync), pra não mexer em lançamento manual.
+        // Linha Atendida nunca é apagada (o estoque já foi lançado com ela), e
+        // processo finalizado também não é tocado.
+        $resPendentes = mysqli_query($conn, "
+            SELECT id, UPPER(TRIM(processo)) AS p, UPPER(TRIM(codigo_componente)) AS c,
+                   TRIM(processo) AS processo_original, TRIM(codigo_componente) AS componente_original,
+                   " . ($temSync ? "COALESCE(origem, '')" : "''") . " AS origem
+            FROM programacao
+            WHERE COALESCE(atendido, 0) = 0
+              AND processo IS NOT NULL AND TRIM(processo) <> ''
+        ");
+        $stmtRemove = mysqli_prepare($conn, "DELETE FROM programacao WHERE id = ? AND COALESCE(atendido, 0) = 0");
+        while ($pend = mysqli_fetch_assoc($resPendentes)) {
+            $pKey = (string) $pend['p'];
+            $cKey = (string) $pend['c'];
+            $remover = false;
+            if (isset($procAberto[$pKey])) {
+                $remover = !isset($compAberto[$pKey][$cKey]);
+            } elseif (!isset($procExiste[$pKey]) && !empty($procExiste) && $pend['origem'] === 'sync') {
+                $remover = true;
+            }
+            if ($remover) {
+                $idRemover = (int) $pend['id'];
+                mysqli_stmt_bind_param($stmtRemove, 'i', $idRemover);
+                mysqli_stmt_execute($stmtRemove);
+                if (mysqli_stmt_affected_rows($stmtRemove) > 0) {
+                    $sincRemovidas++;
+                    $sincRemovidasLista[] = $pend['componente_original'] . ' (' . $pend['processo_original'] . ')';
+                }
+            }
+        }
+        mysqli_stmt_close($stmtRemove);
+
         mysqli_commit($conn);
         mysqli_stmt_close($stmtBusca);
         mysqli_stmt_close($stmtCompleta);
@@ -1124,6 +1187,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'sincron
         'sinc_compl'   => $sincCompletadas,
         'sinc_exist'   => $sincExistentes,
         'sinc_semmud'  => $sincSemMudanca,
+        'sinc_rem'     => $sincRemovidas,
+        'sinc_rem_lista' => implode(', ', array_slice($sincRemovidasLista, 0, 30)),
         // link "Ver tudo desta sincronização" (filtro por carimbo)
         'sinc_em'      => (isset($temSync) && $temSync && ($sincCriadas + $sincCompletadas + $sincExistentes) > 0) ? $syncEm : '',
         'sinc_semdata' => implode(', ', array_slice(array_keys($sincSemData), 0, 30)),
@@ -1499,6 +1564,9 @@ $flashMap = [
             . (int) ($_GET['sinc_compl'] ?? 0) . ' completada(s) com processo/PO, '
             . (int) ($_GET['sinc_exist'] ?? 0) . ' atualizada(s) com mudança (quantidade, preço, moeda ou planta), '
             . (int) ($_GET['sinc_semmud'] ?? 0) . ' já existiam sem nenhuma mudança.'
+            . ((int) ($_GET['sinc_rem'] ?? 0) > 0
+                ? ' 🗑️ ' . (int) $_GET['sinc_rem'] . ' removida(s) por não estarem mais no processo: <strong>' . htmlspecialchars((string) ($_GET['sinc_rem_lista'] ?? ''), ENT_QUOTES, 'UTF-8') . '</strong>.'
+                : '')
             . (trim((string) ($_GET['sinc_em'] ?? '')) !== ''
                 ? ' <a class="alert-link" href="programacao.php?filtro=&mes=&sync=' . htmlspecialchars(urlencode((string) $_GET['sinc_em']), ENT_QUOTES, 'UTF-8') . '">Ver tudo desta sincronização</a> •'
                 : '')
