@@ -125,7 +125,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'buscar_processo_programacao') {
             FROM programacao p
             WHERE UPPER(TRIM(p.po)) = UPPER(TRIM(?))
               AND COALESCE(p.atendido, 0) = 0
-            ORDER BY p.id
+            -- Agrupa pela coluna Order (Processo): itens do mesmo processo ficam juntos.
+            -- Linha sem processo vai pro fim; dentro do processo, mantém a ordem de lançamento.
+            ORDER BY (TRIM(COALESCE(p.processo, '')) = ''), TRIM(p.processo), p.id
         ");
         mysqli_stmt_bind_param($stmt, 's', $processo);
         mysqli_stmt_execute($stmt);
