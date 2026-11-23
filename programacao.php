@@ -610,6 +610,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
         mysqli_stmt_close($stmtExcluirProg);
     }
 
+    // Exclusão via AJAX (clique no ✕): responde JSON e a linha some da tela sem recarregar.
+    if (($_POST['ajax'] ?? '') === '1') {
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['ok' => $idExcluir > 0]);
+        exit;
+    }
+
     header('Location: programacao.php?' . http_build_query([
         'pagina'     => $_POST['pagina_atual'] ?? 1,
         'busca'      => $_POST['busca_atual'] ?? '',
@@ -2343,22 +2350,32 @@ while ($row = mysqli_fetch_assoc($result)) {
         });
     </script>
     <script>
-        // Exclusão recarrega a página (o registro some da tabela, então não há
-        // linha pra manter na tela), mas guarda a posição do scroll antes de
-        // enviar e restaura depois do reload, pra não voltar pro topo.
+        // Exclusão sem recarregar a página: depois do "OK" na confirmação, apaga
+        // via AJAX e só remove a linha da tabela — a tela fica parada onde está.
         document.addEventListener('submit', function (evento) {
             const form = evento.target;
             const acaoInput = form.querySelector('input[name="acao"]');
-            if (acaoInput && acaoInput.value === 'excluir_programacao') {
-                sessionStorage.setItem('programacao_scroll', String(window.scrollY));
-            }
-        });
-        window.addEventListener('DOMContentLoaded', function () {
-            const scrollSalvo = sessionStorage.getItem('programacao_scroll');
-            if (scrollSalvo !== null) {
-                window.scrollTo(0, parseInt(scrollSalvo, 10) || 0);
-                sessionStorage.removeItem('programacao_scroll');
-            }
+            if (!acaoInput || acaoInput.value !== 'excluir_programacao') return;
+            if (evento.defaultPrevented) return; // clicou em "Cancelar" na confirmação
+            evento.preventDefault();
+
+            const botao = form.querySelector('button[type="submit"]');
+            if (botao) botao.disabled = true;
+            const dados = new URLSearchParams(new FormData(form));
+            dados.set('ajax', '1');
+
+            fetch('programacao.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: dados.toString()
+            })
+                .then(r => r.json())
+                .then(json => {
+                    if (!json.ok) { alert('Não foi possível excluir.'); if (botao) botao.disabled = false; return; }
+                    const linha = form.closest('tr');
+                    if (linha) linha.remove();
+                })
+                .catch(() => { alert('Erro de conexão ao excluir.'); if (botao) botao.disabled = false; });
         });
     </script>
     <script>
