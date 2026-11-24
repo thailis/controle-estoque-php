@@ -1831,6 +1831,9 @@ while ($row = mysqli_fetch_assoc($result)) {
             padding-bottom: 10px;
         }
         .table td { white-space: nowrap; vertical-align: middle; }
+        /* Tabela principal: cabeçalho e conteúdo centralizados na mesma linha */
+        .tabela-programacao > thead > tr > th,
+        .tabela-programacao > tbody > tr > td { text-align: center !important; }
         /* Mais respiro entre as colunas e linhas da tabela (estava amontoado) */
         .table.table-sm > :not(caption) > * > * { padding: 9px 14px; }
         .table.table-sm > thead > tr > th { padding-top: 12px; padding-bottom: 12px; }
@@ -2101,7 +2104,7 @@ while ($row = mysqli_fetch_assoc($result)) {
 
         <div class="card">
             <div class="card-body table-responsive">
-                <table class="table table-hover table-sm">
+                <table class="table table-hover table-sm tabela-programacao">
                     <thead>
                         <tr>
                             <th>Situação</th>
