@@ -294,8 +294,9 @@ if ($resProcessosProgramacao) {
         /* Os rótulos trocados dentro do cabeçalho (ETA at YAPP, QTY) são <span>:
            ficam "inline" pra não virar célula de tabela e sair do centro. */
         table.po-tabela.modo-release th span.col-release { display: inline; }
-        /* No Release a quantidade fica centralizada, igual ao cabeçalho */
-        table.po-tabela.modo-release td.f-qtd { text-align: center; }
+        /* Conteúdo centralizado embaixo do cabeçalho (Detail e Release, tela e PDF) */
+        table.po-tabela tbody td,
+        table.po-tabela tbody td input { text-align: center !important; }
         table.po-tabela th.w-part { width: 12%; }
         table.po-tabela th.w-desc { width: 23%; }
         table.po-tabela th.w-data { width: 13%; }
