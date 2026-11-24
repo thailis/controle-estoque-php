@@ -291,6 +291,11 @@ if ($resProcessosProgramacao) {
         table.po-tabela .col-release { display: none; }
         table.po-tabela.modo-release .col-release { display: table-cell; }
         table.po-tabela.modo-release .col-normal { display: none; }
+        /* Os rótulos trocados dentro do cabeçalho (ETA at YAPP, QTY) são <span>:
+           ficam "inline" pra não virar célula de tabela e sair do centro. */
+        table.po-tabela.modo-release th span.col-release { display: inline; }
+        /* No Release a quantidade fica centralizada, igual ao cabeçalho */
+        table.po-tabela.modo-release td.f-qtd { text-align: center; }
         table.po-tabela th.w-part { width: 12%; }
         table.po-tabela th.w-desc { width: 23%; }
         table.po-tabela th.w-data { width: 13%; }
