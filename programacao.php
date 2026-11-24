@@ -2116,7 +2116,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Moeda</th>
                             <th class="text-center">Data</th>
                             <th class="text-end">Quantidade</th>
-                            <th class="text-end" title="Quantidade confirmada via Confirmar Entrega (site de Importação)">Importado</th>
                             <th class="text-end" title="Preço × Quantidade">Total Pedido</th>
                             <th>Data Recebida</th>
                             <th class="text-end">Quantidade Recebida</th>
@@ -2127,7 +2126,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="18" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -2228,9 +2227,6 @@ while ($row = mysqli_fetch_assoc($result)) {
                                         title="Duplo clique para editar"
                                         <?php endif; ?>
                                     ><?php echo number_format((float) $row['quantidade'], 2, ',', '.'); ?></td>
-                                    <td class="text-end text-muted" title="Preenchido automaticamente ao confirmar entrega no site de Importação">
-                                        <?php echo $row['importado'] !== null ? number_format((float) $row['importado'], 2, ',', '.') : '—'; ?>
-                                    </td>
                                     <td class="text-end text-muted js-total-pedido" data-total-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Preço × Quantidade">
                                         <?php echo $totalPedidoLinha !== null ? number_format($totalPedidoLinha, 2, ',', '.') : '—'; ?>
                                     </td>
@@ -2342,8 +2338,8 @@ while ($row = mysqli_fetch_assoc($result)) {
                     const celulaProcesso = linha.children[2];
                     // Ordem atual das colunas: 0 Situação, 1 PO, 2 Processo, 3 Planta, 4 Componente,
                     // 5 PN, 6 Descrição, 7 Fornecedor, 8 Preço, 9 Moeda, 10 Data, 11 Quantidade,
-                    // 12 Importado, 13 Total Pedido, 14 Data Recebida, 15 Quantidade Recebida,
-                    // 16 Saldo, 17 Status, 18 Excluir.
+                    // 12 Total Pedido, 13 Data Recebida, 14 Quantidade Recebida,
+                    // 15 Saldo, 16 Status, 17 Excluir.
                     const celulaData = linha.children[10];
                     const celulaQtd = linha.children[11];
                     if (celulaPo && celulaProcesso && celulaData && celulaQtd) {
