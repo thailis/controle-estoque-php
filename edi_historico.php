@@ -145,23 +145,130 @@ if ($disponivel && $selA && $selB) {
 $rotA = $selA ? rotuloVersao($versoes[$selA[0]], $selA[1]) : '';
 $rotB = $selB ? rotuloVersao($versoes[$selB[0]], $selB[1]) : '';
 
-// ---------- Exportar CSV (só as alterações) ----------
-if (($_GET['exportar'] ?? '') === 'csv' && $disponivel && $selA && $selB) {
+// Data em que aquela situação do EDI foi incluída, por material:
+//  - versão "depois" (planilha importada) = dia da importação;
+//  - versão "antes" = dia da importação anterior desse material; se ainda não
+//    havia histórico, a data do nome do evento (ex.: "EDI 16/11/2026").
+function dataInclusaoEdi(mysqli $conn, array $versoes, array $sel, string $material): string
+{
+    static $cache = [];
+    [$vid, $mom] = $sel;
+    $chave = "$vid|$mom|$material";
+    if (isset($cache[$chave])) {
+        return $cache[$chave];
+    }
+    $paraData = fn($dt) => $dt ? (new DateTimeImmutable($dt))->format('d/m/Y') : '';
+    if ($mom === 'depois') {
+        return $cache[$chave] = $paraData($versoes[$vid]['criado_em'] ?? null);
+    }
+    $stmt = mysqli_prepare($conn, "SELECT MAX(versao_id) AS v FROM edi_snapshot WHERE material = ? AND momento = 'depois' AND versao_id < ?");
+    mysqli_stmt_bind_param($stmt, 'si', $material, $vid);
+    mysqli_stmt_execute($stmt);
+    $anterior = (int) (mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))['v'] ?? 0);
+    mysqli_stmt_close($stmt);
+    if ($anterior > 0 && isset($versoes[$anterior])) {
+        return $cache[$chave] = $paraData($versoes[$anterior]['criado_em']);
+    }
+    $stmt = mysqli_prepare($conn, "SELECT DISTINCT evento FROM edi_snapshot WHERE versao_id = ? AND momento = 'antes' AND material = ?");
+    mysqli_stmt_bind_param($stmt, 'is', $vid, $material);
+    mysqli_stmt_execute($stmt);
+    $maior = null;
+    foreach (mysqli_fetch_all(mysqli_stmt_get_result($stmt), MYSQLI_ASSOC) as $l) {
+        if (preg_match('#(\d{2})/(\d{2})/(\d{4})#', (string) $l['evento'], $m)) {
+            $iso = "{$m[3]}-{$m[2]}-{$m[1]}";
+            if ($maior === null || $iso > $maior) { $maior = $iso; }
+        }
+    }
+    mysqli_stmt_close($stmt);
+    return $cache[$chave] = $maior ? dataBrHist($maior) : '';
+}
+
+// ---------- Exportar evolução (uma coluna por inclusão) ----------
+// Cada coluna é uma data de inclusão: a situação inicial de cada modelo (antes
+// da 1ª planilha guardada, com a data do evento antigo) e depois cada planilha
+// importada. Uma linha por Modelo × Mês. Filtros de modelo/projeto da tela valem.
+if (($_GET['exportar'] ?? '') === 'evolucao' && $disponivel) {
+    $termosEv = array_values(array_filter(array_map('trim', preg_split('/[;,\n]+/', $busca)), fn($t) => $t !== ''));
+    $res = mysqli_query($conn, "
+        SELECT versao_id, momento, material, DATE_FORMAT(data, '%Y-%m') AS mes, SUM(quantidade) AS q, MAX(projeto) AS projeto, MAX(modelo) AS modelo
+        FROM edi_snapshot WHERE data IS NOT NULL
+        GROUP BY versao_id, momento, material, DATE_FORMAT(data, '%Y-%m')
+        ORDER BY versao_id
+    ");
+    $snap = []; // material => versao => momento => mes => q
+    $infoEv = [];
+    while ($res && ($l = mysqli_fetch_assoc($res))) {
+        $snap[$l['material']][(int) $l['versao_id']][$l['momento']][$l['mes']] = (float) $l['q'];
+        $infoEv[$l['material']] = ['projeto' => $l['projeto'], 'modelo' => $l['modelo']];
+    }
+
+    $serie = [];   // material => dataIso => mes => q
+    $datas = [];
+    foreach ($snap as $material => $porVersao) {
+        $modelo = $mapaMat[$material]['modelo'] ?? ($infoEv[$material]['modelo'] ?? '');
+        $projeto = $infoEv[$material]['projeto'] ?? ($mapaMat[$material]['projeto'] ?? '');
+        if ($projetoFiltro !== '' && $projeto !== $projetoFiltro) { continue; }
+        if (!empty($termosEv)) {
+            $achou = false;
+            foreach ($termosEv as $t) {
+                if (stripos($material, $t) !== false || stripos($modelo, $t) !== false || stripos($projeto, $t) !== false
+                    || ($modelo !== '' && normalizarModeloEdi($modelo) === normalizarModeloEdi($t))) { $achou = true; break; }
+            }
+            if (!$achou) { continue; }
+        }
+        ksort($porVersao);
+        $primeira = array_key_first($porVersao);
+        // Situação inicial (antes da 1ª planilha guardada desse modelo)
+        if (!empty($porVersao[$primeira]['antes'])) {
+            $dataIni = dataInclusaoEdi($conn, $versoes, [$primeira, 'antes'], $material);
+            $isoIni = $dataIni !== '' ? DateTimeImmutable::createFromFormat('!d/m/Y', $dataIni)->format('Y-m-d') : '0000-00-00';
+            $serie[$material][$isoIni] = $porVersao[$primeira]['antes'];
+            $datas[$isoIni] = true;
+        }
+        foreach ($porVersao as $vid => $momentos) {
+            if (!isset($momentos['depois']) || !isset($versoes[$vid])) { continue; }
+            $iso = substr((string) $versoes[$vid]['criado_em'], 0, 10);
+            $serie[$material][$iso] = $momentos['depois']; // mais de uma no mesmo dia: vale a última
+            $datas[$iso] = true;
+        }
+    }
+    $datas = array_keys($datas);
+    sort($datas);
+
     header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="edi-alteracoes-' . date('Y-m-d-His') . '.csv"');
+    header('Content-Disposition: attachment; filename="edi-evolucao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $out = fopen('php://output', 'w');
-    fputcsv($out, ['Modelo', 'Material', 'Projeto', 'Mês', 'Qtd anterior', 'Qtd nova', 'Δ', 'Δ %', 'Versão anterior', 'Versão nova'], ';', '"', '');
-    foreach ($linhas as $l) {
-        if ($l['qa'] !== null && abs($l['delta']) <= 0.0001) { continue; }
-        fputcsv($out, [
-            $l['modelo'], $l['material'], $l['projeto'], mesBr($l['mes']),
-            $l['qa'] === null ? '' : number_format($l['qa'], 0, ',', ''),
-            number_format($l['qb'], 0, ',', ''),
-            number_format($l['delta'], 0, ',', ''),
-            $l['pct'] === null ? '' : number_format($l['pct'], 1, ',', ''),
-            $rotA, $rotB,
-        ], ';', '"', '');
+    $cab = ['Modelo', 'Material', 'Projeto', 'Mês'];
+    foreach ($datas as $d) { $cab[] = $d === '0000-00-00' ? 'Inicial' : dataBrHist($d); }
+    $cab[] = 'Δ última';
+    fputcsv($out, $cab, ';', '"', '');
+
+    $linhasEv = [];
+    foreach ($serie as $material => $porData) {
+        $meses = [];
+        foreach ($porData as $m) { $meses += array_flip(array_keys($m)); }
+        $meses = array_keys($meses);
+        sort($meses);
+        foreach ($meses as $mes) {
+            $linha = [$mapaMat[$material]['modelo'] ?? ($infoEv[$material]['modelo'] ?? ''), $material,
+                      $infoEv[$material]['projeto'] ?? ($mapaMat[$material]['projeto'] ?? ''), $mes];
+            $valores = [];
+            foreach ($datas as $d) {
+                if (!isset($porData[$d])) { $linha[] = ''; continue; }   // modelo não veio nessa planilha
+                $q = $porData[$d][$mes] ?? 0.0;
+                $valores[] = $q;
+                $linha[] = number_format($q, 0, ',', '');
+            }
+            $n = count($valores);
+            $linha[] = $n >= 2 ? number_format($valores[$n - 1] - $valores[$n - 2], 0, ',', '') : '';
+            $linhasEv[] = $linha;
+        }
+    }
+    usort($linhasEv, fn($x, $y) => strcmp($x[0] . '|' . $x[1] . '|' . $x[3], $y[0] . '|' . $y[1] . '|' . $y[3]));
+    foreach ($linhasEv as $linha) {
+        $linha[3] = mesBr($linha[3]);
+        fputcsv($out, $linha, ';', '"', '');
     }
     fclose($out);
     exit;
@@ -382,7 +489,7 @@ $valorQtd = function ($v) {
             </div>
             <div class="col-12 col-md-2 d-flex gap-1 flex-wrap">
                 <button class="btn btn-primary btn-sm">Comparar</button>
-                <a class="btn btn-outline-primary btn-sm" href="<?php echo hh($link(['exportar' => 'csv'])); ?>">⬇️ CSV</a>
+                <a class="btn btn-outline-primary btn-sm" href="<?php echo hh($link(['exportar' => 'evolucao'])); ?>" title="Uma coluna por inclusão (planilha importada), por Modelo × Mês">⬇️ Exportar evolução</a>
                 <button type="button" class="btn btn-outline-secondary btn-sm" onclick="window.print()">🖨️ PDF</button>
             </div>
         </form>
