@@ -1525,7 +1525,6 @@ unset($r);
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>
-            <a class="btn btn-outline-secondary btn-sm" href="edi_historico.php">📈 Histórico EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="programacao.php">Programação</a>
             <a class="btn btn-outline-secondary btn-sm" href="parametros_compra.php">Parâmetros</a>
             <a class="btn btn-outline-secondary btn-sm" href="evolucao_geral.php">Evolução geral</a>
@@ -1545,6 +1544,7 @@ unset($r);
                 <button type="button" class="btn btn-sm btn-outline-primary btn-painel" data-painel="importar">📥 Importar planilha</button>
                 <button type="button" class="btn btn-sm btn-outline-warning btn-painel" data-painel="massa">⚡ Ações em massa</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary btn-painel" data-painel="novo">➕ Novo evento</button>
+                <a class="btn btn-sm btn-outline-success" href="edi_historico.php">📈 Histórico EDI</a>
                 <div class="ms-auto">
 <form method="POST" class="m-0" title="Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos." onsubmit="return confirm('Regravar Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
                 <input type="hidden" name="acao" value="sincronizar_bom_edi">
