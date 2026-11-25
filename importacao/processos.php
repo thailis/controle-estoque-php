@@ -1044,7 +1044,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                                 $stmtAtualizaCsv = mysqli_prepare($conn, "
                                     UPDATE processos SET solicitacao = ?, categoria = ?, planta = ?, po = ?, modal = ?, projeto = ?,
                                         descricao = ?, quantidade = ?, hscode = ?, ncm = ?, fornecedor = ?, preco = ?, total = ?,
-                                        moeda = ?, tipo = ?, ffw = ?, obs = ?, controla_estoque = IF(? = '1', ?, controla_estoque)
+                                        moeda = ?, tipo = COALESCE(?, tipo), ffw = COALESCE(?, ffw), obs = ?, controla_estoque = IF(? = '1', ?, controla_estoque)
                                     WHERE id = ?
                                 ");
                             }
@@ -1735,7 +1735,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </form>
                 <p class="mt-3 mb-0" style="font-size:.8rem; color:var(--muted);">
                     Colunas esperadas (primeira linha = cabeçalho, qualquer ordem):<br>
-                    <code>estoque, processo, solicitacao, categoria, planta, po, modal, projeto, componente, descricao, quantidade, ncm, fornecedor, preco, total, moeda, tipo</code><br>
+                    <code>estoque, processo, solicitacao, categoria, planta, po, modal, projeto, componente, descricao, quantidade, ncm, fornecedor, preco, total, moeda</code><br>
                     Só <code>processo</code> é obrigatório — as demais colunas podem faltar. <strong>Não existe coluna <code>status</code></strong>: todo processo nasce "aberto" automaticamente, e só vira "finalizado" quando o embarque correspondente é confirmado na tela Confirmar Entrega. Separador: vírgula ou ponto e vírgula (detectado automaticamente).<br>
                     <strong>Coluna <code>estoque</code></strong> (aceita também <code>controla_estoque</code>): use <code>sim</code>/<code>não</code> (ou <code>s</code>/<code>n</code>, <code>yes</code>/<code>no</code>, <code>1</code>/<code>0</code>) pra já subir cada linha com o Estoque certo, sem precisar alternar depois — se a coluna faltar ou vier com um valor não reconhecido, categoria "tooling" nasce "Não" e as demais nascem "Sim". É só o valor inicial: o botão Sim/Não na tabela continua liberado pra alternar a qualquer momento (menos em processo já finalizado).
                 </p>
@@ -1820,10 +1820,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     <div class="col-md-2">
                         <label class="form-label">Moeda</label>
                         <input type="text" name="moeda_manual" class="form-control" placeholder="usd">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Tipo</label>
-                        <input type="text" name="tipo_manual" class="form-control">
                     </div>
                     <div class="col-md-12">
                         <label class="form-label">Observações</label>
@@ -2017,7 +2013,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Preço</th>
                             <th>Total</th>
                             <th>Moeda</th>
-                            <th>Tipo</th>
                             <th title="Sim = processo já cadastrado no Follow; Não = ainda falta cadastrar">Follow</th>
                             <th>Obs</th>
                             <th class="no-print">Excluir</th>
@@ -2025,7 +2020,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="21" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="20" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -2093,7 +2088,6 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                     <td class="celula-editavel col-preco" data-id="<?php echo $id; ?>" data-campo="preco" data-valor-bruto="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>"><?php echo numeroBr($r['preco']); ?></td>
                                     <td class="col-total"><?php echo numeroBr($r['total']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="moeda" data-valor-bruto="<?php echo h($r['moeda'] ?? ''); ?>"><?php echo h($r['moeda'] ?: '—'); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="tipo" data-valor-bruto="<?php echo h($r['tipo'] ?? ''); ?>"><?php echo h($r['tipo'] ?: '—'); ?></td>
                                     <td>
                                         <?php if (!empty($r['tem_follow'])): ?>
                                             <span class="status-badge status-ok" title="Processo já cadastrado no Follow">Sim</span>

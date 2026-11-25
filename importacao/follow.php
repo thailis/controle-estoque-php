@@ -114,6 +114,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         exit;
     }
 
+    // Tipo (ex.: 40 HC): continua guardado em processos.tipo, igual ao Agente.
+    // Editar aqui grava o Tipo em TODAS as linhas daquele processo.
+    if ($id > 0 && $campo === 'tipo') {
+        try {
+            $stmtProc = mysqli_prepare($conn, "SELECT processo FROM follow WHERE id = ?");
+            mysqli_stmt_bind_param($stmtProc, 'i', $id);
+            mysqli_stmt_execute($stmtProc);
+            $linhaProc = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtProc));
+            mysqli_stmt_close($stmtProc);
+            if (!$linhaProc) {
+                echo json_encode(['ok' => false, 'erro' => 'Embarque não encontrado.']);
+                exit;
+            }
+            $tipoSalvo = $valor === '' ? null : $valor;
+            $stmtTp = mysqli_prepare($conn, "UPDATE processos SET tipo = ? WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?))");
+            mysqli_stmt_bind_param($stmtTp, 'ss', $tipoSalvo, $linhaProc['processo']);
+            mysqli_stmt_execute($stmtTp);
+            mysqli_stmt_close($stmtTp);
+        } catch (Throwable $erroTipo) {
+            echo json_encode(['ok' => false, 'erro' => 'Não foi possível salvar: ' . $erroTipo->getMessage()]);
+            exit;
+        }
+        echo json_encode(['ok' => true, 'exibido' => $tipoSalvo ?? '—']);
+        exit;
+    }
+
     $camposTexto = ['origem', 'destino', 'armador', 'trk', 'requerente', 'obs'];
     // ETA e Prevista NÃO entram mais aqui — viraram sempre calculadas (mesma
     // fórmula do cadastro manual: ETA = ETD + Transit dias, Prevista = ETA +
@@ -320,6 +346,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cadastr
                     mysqli_stmt_execute($stmtAg);
                     mysqli_stmt_close($stmtAg);
                 }
+                // Tipo preenchido → grava em todas as linhas do processo (em branco mantém o atual)
+                $tipoManual = trim($_POST['tipo_manual'] ?? '');
+                if ($tipoManual !== '') {
+                    $stmtTp = mysqli_prepare($conn, "UPDATE processos SET tipo = ? WHERE UPPER(TRIM(processo)) = UPPER(TRIM(?))");
+                    mysqli_stmt_bind_param($stmtTp, 'ss', $tipoManual, $processoEscolhido);
+                    mysqli_stmt_execute($stmtTp);
+                    mysqli_stmt_close($stmtTp);
+                }
             } else {
                 $mensagens[] = '❌ Erro ao cadastrar: ' . mysqli_stmt_error($stmt);
             }
@@ -346,7 +380,8 @@ $resProcessos = mysqli_query($conn, "
         COUNT(DISTINCT NULLIF(TRIM(codigo_componente), '')) AS total_componentes,
         GROUP_CONCAT(DISTINCT NULLIF(TRIM(codigo_componente), '') ORDER BY codigo_componente SEPARATOR ', ') AS todos_componentes,
         GROUP_CONCAT(DISTINCT NULLIF(TRIM(descricao), '') ORDER BY descricao SEPARATOR ', ') AS todas_descricoes,
-        GROUP_CONCAT(DISTINCT NULLIF(TRIM(ffw), '') SEPARATOR ', ') AS agente_atual
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(ffw), '') SEPARATOR ', ') AS agente_atual,
+        GROUP_CONCAT(DISTINCT NULLIF(TRIM(tipo), '') SEPARATOR ', ') AS tipo_atual
     FROM processos
     GROUP BY processo
     ORDER BY processo
@@ -384,6 +419,8 @@ if ($resFornecedores) {
 
 // Agente = FFW (agente de carga) cadastrado em Processos pro processo
 $sqlAgente = "(SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(pag.ffw), '') SEPARATOR ', ') FROM processos pag WHERE pag.processo = f.processo)";
+// Tipo (ex.: 40 HC) = coluna tipo de Processos (o dado continua lá, só é mostrado/editado aqui)
+$sqlTipo = "(SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(ptp.tipo), '') SEPARATOR ', ') FROM processos ptp WHERE ptp.processo = f.processo)";
 
 $condicoes = [];
 $params = [];
@@ -442,7 +479,8 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     $stmtExp = mysqli_prepare($conn, "
         SELECT f.*,
             (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo,
-            $sqlAgente AS agente
+            $sqlAgente AS agente,
+            $sqlTipo AS tipo
         FROM follow f
         $where
         ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
@@ -457,7 +495,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="follow-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Agente', 'Rastreio (TRK)', 'FT (dias)', 'TT', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
+    fputcsv($saida, ['Status', 'Processo', 'Origem', 'Destino', 'Armador', 'Agente', 'Tipo', 'Rastreio (TRK)', 'FT (dias)', 'TT', 'Pickup', 'ETD', 'ETA', 'Prevista', 'Efetiva', 'Requerente', 'Condição', 'OBS'], ';', '"', '');
     $dataCsv = fn($d) => ($d === null || $d === '') ? '' : dataBr($d);
     while ($r = mysqli_fetch_assoc($resExp)) {
         // Mesmas regras de Status e Condição da tabela
@@ -478,7 +516,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $condicaoCsv = ['em tempo' => 'Em tempo', 'atencao' => 'Atenção', 'atrasado' => 'Atrasado'][calcularCondicaoFollow($r['prevista'])] ?? '';
         }
         fputcsv($saida, [
-            $statusCsv, $r['processo'], $r['origem'] ?? '', $r['destino'] ?? '', $r['armador'] ?? '', $r['agente'] ?? '', $r['trk'] ?? '',
+            $statusCsv, $r['processo'], $r['origem'] ?? '', $r['destino'] ?? '', $r['armador'] ?? '', $r['agente'] ?? '', $r['tipo'] ?? '', $r['trk'] ?? '',
             $r['ft_dias'] ?? '', $r['transit_dias'] ?? '',
             $dataCsv($r['pickup'] ?? null), $dataCsv($r['etd'] ?? null), $dataCsv($r['eta'] ?? null),
             $dataCsv($r['prevista'] ?? null), $dataCsv($r['efetiva'] ?? null),
@@ -513,7 +551,8 @@ $totalPendentes = (int) mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) 
 $sql = "
     SELECT f.*,
         (SELECT status FROM processos WHERE processo = f.processo LIMIT 1) AS status_processo,
-        $sqlAgente AS agente
+        $sqlAgente AS agente,
+        $sqlTipo AS tipo
     FROM follow f
     $where
     ORDER BY $ordemData IS NULL, $ordemData ASC, f.criado_em ASC
@@ -559,17 +598,18 @@ while ($row = mysqli_fetch_assoc($result)) {
         .table-follow th:nth-child(4), .table-follow td:nth-child(4) { width: 120px; }
         .table-follow th:nth-child(5), .table-follow td:nth-child(5) { width: 130px; }
         .table-follow th:nth-child(6), .table-follow td:nth-child(6) { width: 150px; } /* Agente */
-        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 140px; }
-        .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 90px; }
+        .table-follow th:nth-child(7), .table-follow td:nth-child(7) { width: 90px; } /* Tipo */
+        .table-follow th:nth-child(8), .table-follow td:nth-child(8) { width: 140px; }
         .table-follow th:nth-child(9), .table-follow td:nth-child(9) { width: 90px; }
-        .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 100px; }
+        .table-follow th:nth-child(10), .table-follow td:nth-child(10) { width: 90px; }
         .table-follow th:nth-child(11), .table-follow td:nth-child(11) { width: 100px; }
         .table-follow th:nth-child(12), .table-follow td:nth-child(12) { width: 100px; }
         .table-follow th:nth-child(13), .table-follow td:nth-child(13) { width: 100px; }
-        .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 160px; }
-        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 130px; }
-        .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 220px; } /* OBS */
-        .table-follow th:nth-child(17), .table-follow td:nth-child(17) { width: 80px; }
+        .table-follow th:nth-child(14), .table-follow td:nth-child(14) { width: 100px; }
+        .table-follow th:nth-child(15), .table-follow td:nth-child(15) { width: 160px; }
+        .table-follow th:nth-child(16), .table-follow td:nth-child(16) { width: 130px; }
+        .table-follow th:nth-child(17), .table-follow td:nth-child(17) { width: 220px; } /* OBS */
+        .table-follow th:nth-child(18), .table-follow td:nth-child(18) { width: 80px; }
         .table-follow td.col-obs { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         /* tudo centralizado: conteúdo alinhado com o cabeçalho */
         .table-follow th, .table-follow td { text-align: center !important; vertical-align: middle; }
@@ -671,6 +711,10 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <div class="col-md-3">
                         <label class="form-label">Agente <small class="text-muted">(em branco mantém o atual)</small></label>
                         <input type="text" name="agente_manual" id="agente_manual" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Tipo <small class="text-muted">(em branco mantém o atual)</small></label>
+                        <input type="text" name="tipo_manual" id="tipo_manual" class="form-control" placeholder="Ex.: 40 HC">
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Rastreio (TRK)</label>
@@ -784,6 +828,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                             <th>Destino</th>
                             <th>Armador</th>
                             <th title="Agente de carga (FFW) — duplo clique para editar">Agente</th>
+                            <th title="Tipo (ex.: 40 HC) — duplo clique para editar; grava em todas as linhas do processo">Tipo</th>
                             <th>Rastreio (TRK)</th>
                             <th>FT (dias)</th>
                             <th title="Transit time (dias)">TT</th>
@@ -799,7 +844,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="17" class="empty-state">Nenhum embarque encontrado.</td></tr>
+                            <tr><td colspan="18" class="empty-state">Nenhum embarque encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -851,6 +896,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="destino" data-valor-bruto="<?php echo h($r['destino'] ?? ''); ?>"><?php echo h($r['destino'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="armador" data-valor-bruto="<?php echo h($r['armador'] ?? ''); ?>"><?php echo h($r['armador'] ?: '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="agente" data-valor-bruto="<?php echo h($r['agente'] ?? ''); ?>" title="Duplo clique para editar — grava em todas as linhas do processo"><?php echo h(($r['agente'] ?? '') !== '' ? $r['agente'] : '—'); ?></td>
+                                    <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="tipo" data-valor-bruto="<?php echo h($r['tipo'] ?? ''); ?>" title="Duplo clique para editar — grava em todas as linhas do processo"><?php echo h(($r['tipo'] ?? '') !== '' ? $r['tipo'] : '—'); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="trk" data-valor-bruto="<?php echo h($r['trk'] ?? ''); ?>"><?php echo h($r['trk'] ?: '—'); ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="ft_dias" data-valor-bruto="<?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : ''; ?>"><?php echo $r['ft_dias'] !== null ? h((string) $r['ft_dias']) : '—'; ?></td>
                                     <td class="celula-editavel text-end" data-id="<?php echo $id; ?>" data-campo="transit_dias" data-valor-bruto="<?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : ''; ?>"><?php echo $r['transit_dias'] !== null ? h((string) $r['transit_dias']) : '—'; ?></td>
@@ -907,7 +953,7 @@ while ($row = mysqli_fetch_assoc($result)) {
         const PROCESSOS_FOLLOW = <?php
             $mapaProcFollow = [];
             foreach ($processosDisponiveis as $p) {
-                $mapaProcFollow[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = ['c' => (string) ($p['todos_componentes'] ?? ''), 'd' => (string) ($p['todas_descricoes'] ?? ''), 'a' => (string) ($p['agente_atual'] ?? '')];
+                $mapaProcFollow[mb_strtoupper(trim((string) $p['processo']), 'UTF-8')] = ['c' => (string) ($p['todos_componentes'] ?? ''), 'd' => (string) ($p['todas_descricoes'] ?? ''), 'a' => (string) ($p['agente_atual'] ?? ''), 't' => (string) ($p['tipo_atual'] ?? '')];
             }
             echo json_encode($mapaProcFollow, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
         ?>;
@@ -918,6 +964,7 @@ while ($row = mysqli_fetch_assoc($result)) {
             document.getElementById('preview_descricao').value = achado ? (achado.d || '—') : '—';
             // Mostra o agente que já está cadastrado (só como dica, não preenche)
             document.getElementById('agente_manual').placeholder = achado && achado.a ? 'Atual: ' + achado.a : '';
+            document.getElementById('tipo_manual').placeholder = achado && achado.t ? 'Atual: ' + achado.t : 'Ex.: 40 HC';
             document.getElementById('processo_manual_aviso').textContent =
                 digitado === '' ? '' : (achado ? '✓ processo encontrado' : 'processo não encontrado em Processos');
         }
