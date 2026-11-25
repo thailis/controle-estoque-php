@@ -416,6 +416,11 @@ $valorQtd = function ($v) {
         .resumo-box .n { font-size: 1.5rem; font-weight: 750; }
         .so-print { display: none; }
         @media print {
+            /* No PDF os dois gráficos ficam um embaixo do outro, cada um na largura da folha */
+            .col-grafico { flex: 0 0 100% !important; max-width: 100% !important; width: 100% !important; }
+            .caixa-grafico { height: 240px !important; width: 100% !important; }
+            .caixa-grafico canvas { max-width: 100% !important; }
+            .card { break-inside: avoid; }
             body { background: #fff; padding: 0; }
             .no-print { display: none !important; }
             .so-print { display: block; }
@@ -519,9 +524,9 @@ $valorQtd = function ($v) {
             </form>
         </div>
         <div class="row g-3">
-            <div class="col-12 col-lg-8"><div style="height:300px"><canvas id="grafico-linhas"></canvas></div>
+            <div class="col-12 col-lg-8 col-grafico"><div class="caixa-grafico" style="height:300px"><canvas id="grafico-linhas"></canvas></div>
                 <small class="text-muted">Uma linha por planilha importada (últimas 8) — a mais recente em destaque.</small></div>
-            <div class="col-12 col-lg-4"><div style="height:300px"><canvas id="grafico-delta"></canvas></div>
+            <div class="col-12 col-lg-4 col-grafico"><div class="caixa-grafico" style="height:300px"><canvas id="grafico-delta"></canvas></div>
                 <small class="text-muted">Δ por mês entre as duas versões comparadas.</small></div>
         </div>
     </div>
@@ -656,7 +661,8 @@ $valorQtd = function ($v) {
     const g = <?php echo json_encode($grafico, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
     const fmt = (v) => Number(v).toLocaleString('pt-BR');
     const total = g.series.length;
-    new Chart(document.getElementById('grafico-linhas'), {
+    const graficos = [];
+    graficos.push(new Chart(document.getElementById('grafico-linhas'), {
         type: 'line',
         data: {
             labels: g.meses,
@@ -675,8 +681,8 @@ $valorQtd = function ($v) {
             plugins: { tooltip: { callbacks: { label: (c) => c.dataset.label + ': ' + fmt(c.parsed.y) } } },
             scales: { y: { beginAtZero: true, ticks: { callback: fmt } } },
         },
-    });
-    new Chart(document.getElementById('grafico-delta'), {
+    }));
+    graficos.push(new Chart(document.getElementById('grafico-delta'), {
         type: 'bar',
         data: {
             labels: g.deltaMeses,
@@ -687,7 +693,17 @@ $valorQtd = function ($v) {
             plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => (c.parsed.y > 0 ? '+' : '') + fmt(c.parsed.y) } } },
             scales: { y: { ticks: { callback: fmt } } },
         },
-    });
+    }));
+
+    // PDF: redimensiona os gráficos pro tamanho da folha antes de imprimir
+    // (senão eles ficam com a largura da tela e um passa por cima do outro)
+    const paraImpressao = () => graficos.forEach((c) => c.resize(680, 240));
+    const paraTela = () => graficos.forEach((c) => c.resize());
+    window.addEventListener('beforeprint', paraImpressao);
+    window.addEventListener('afterprint', paraTela);
+    if (window.matchMedia) {
+        window.matchMedia('print').addEventListener('change', (e) => (e.matches ? paraImpressao() : paraTela()));
+    }
 })();
 </script>
 <?php endif; ?>
