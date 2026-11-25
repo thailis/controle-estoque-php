@@ -792,12 +792,11 @@ if (!empty($componentes)) {
             <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             <a class="btn btn-outline-secondary btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
         </nav>
-        <div class="card bg-primary text-white p-4 mb-4">
-            <h1>🏷️ Estoque</h1>
-            <p class="mb-0">
-                <?php echo number_format($total, 0, ',', '.'); ?> componente(s) na base
-                • soma geral do estoque (todas as plantas): <?php echo number_format($somaEstoque, 2, ',', '.'); ?>
-            </p>
+        <div class="card bg-primary text-white px-4 py-3 mb-3">
+            <div class="d-flex flex-wrap align-items-baseline gap-3">
+                <h1 class="h4 m-0">🏷️ Estoque</h1>
+                <span><?php echo number_format($total, 0, ',', '.'); ?> componente(s) na base • soma geral do estoque (todas as plantas): <?php echo number_format($somaEstoque, 2, ',', '.'); ?></span>
+            </div>
         </div>
 
         <?php if (isset($_GET['ajustado'])): ?>
@@ -812,9 +811,14 @@ if (!empty($componentes)) {
             <div class="alert alert-danger">❌ Informe o componente e uma quantidade válida.</div>
         <?php endif; ?>
 
-        <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
-                <summary>📥 Importar novo arquivo CSV</summary>
+        <!-- Barra de ações compacta: um botão abre cada painel logo abaixo (um de cada vez) -->
+        <div class="card p-2 mb-3 barra-acoes-estoque" data-aberto="<?php echo !empty($mensagens) ? 'importar' : (isset($_GET['erro_manual']) ? 'manual' : ''); ?>">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary btn-painel" data-painel="importar">📥 Importar CSV</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-painel" data-painel="manual">➕ Entrada manual</button>
+            </div>
+            <div class="painel-estoque px-2 pb-2" data-painel="importar" hidden>
+
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
                         <div class="mb-3">
@@ -853,11 +857,10 @@ if (!empty($componentes)) {
                         Números aceitam formato "1234.56" ou "1.234,56". Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
-            </details>
-        </div>
+            </div>
+            <div class="painel-estoque px-2 pb-2" data-painel="manual" hidden>
+                <div class="small fw-bold mt-2 mb-2">➕ Entrada manual (novo componente)</div>
 
-        <div class="card p-3 mb-4">
-            <h2 class="h6 mb-3">➕ Entrada manual (novo componente)</h2>
             <form method="POST" class="row g-2 align-items-end">
                 <input type="hidden" name="acao" value="inserir_manual_estoque">
                 <div class="col-12 col-md-2">
@@ -891,9 +894,22 @@ if (!empty($componentes)) {
                 </div>
             </form>
             <small class="text-muted mt-2">Se o componente já estiver no estoque, a quantidade é <strong>somada</strong> ao que já existe naquela planta.</small>
+            </div>
         </div>
-
-        <div class="card p-3 mb-4">
+        <script>
+            (function () {
+                const barra = document.querySelector('.barra-acoes-estoque');
+                const abrir = (nome) => {
+                    barra.querySelectorAll('.painel-estoque').forEach((p) => { p.hidden = p.dataset.painel !== nome; });
+                    barra.querySelectorAll('.btn-painel').forEach((b) => b.classList.toggle('active', b.dataset.painel === nome));
+                };
+                barra.querySelectorAll('.btn-painel').forEach((b) => b.addEventListener('click', () => {
+                    abrir(b.classList.contains('active') ? '' : b.dataset.painel);
+                }));
+                if (barra.dataset.aberto) abrir(barra.dataset.aberto);
+            })();
+        </script>
+        <div class="card p-2 mb-3">
             <form method="GET" class="row g-2">
                 <div class="col-auto flex-grow-1">
                     <input type="text" name="busca" class="form-control" placeholder="Buscar por componente ou descrição — vários: 12058499; 12058500" value="<?php echo h($busca); ?>">
