@@ -2,6 +2,7 @@
 require_once 'conexao.php';
 
 require_once 'auth.php';
+require_once __DIR__ . '/edi_historico_lib.php';
 exigirLogin();
 set_time_limit(300);
 
@@ -226,220 +227,188 @@ function formatarDataBr(?string $data): string
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     exigirComprador();
-    $arquivo = $_FILES['arquivo_csv']['tmp_name'];
-    // Única opção de importação: Adicionar (insere todas as linhas do arquivo).
-    $modo = 'adicionar';
+    // Importação da planilha semanal (CSV ou XLSX do cliente):
+    //  - identifica o item pela coluna MODELO (ou "Item") e busca o MATERIAL na
+    //    BOM (sem diferenciar espaços e zeros à esquerda). Arquivo antigo, com a
+    //    coluna "material", continua funcionando.
+    //  - "Substituir pendentes" (padrão): apaga só os PENDENTES dos materiais
+    //    que vieram no arquivo e grava o arquivo no lugar. Atendidos ficam
+    //    intactos, e linha do arquivo com mesmo material + data de um Atendido
+    //    é pulada (já foi consumida — não lança a demanda de novo).
+    //  - Histórico: guarda uma "foto" desses materiais ANTES (com os ajustes
+    //    manuais) e DEPOIS da importação, pra janela Histórico EDI comparar.
+    $substituirPendentes = isset($_POST['substituir_pendentes']);
+    $nomeArquivo = (string) ($_FILES['arquivo_csv']['name'] ?? '');
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
         $mensagens[] = "❌ Erro no upload do arquivo.";
     } else {
-        $handle = fopen($arquivo, 'r');
-
-        if ($handle === false) {
-            $mensagens[] = "❌ Não foi possível abrir o arquivo.";
+        $planilha = lerPlanilhaEdi($_FILES['arquivo_csv']['tmp_name'], $nomeArquivo);
+        if (isset($planilha['erro'])) {
+            $mensagens[] = '❌ ' . $planilha['erro'];
         } else {
-            $primeiraLinha = fgets($handle);
-            rewind($handle);
-            $separador = (substr_count($primeiraLinha, ';') > substr_count($primeiraLinha, ',')) ? ';' : ',';
+            $cab = array_map(fn($c) => normalizarCabecalhoEdi((string) $c), $planilha['cabecalho']);
+            $acharColuna = function (array $nomes) use ($cab): ?int {
+                foreach ($nomes as $n) {
+                    $pos = array_search($n, $cab, true);
+                    if ($pos !== false) { return $pos; }
+                }
+                return null;
+            };
+            $cModelo = $acharColuna(['modelo', 'item']);
+            $cMaterial = $acharColuna(['material']);
+            $cQtd = $acharColuna(['quantidade', 'qtde', 'qtd']);
+            $cData = $acharColuna(['data', 'data coleta', 'data da coleta']);
+            $cEvento = $acharColuna(['evento']);
+            $cGeracao = $acharColuna(['geracao', 'data geracao']);
+            $cPn = $acharColuna(['pn', 'pn2']);
 
-            $cabecalho = fgetcsv($handle, 0, $separador, '"', '\\');
-            if ($cabecalho === false) {
-                $mensagens[] = "❌ Arquivo vazio ou inválido.";
+            if (($cModelo === null && $cMaterial === null) || $cQtd === null || $cData === null) {
+                $mensagens[] = "❌ Colunas obrigatórias: modelo (ou item), quantidade (ou qtde) e data (ou data coleta).";
             } else {
-                // O Excel costuma gravar um BOM (marcador invisível) na primeira célula do CSV.
-                if (isset($cabecalho[0])) {
-                    $cabecalho[0] = preg_replace('/^\xEF\xBB\xBF/', '', $cabecalho[0]);
+                $mapaModelos = $cModelo !== null ? mapaModeloMaterialBom($conn) : [];
+                $valor = fn(array $l, ?int $c) => $c === null ? '' : trim((string) ($l[$c] ?? ''));
+
+                // Data de geração da planilha (vira a data da versão no histórico)
+                $geracaoObj = null;
+                if ($cGeracao !== null) {
+                    foreach ($planilha['linhas'] as $l) {
+                        $geracaoObj = parseDataPlanilhaEdi($valor($l, $cGeracao));
+                        if ($geracaoObj !== null) { break; }
+                    }
                 }
+                $eventoPadrao = 'EDI ' . ($geracaoObj ?? new DateTimeImmutable('today'))->format('d/m/Y');
 
-                $cabecalho = array_map(function($c) {
-                    return strtolower(trim($c));
-                }, $cabecalho);
-
-                // "Substituir pendentes": apaga só os eventos PENDENTES e importa o
-                // arquivo no lugar. Os já Atendidos (que já baixaram estoque) ficam,
-                // e linha do arquivo igual a um Atendido (Material+Semana+Evento) é
-                // ignorada — pra não lançar de novo uma demanda que já foi consumida.
-                if ($modo === 'substituir') {
-                    mysqli_query($conn, "DELETE FROM edi WHERE COALESCE(atendido, 0) = 0");
-                    $mensagens[] = "🗑️ " . mysqli_affected_rows($conn) . " evento(s) pendente(s) apagado(s) antes da importação (os Atendidos foram mantidos).";
-                }
-
+                // 1ª passada: valida tudo antes de mexer no banco
+                $entradas = [];
+                $modelosNaoAchados = [];
                 $cacheDadosBom = [];
-                $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtVerifica = mysqli_prepare($conn, "SELECT COUNT(*) AS existe FROM edi WHERE material = ? AND semana = ? AND evento = ?");
-                $stmtUpdate = mysqli_prepare($conn, "UPDATE edi SET pn2 = ?, marca = ?, projeto = ?, modelo = COALESCE(?, modelo), quantidade = ?, ano = ?, data_fim = ?, data_inicio = ? WHERE material = ? AND semana = ? AND evento = ?");
-
-                mysqli_autocommit($conn, false);
-
-                $linhaNum = 1;
-                while (($linha = fgetcsv($handle, 0, $separador, '"', '\\')) !== false) {
-                    $linhaNum++;
-
-                    if (count(array_filter($linha, fn($v) => trim((string) $v) !== '')) === 0) {
+                foreach ($planilha['linhas'] as $i => $l) {
+                    $linhaNum = $i + 2;
+                    if (count(array_filter($l, fn($v) => trim((string) $v) !== '')) === 0) {
                         continue;
                     }
-
-                    if (count($linha) !== count($cabecalho)) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada (número de colunas não confere).";
-                        continue;
-                    }
-
-                    $dados = array_combine($cabecalho, $linha);
-
-                    $material = $dados['material'] ?? null;
-                    // PN, Tipo, Projeto e Modelo vêm da BOM pelo material (colunas do CSV
-                    // com esses nomes são ignoradas — exceto PN, usado só se a BOM
-                    // não tiver PN pra esse material).
-                    $chaveMaterialBom = trim((string) $material);
-                    if (!array_key_exists($chaveMaterialBom, $cacheDadosBom)) {
-                        $cacheDadosBom[$chaveMaterialBom] = buscarDadosBom($conn, [$chaveMaterialBom])[$chaveMaterialBom] ?? ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
-                    }
-                    $dadosBomLinha = $cacheDadosBom[$chaveMaterialBom];
-                    $pnCsv = trim((string) ($dados['pn'] ?? $dados['pn2'] ?? ''));
-                    $pn2 = $dadosBomLinha['pn'] ?? ($pnCsv !== '' ? $pnCsv : null);
-                    $dados['pn2'] = $pn2;
-                    $marca = $dadosBomLinha['tipo'];      // coluna "marca" do banco = Tipo (da BOM)
-                    $projeto = $dadosBomLinha['projeto'];
-                    $dados['projeto'] = $projeto ?? '';
-                    $modelo = $dadosBomLinha['modelo'];  // Modelo também vem da BOM
-                    $evento = $dados['evento'] ?? null;
-                    $dataBruta = $dados['data'] ?? null;
-                    $quantidadeBruta = $dados['quantidade'] ?? '';
-                    $quantidade = parseQuantidadeEdi((string) $quantidadeBruta);
-                    if ($quantidade === null) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: quantidade '$quantidadeBruta' inválida.";
-                        registrarLinhaProcessada(
-                            $linhasProcessadas,
-                            $totalProcessadas,
-                            $limiteExibicao,
-                            $dados,
-                            'erro'
-                        );
-                        continue;
-                    }
-                    $dados['quantidade'] = $quantidade;
-
-                    $dataObj = $dataBruta !== null ? parseDataEdi((string) $dataBruta) : null;
-                    $periodo = $dataObj !== null ? calcularSemanaEAno($dataObj) : null;
-                    if ($periodo === null) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: data '$dataBruta' inválida ou fora do período aceito (use dd/mm/aaaa).";
-                        registrarLinhaProcessada(
-                            $linhasProcessadas,
-                            $totalProcessadas,
-                            $limiteExibicao,
-                            $dados,
-                            'erro'
-                        );
-                        continue;
-                    }
-
-                    $semana = $periodo['semana'];
-                    $ano = $periodo['ano'];
-                    $data_inicio = $dataObj->format('Y-m-d');
-                    // Data fim não é mais necessária (a data digitada já é o valor
-                    // completo) — mantém igual à data início só por compatibilidade
-                    // com a coluna que ainda existe na tabela.
-                    $data_fim = $data_inicio;
-                    $dados['semana'] = $semana;
-                    $dados['ano'] = $ano;
-                    $dados['data_inicio'] = $data_inicio;
-                    $dados['data_fim'] = $data_fim;
-
-                    $existe = false;
-                    if ($modo === 'sem_duplicar' || $modo === 'atualizar' || $modo === 'substituir') {
-                        mysqli_stmt_bind_param($stmtVerifica, "sss", $material, $semana, $evento);
-                        mysqli_stmt_execute($stmtVerifica);
-                        $resVerifica = mysqli_stmt_get_result($stmtVerifica);
-                        $existe = mysqli_fetch_assoc($resVerifica)['existe'] > 0;
-                    }
-
-                    if (($modo === 'sem_duplicar' || $modo === 'substituir') && $existe) {
-                        $ignorados++;
-                        registrarLinhaProcessada(
-                            $linhasProcessadas,
-                            $totalProcessadas,
-                            $limiteExibicao,
-                            $dados,
-                            'ignorado'
-                        );
-                        continue;
-                    }
-
-                    if ($modo === 'atualizar' && $existe) {
-                        mysqli_stmt_bind_param(
-                            $stmtUpdate, "ssssdisssss",
-                            $pn2, $marca, $projeto, $modelo, $quantidade, $ano, $data_fim, $data_inicio,
-                            $material, $semana, $evento
-                        );
-                        if (mysqli_stmt_execute($stmtUpdate)) {
-                            $atualizados++;
-                            registrarLinhaProcessada(
-                                $linhasProcessadas,
-                                $totalProcessadas,
-                                $limiteExibicao,
-                                $dados,
-                                'atualizado'
-                            );
-                        } else {
+                    $modeloArquivo = $valor($l, $cModelo);
+                    $material = $valor($l, $cMaterial);
+                    $modeloBom = null;
+                    if ($modeloArquivo !== '') {
+                        $achado = $mapaModelos[normalizarModeloEdi($modeloArquivo)] ?? null;
+                        if ($achado === null) {
+                            $modelosNaoAchados[trim($modeloArquivo)] = true;
                             $erros++;
-                            $mensagens[] = "⚠️ Erro ao atualizar linha $linhaNum: " . mysqli_stmt_error($stmtUpdate);
-                            registrarLinhaProcessada(
-                                $linhasProcessadas,
-                                $totalProcessadas,
-                                $limiteExibicao,
-                                $dados,
-                                'erro'
-                            );
+                            continue;
                         }
+                        $material = $achado['material'];
+                        $modeloBom = $achado['modelo'];
+                    }
+                    if ($material === '') {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: sem modelo/material.";
                         continue;
                     }
-
-                    // Inserção normal (modos: adicionar, substituir, ou "atualizar"/"sem_duplicar" quando não existe ainda)
-                    mysqli_stmt_bind_param(
-                        $stmtInsert, "ssssssssiss",
-                        $pn2, $material, $marca, $projeto, $modelo, $evento,
-                        $semana, $quantidade, $ano, $data_fim, $data_inicio
-                    );
-
-                    if (mysqli_stmt_execute($stmtInsert)) {
-                        $importados++;
-                        registrarLinhaProcessada(
-                            $linhasProcessadas,
-                            $totalProcessadas,
-                            $limiteExibicao,
-                            $dados,
-                            'inserido'
-                        );
-                    } else {
+                    $quantidade = parseQuantidadeEdi($valor($l, $cQtd));
+                    $dataObj = parseDataPlanilhaEdi($valor($l, $cData));
+                    $periodo = $dataObj !== null ? calcularSemanaEAno($dataObj) : null;
+                    if ($quantidade === null || $periodo === null) {
                         $erros++;
-                        $mensagens[] = "⚠️ Erro na linha $linhaNum: " . mysqli_stmt_error($stmtInsert);
-                        registrarLinhaProcessada(
-                            $linhasProcessadas,
-                            $totalProcessadas,
-                            $limiteExibicao,
-                            $dados,
-                            'erro'
-                        );
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: " . ($quantidade === null ? "quantidade '" . $valor($l, $cQtd) . "' inválida." : "data '" . $valor($l, $cData) . "' inválida (use dd/mm/aaaa).");
+                        continue;
                     }
+                    if (!array_key_exists($material, $cacheDadosBom)) {
+                        $cacheDadosBom[$material] = buscarDadosBom($conn, [$material])[$material] ?? ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
+                    }
+                    $bom = $cacheDadosBom[$material];
+                    $pnCsv = $valor($l, $cPn);
+                    $evento = $valor($l, $cEvento);
+                    $dataIso = $dataObj->format('Y-m-d');
+                    $entradas[] = [
+                        'pn2' => $bom['pn'] ?? ($pnCsv !== '' ? $pnCsv : null),
+                        'material' => $material,
+                        'marca' => $bom['tipo'],
+                        'projeto' => $bom['projeto'],
+                        'modelo' => $modeloBom ?? $bom['modelo'],
+                        'evento' => $evento !== '' ? $evento : $eventoPadrao,
+                        'semana' => $periodo['semana'],
+                        'ano' => $periodo['ano'],
+                        'quantidade' => $quantidade,
+                        'data_inicio' => $dataIso,
+                        'data_fim' => $dataIso,
+                    ];
                 }
 
-                mysqli_commit($conn);
-                mysqli_autocommit($conn, true);
+                if (!empty($modelosNaoAchados)) {
+                    $lista = array_keys($modelosNaoAchados);
+                    $mensagens[] = '⚠️ ' . count($lista) . ' modelo(s) não encontrado(s) na BOM (linhas ignoradas): ' . implode(', ', array_slice($lista, 0, 15)) . (count($lista) > 15 ? '…' : '');
+                }
 
-                mysqli_stmt_close($stmtInsert);
-                mysqli_stmt_close($stmtVerifica);
-                mysqli_stmt_close($stmtUpdate);
+                if (empty($entradas)) {
+                    $mensagens[] = '❌ Nenhuma linha válida no arquivo — nada foi alterado.';
+                } else {
+                    $materiaisArquivo = array_values(array_unique(array_column($entradas, 'material')));
+                    $pendentesApagados = 0;
+                    $puladosAtendidos = 0;
+                    mysqli_begin_transaction($conn);
+                    try {
+                        $versaoId = criarVersaoEdi($conn, $geracaoObj ? $geracaoObj->format('Y-m-d') : null, $nomeArquivo);
+                        fotografarEdi($conn, $versaoId, 'antes', $materiaisArquivo);
 
-                $resumo = "✅ Importação concluída: $importados inserida(s)";
-                if ($atualizados > 0) $resumo .= ", $atualizados atualizada(s)";
-                if ($ignorados > 0) $resumo .= ", $ignorados ignorada(s) (já existiam)";
-                $resumo .= ", $erros erro(s).";
-                $mensagens[] = $resumo;
+                        $atendidosChave = [];
+                        foreach (array_chunk($materiaisArquivo, 400) as $bloco) {
+                            $ph = implode(',', array_fill(0, count($bloco), '?'));
+                            $tiposBloco = str_repeat('s', count($bloco));
+                            if ($substituirPendentes) {
+                                $stmtDel = mysqli_prepare($conn, "DELETE FROM edi WHERE COALESCE(atendido, 0) = 0 AND TRIM(material) IN ($ph)");
+                                mysqli_stmt_bind_param($stmtDel, $tiposBloco, ...$bloco);
+                                mysqli_stmt_execute($stmtDel);
+                                $pendentesApagados += max(0, mysqli_stmt_affected_rows($stmtDel));
+                                mysqli_stmt_close($stmtDel);
+
+                                $stmtAt = mysqli_prepare($conn, "SELECT TRIM(material) AS material, data_inicio FROM edi WHERE COALESCE(atendido, 0) = 1 AND TRIM(material) IN ($ph)");
+                                mysqli_stmt_bind_param($stmtAt, $tiposBloco, ...$bloco);
+                                mysqli_stmt_execute($stmtAt);
+                                foreach (mysqli_fetch_all(mysqli_stmt_get_result($stmtAt), MYSQLI_ASSOC) as $a) {
+                                    $atendidosChave[$a['material'] . '|' . $a['data_inicio']] = true;
+                                }
+                                mysqli_stmt_close($stmtAt);
+                            }
+                        }
+
+                        $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        foreach ($entradas as $e) {
+                            if ($substituirPendentes && isset($atendidosChave[$e['material'] . '|' . $e['data_inicio']])) {
+                                $puladosAtendidos++;
+                                $ignorados++;
+                                registrarLinhaProcessada($linhasProcessadas, $totalProcessadas, $limiteExibicao, $e, 'ignorado');
+                                continue;
+                            }
+                            mysqli_stmt_bind_param(
+                                $stmtInsert, "ssssssssiss",
+                                $e['pn2'], $e['material'], $e['marca'], $e['projeto'], $e['modelo'], $e['evento'],
+                                $e['semana'], $e['quantidade'], $e['ano'], $e['data_fim'], $e['data_inicio']
+                            );
+                            mysqli_stmt_execute($stmtInsert);
+                            $importados++;
+                            registrarLinhaProcessada($linhasProcessadas, $totalProcessadas, $limiteExibicao, $e, 'inserido');
+                        }
+                        mysqli_stmt_close($stmtInsert);
+
+                        fotografarEdi($conn, $versaoId, 'depois', $materiaisArquivo);
+                        mysqli_commit($conn);
+
+                        if ($substituirPendentes) {
+                            $mensagens[] = "🗑️ $pendentesApagados pendente(s) substituído(s) dos " . count($materiaisArquivo) . " material(is) do arquivo (Atendidos mantidos).";
+                        }
+                        if ($puladosAtendidos > 0) {
+                            $mensagens[] = "↪️ $puladosAtendidos linha(s) do arquivo puladas: mesma data de um EDI já Atendido.";
+                        }
+                        $mensagens[] = "✅ Importação concluída: $importados inserida(s), $erros erro(s)."
+                            . ($versaoId ? ' Versão guardada no Histórico EDI.' : (historicoEdiDisponivel($conn) ? '' : ' (Histórico EDI ainda não ativado — rode o SQL das tabelas.)'));
+                    } catch (Throwable $erroImport) {
+                        mysqli_rollback($conn);
+                        $mensagens[] = '❌ Erro na importação — nada foi alterado: ' . $erroImport->getMessage();
+                    }
+                }
             }
-            fclose($handle);
         }
     }
 }
@@ -700,6 +669,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
     exigirComprador();
     $idExcluir = (int) ($_POST['id'] ?? 0);
     if ($idExcluir > 0) {
+        $linhaHistExcluir = linhaEdiParaHistorico($conn, $idExcluir);
         mysqli_begin_transaction($conn);
         try {
             $stmtExcluirEstoqueEdi = mysqli_prepare($conn, "DELETE FROM estoque WHERE origem_edi_id = ?");
@@ -713,6 +683,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'excluir
             mysqli_stmt_close($stmtExcluir);
 
             mysqli_commit($conn);
+            registrarAjusteEdi($conn, $linhaHistExcluir, 'exclusao', 'quantidade', isset($linhaHistExcluir['quantidade']) ? (float) $linhaHistExcluir['quantidade'] : null, null);
         } catch (Throwable $e) {
             mysqli_rollback($conn);
         }
@@ -836,6 +807,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
         );
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
+        registrarAjusteEdi($conn, [
+            'id' => 0, 'material' => $materialManual, 'modelo' => $modeloManual, 'projeto' => $projetoManual,
+            'evento' => $eventoManual, 'data_inicio' => $dataInicioManual,
+        ], 'inclusao', 'quantidade', null, (float) $quantidadeManual);
         $flash = 'inserido';
     }
 
@@ -872,6 +847,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
+    // Guarda a linha como estava, pro Histórico EDI registrar "de → para"
+    $linhaHist = linhaEdiParaHistorico($conn, $id);
 
     if ($campo === 'material') {
         // Trocar o material com duplo clique (vale só pra essa linha). Se o EDI já
@@ -899,6 +876,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_bind_param($stmt, 'si', $materialEditado, $id);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
+        registrarAjusteEdi($conn, $linhaHist, 'edicao', 'material', $linhaHist['material'] ?? null, $materialEditado);
         echo json_encode(['ok' => true, 'exibido' => $materialEditado]);
         exit;
     }
@@ -914,6 +892,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_bind_param($stmt, 'si', $eventoEditado, $id);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
+        registrarAjusteEdi($conn, $linhaHist, 'edicao', 'evento', $linhaHist['evento'] ?? null, $eventoEditado);
         echo json_encode(['ok' => true, 'exibido' => $eventoEditado]);
         exit;
     }
@@ -929,6 +908,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
         sincronizarQuantidadeEdiNoEstoque($conn, $id);
+        registrarAjusteEdi($conn, $linhaHist, 'edicao', 'quantidade', isset($linhaHist['quantidade']) ? (float) $linhaHist['quantidade'] : null, (float) $quantidadeEditada);
         echo json_encode(['ok' => true, 'exibido' => (string) $quantidadeEditada]);
         exit;
     }
@@ -942,6 +922,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_bind_param($stmt, 'si', $modeloEditado, $id);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
+        registrarAjusteEdi($conn, $linhaHist, 'edicao', 'modelo', $linhaHist['modelo'] ?? null, $modeloEditado);
 
         $exibidoModelo = $modeloEditado ?? '';
         if ($modeloEditado === null) {
@@ -970,6 +951,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     mysqli_stmt_bind_param($stmt, 'ssiii', $novaData, $novaData, $periodoEditado['semana'], $periodoEditado['ano'], $id);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
+    registrarAjusteEdi($conn, $linhaHist, 'edicao', 'data', $linhaHist['data_inicio'] ?? null, $novaData);
     echo json_encode(['ok' => true, 'exibido' => $dataEditadaObj->format('d/m/Y')]);
     exit;
 }
@@ -989,6 +971,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         // por compatibilidade com a coluna que ainda existe na tabela.
         $novaDataFim = $novaDataInicio;
 
+        $linhaHistEditar = linhaEdiParaHistorico($conn, $idEditar);
         $stmtEditar = mysqli_prepare($conn, "UPDATE edi SET data_inicio = ?, data_fim = ?, quantidade = ?, semana = ?, ano = ? WHERE _tidb_rowid = ?");
         mysqli_stmt_bind_param(
             $stmtEditar, "ssdiii",
@@ -997,6 +980,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
         mysqli_stmt_execute($stmtEditar);
         mysqli_stmt_close($stmtEditar);
         sincronizarQuantidadeEdiNoEstoque($conn, $idEditar);
+        registrarAjusteEdi($conn, $linhaHistEditar, 'edicao', 'quantidade', isset($linhaHistEditar['quantidade']) ? (float) $linhaHistEditar['quantidade'] : null, (float) $quantidadeEditada);
+        registrarAjusteEdi($conn, $linhaHistEditar, 'edicao', 'data', $linhaHistEditar['data_inicio'] ?? null, $novaDataInicio);
         $flash = 'editado';
     }
 
@@ -1154,6 +1139,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
     };
 
     $qtdAfetada = 0;
+    // Guarda como estava antes, pro Histórico EDI (exclusão, data e quantidade)
+    $linhasHistMassa = in_array($operacao, ['excluir', 'data', 'quantidade'], true) ? linhasEdiParaHistorico($conn, $ids) : [];
     mysqli_begin_transaction($conn);
     try {
         switch ($operacao) {
@@ -1208,6 +1195,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'acao_ma
                 break;
         }
         mysqli_commit($conn);
+        foreach ($linhasHistMassa as $lh) {
+            if ($operacao === 'excluir') {
+                registrarAjusteEdi($conn, $lh, 'massa', 'exclusao', (float) $lh['quantidade'], null);
+            } elseif ($operacao === 'quantidade') {
+                registrarAjusteEdi($conn, $lh, 'massa', 'quantidade', (float) $lh['quantidade'], (float) $novaQuantidade);
+            } elseif ($operacao === 'data') {
+                registrarAjusteEdi($conn, $lh, 'massa', 'data', $lh['data_inicio'], $novaDataObj->format('Y-m-d'));
+            }
+        }
     } catch (Throwable $e) {
         mysqli_rollback($conn);
         $redirecionar(['flash' => 'massa_erro', 'massa_msg' => 'Erro ao executar a ação em massa: ' . $e->getMessage()]);
@@ -1475,6 +1471,7 @@ unset($r);
             <a class="btn btn-outline-secondary btn-sm" href="estoque.php">Estoque</a>
             <a class="btn btn-outline-secondary btn-sm" href="edi.php">EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="bomnova.php">BOM</a>
+            <a class="btn btn-outline-secondary btn-sm" href="edi_historico.php">📈 Histórico EDI</a>
             <a class="btn btn-outline-secondary btn-sm" href="programacao.php">Programação</a>
             <a class="btn btn-outline-secondary btn-sm" href="parametros_compra.php">Parâmetros</a>
             <a class="btn btn-outline-secondary btn-sm" href="evolucao_geral.php">Evolução geral</a>
@@ -1567,21 +1564,26 @@ unset($r);
 
                     <form method="POST" enctype="multipart/form-data">
                         <div class="mb-3">
-                            <label class="form-label">Arquivo CSV</label>
-                            <input type="file" name="arquivo_csv" accept=".csv" class="form-control" required>
+                            <label class="form-label">Planilha (XLSX ou CSV)</label>
+                            <input type="file" name="arquivo_csv" accept=".csv,.xlsx" class="form-control" required>
                         </div>
 
-                        <input type="hidden" name="modo" value="adicionar">
-                        <p class="small text-muted mb-1"><strong>Adicionar</strong> — insere todas as linhas do arquivo (se já existirem, ficam duplicadas).</p>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="substituir_pendentes" id="substituir_pendentes" checked>
+                            <label class="form-check-label" for="substituir_pendentes">
+                                <strong>Substituir pendentes</strong> dos modelos que vieram no arquivo (Atendidos ficam intactos)
+                            </label>
+                        </div>
+                        <p class="small text-muted mb-1">Desmarcado = só adiciona as linhas do arquivo. Toda importação guarda uma versão no <a href="edi_historico.php">📈 Histórico EDI</a>.</p>
 
                         <button type="submit" class="btn btn-primary mt-2">Importar</button>
                     </form>
 
                     <hr>
                     <small class="text-muted">
-                        <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>material, evento, data, quantidade</code><br>
-                        <strong>Tipo, Projeto e Modelo</strong> não precisam vir: são puxados da BOM pelo material (colunas com esses nomes no CSV são ignoradas).<br>
+                        <strong>Colunas</strong> (primeira linha = cabeçalho, qualquer ordem) — dá pra subir a planilha do cliente direto:<br>
+                        <code>modelo</code> (ou <code>Item</code>), <code>quantidade</code> (ou <code>Qtde</code>), <code>data</code> (ou <code>Data Coleta</code>); opcionais: <code>evento</code>, <code>Geração</code>.<br>
+                        O <strong>Material</strong> é encontrado na BOM pelo Modelo (espaços e zeros à esquerda são ignorados); Tipo, Projeto e PN também vêm da BOM. Sem a coluna <code>evento</code>, o evento vira <code>EDI dd/mm/aaaa</code> com a data da coluna Geração. Arquivo antigo com a coluna <code>material</code> continua funcionando.<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
