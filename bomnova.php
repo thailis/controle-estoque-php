@@ -1212,7 +1212,8 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="bomnova-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Planta', 'Projeto', 'Material', 'Tipo', 'Fornecedor', 'Componente', 'PN', 'Modelo', 'Descrição', 'NCM', 'Consumo', 'U.M.', 'Comprador', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Status', 'Substitui', 'Parâmetros'], ';', '"', '');
+    // Mesma sequência do cabeçalho da tela (NCM, que não aparece na tela, vai no fim)
+    fputcsv($saida, ['Status', 'Planta', 'Projeto', 'Material', 'Modelo', 'Tipo', 'Fornecedor', 'Componente', 'Substitui', 'PN', 'Descrição', 'Consumo', 'U.M.', 'Comprador', 'Net Price', 'IPI %', 'PIS %', 'COFINS %', 'ICMS %', 'Preço', 'Moeda', 'MRP', 'Planejamento', 'Parâmetros', 'NCM'], ';', '"', '');
     // Coluna "Parâmetros": componentes que já têm cadastro em Parâmetros de Compra
     $comParametroExport = [];
     try {
@@ -1229,9 +1230,18 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $precoExport = calcularPrecoBomnova(
             $linhaExport['net_price'], $linhaExport['ipi'], $pisExport, $cofinsExport, $linhaExport['icms']
         );
+        $statusExport = (function ($l) {
+            $mrpE = strtoupper(trim((string) ($l['mrp'] ?? '')));
+            $planE = strtoupper(trim((string) ($l['planejamento'] ?? '')));
+            if ($planE !== 'S' && $planE !== 'N') { $planE = $mrpE === 'N' ? 'N' : 'S'; }
+            if ($mrpE === 'N' && $planE === 'N') { return 'Inativo'; }
+            return strtolower(trim((string) ($l['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project';
+        })($linhaExport);
         fputcsv($saida, [
-            $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['tipo'],
-            $linhaExport['fornecedor'], $linhaExport['codigo_componente'], $linhaExport['pn'], $linhaExport['modelo'] ?? '', $linhaExport['descricao'], $linhaExport['ncm'] ?? '',
+            $statusExport,
+            $linhaExport['planta'], $linhaExport['projeto'], $linhaExport['material'], $linhaExport['modelo'] ?? '',
+            $linhaExport['tipo'], $linhaExport['fornecedor'], $linhaExport['codigo_componente'],
+            $linhaExport['substitui'] ?? '', $linhaExport['pn'], $linhaExport['descricao'],
             $linhaExport['consumo'], $linhaExport['um'], $linhaExport['comprador'] ?? '',
             formatarNumeroBomnovaTaxExibicao($linhaExport['net_price'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']),
             formatarNumeroBomnovaTaxExibicao($linhaExport['ipi'] ?? null, BOMNOVA_CASAS_DECIMAIS['ipi']),
@@ -1241,17 +1251,10 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $precoExport !== null ? number_format($precoExport, 2, ',', '') : '',
             ($linhaExport['moeda'] ?? '') !== '' ? $linhaExport['moeda'] : 'BRL',
             $linhaExport['mrp'], $linhaExport['planejamento'],
-            (function ($l) {
-                $mrpE = strtoupper(trim((string) ($l['mrp'] ?? '')));
-                $planE = strtoupper(trim((string) ($l['planejamento'] ?? '')));
-                if ($planE !== 'S' && $planE !== 'N') { $planE = $mrpE === 'N' ? 'N' : 'S'; }
-                if ($mrpE === 'N' && $planE === 'N') { return 'Inativo'; }
-                return strtolower(trim((string) ($l['status'] ?? ''))) === 'handover' ? 'Handover' : 'Project';
-            })($linhaExport),
-            $linhaExport['substitui'] ?? '',
             trim((string) ($linhaExport['codigo_componente'] ?? '')) === ''
                 ? ''
                 : (isset($comParametroExport[trim((string) $linhaExport['codigo_componente'])]) ? 'Cadastrado' : 'Não cadastrado'),
+            $linhaExport['ncm'] ?? '',
         ], ';', '"', '');
     }
     fclose($saida);
@@ -1360,9 +1363,11 @@ if ($codigosPaginaBom) {
             <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             <a class="btn btn-outline-secondary btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
         </nav>
-        <div class="card bg-primary text-white p-4 mb-4">
-            <h1>📦 BOM</h1>
-            <p class="mb-0"><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</p>
+        <div class="card bg-primary text-white px-4 py-3 mb-3">
+            <div class="d-flex flex-wrap align-items-baseline gap-3">
+                <h1 class="h4 m-0">📦 BOM</h1>
+                <span><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</span>
+            </div>
         </div>
 
         <?php if (isset($_GET['mrp_ok'])): ?>
@@ -1422,9 +1427,94 @@ if ($codigosPaginaBom) {
             </div>
         <?php endif; ?>
 
-        <div class="card p-3 mb-4">
-            <details <?php echo isset($_GET['inserir_erro']) ? 'open' : ''; ?>>
-                <summary>➕ Nova linha (inclusão manual)</summary>
+        <!-- Barra de ações compacta: um botão abre cada painel logo abaixo (um de cada vez) -->
+        <div class="card p-2 mb-3 barra-acoes-bom" data-aberto="<?php echo isset($_GET['inserir_erro']) ? 'novo' : (!empty($mensagens) ? 'importar' : ((isset($_GET['projeto_excluido']) || isset($_GET['projeto_excluir_erro'])) ? 'excluir' : '')); ?>">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary btn-painel" data-painel="importar">📥 Importar CSV</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-painel" data-painel="novo">➕ Nova linha</button>
+                <button type="button" class="btn btn-sm btn-outline-danger btn-painel" data-painel="excluir">🗑️ Excluir projeto</button>
+                <div class="ms-auto">
+                <form method="POST" class="m-0" title="Net Price e Moeda = preço (net) do pedido com a data mais futura na Programação. Preço vazio ou 0 é ignorado." onsubmit="return confirm('Puxar da Programação o preço do pedido mais futuro de cada componente e gravar no Net Price e na Moeda da BOM? Componentes sem preço na Programação não são alterados.');">
+                    <input type="hidden" name="acao" value="sincronizar_precos_programacao">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">🔄 Sincronizar preços da Programação</button>
+                </form>
+                </div>
+            </div>
+            <?php if ($resultadoSyncPreco !== null): ?>
+                <?php if ($resultadoSyncPreco['ok']): ?>
+                    <div class="alert alert-success py-2 mt-3 mb-0">
+                        ✅ <?php echo (int) $resultadoSyncPreco['componentes']; ?> componente(s) com preço na Programação conferido(s) —
+                        <?php echo count($resultadoSyncPreco['mudancas']); ?> com valor novo
+                        (<?php echo (int) $resultadoSyncPreco['linhas']; ?> linha(s) da BOM alterada(s)).
+                        <?php if (!empty($resultadoSyncPreco['mudancas'])): ?>
+                            <details class="mt-2">
+                                <summary>Ver o que mudou</summary>
+                                <table class="table table-sm mt-2 mb-0">
+                                    <thead><tr><th>Componente</th><th class="text-end">Net Price antes</th><th class="text-end">Net Price agora</th><th>Moeda</th><th>Pedido de</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach ($resultadoSyncPreco['mudancas'] as $m): ?>
+                                            <tr>
+                                                <td><?php echo htmlspecialchars($m['comp']); ?></td>
+                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao($m['net_antigo'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']) ?: '—'); ?></td>
+                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao((string) $m['preco'], BOMNOVA_CASAS_DECIMAIS['net_price'])); ?></td>
+                                                <td><?php echo htmlspecialchars(($m['moeda_antiga'] !== '' && $m['moeda_antiga'] !== $m['moeda'] ? $m['moeda_antiga'] . ' → ' : '') . $m['moeda']); ?></td>
+                                                <td><?php echo $m['data'] ? htmlspecialchars((new DateTimeImmutable($m['data']))->format('d/m/Y')) : ''; ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </details>
+                        <?php endif; ?>
+                    </div>
+                <?php else: ?>
+                    <div class="alert alert-danger py-2 mt-3 mb-0">❌ Não foi possível sincronizar: <?php echo htmlspecialchars($resultadoSyncPreco['erro']); ?></div>
+                <?php endif; ?>
+            <?php endif; ?>
+            <div class="painel-bom px-2 pb-2" data-painel="importar" hidden>
+
+                <div class="mt-3">
+                    <?php if (!empty($mensagens)): ?>
+                    <div class="mb-3">
+                        <?php foreach ($mensagens as $msg): ?>
+                            <div><?php echo htmlspecialchars($msg); ?></div>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Arquivo CSV</label>
+                            <input type="file" name="arquivo_csv" accept=".csv" class="form-control" required>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="limpar_tabela" id="limpar_tabela">
+                                <label class="form-check-label" for="limpar_tabela">
+                                    Limpar tabela antes de importar
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-2">
+                            <button type="submit" class="btn btn-primary w-100">Importar</button>
+                        </div>
+                    </form>
+
+                    <hr>
+                    <small class="text-muted">
+                        <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
+                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, mrp</code><br>
+                        A coluna <code>ncm</code> é opcional.<br>
+                        A coluna <code>modelo</code> é opcional — se vier no CSV, é importada junto; se não vier (ou estiver vazia), fica em branco e dá pra preencher depois com duplo clique.<br>
+                        A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
+                        A coluna <code>moeda</code> é opcional — sem ela, entra <strong>BRL</strong> (dá pra trocar depois com duplo clique).<br>
+                        As colunas <code>net_price</code> (ou <code>Net Price</code>), <code>ipi, pis, cofins, icms</code> (aceita também <code>IPI %</code> etc.) também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
+                        Separador: vírgula ou ponto e vírgula (detectado automaticamente).
+                    </small>
+                </div>
+            </div>
+            <div class="painel-bom px-2 pb-2" data-painel="novo" hidden>
+                <div class="small fw-bold mt-2">➕ Nova linha (inclusão manual)</div>
+
                 <form method="POST" class="row g-2 align-items-end mt-3" id="form-inclusao-bom">
                     <input type="hidden" name="acao" value="inserir_manual_bomnova">
                     <div class="col-6 col-md-2"><label class="form-label small mb-1">Material</label><input type="text" name="m_material" id="m_material" list="lista_bom_materiais" class="form-control form-control-sm" autocomplete="off"></div>
@@ -1495,97 +1585,10 @@ if ($codigosPaginaBom) {
                         document.getElementById('form-inclusao-bom').addEventListener('submit', function () { plan.disabled = false; });
                     })();
                 </script>
-            </details>
-        </div>
-
-        <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
-                <summary>📥 Importar novo arquivo CSV</summary>
-                <div class="mt-3">
-                    <?php if (!empty($mensagens)): ?>
-                    <div class="mb-3">
-                        <?php foreach ($mensagens as $msg): ?>
-                            <div><?php echo htmlspecialchars($msg); ?></div>
-                        <?php endforeach; ?>
-                    </div>
-                    <?php endif; ?>
-
-                    <form method="POST" enctype="multipart/form-data" class="row g-2 align-items-end">
-                        <div class="col-12 col-md-6">
-                            <label class="form-label">Arquivo CSV</label>
-                            <input type="file" name="arquivo_csv" accept=".csv" class="form-control" required>
-                        </div>
-                        <div class="col-12 col-md-4">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="limpar_tabela" id="limpar_tabela">
-                                <label class="form-check-label" for="limpar_tabela">
-                                    Limpar tabela antes de importar
-                                </label>
-                            </div>
-                        </div>
-                        <div class="col-12 col-md-2">
-                            <button type="submit" class="btn btn-primary w-100">Importar</button>
-                        </div>
-                    </form>
-
-                    <hr>
-                    <small class="text-muted">
-                        <strong>Colunas esperadas no CSV</strong> (primeira linha = cabeçalho, qualquer ordem):<br>
-                        <code>planta, projeto, material, tipo, fornecedor, codigo_componente, pn, modelo, descricao, ncm, consumo, um, mrp</code><br>
-                        A coluna <code>ncm</code> é opcional.<br>
-                        A coluna <code>modelo</code> é opcional — se vier no CSV, é importada junto; se não vier (ou estiver vazia), fica em branco e dá pra preencher depois com duplo clique.<br>
-                        A coluna <code>mrp</code> é opcional: use <code>S</code> para componente ativo (conta no cálculo de demanda) ou <code>N</code> para substituído (fica só como histórico, não conta no cálculo). Se não vier no CSV, é tratado como ativo. Você também pode clicar direto no badge S/N na tabela abaixo pra alternar, sem precisar reimportar o CSV.<br>
-                        A coluna <code>moeda</code> é opcional — sem ela, entra <strong>BRL</strong> (dá pra trocar depois com duplo clique).<br>
-                        As colunas <code>net_price</code> (ou <code>Net Price</code>), <code>ipi, pis, cofins, icms</code> (aceita também <code>IPI %</code> etc.) também são opcionais no CSV — se não vierem, ficam em branco e dá pra digitar direto na tela (duplo clique). O <strong>Preço</strong> é sempre calculado automaticamente a partir delas, nunca é importado nem digitado diretamente.<br>
-                        Separador: vírgula ou ponto e vírgula (detectado automaticamente).
-                    </small>
-                </div>
-            </details>
-        </div>
-
-        <div class="card p-3 mb-4">
-            <div class="d-flex flex-wrap align-items-center gap-3">
-                <form method="POST" class="m-0" onsubmit="return confirm('Puxar da Programação o preço do pedido mais futuro de cada componente e gravar no Net Price e na Moeda da BOM? Componentes sem preço na Programação não são alterados.');">
-                    <input type="hidden" name="acao" value="sincronizar_precos_programacao">
-                    <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar preços da Programação</button>
-                </form>
-                <small class="text-muted">Net Price e Moeda = preço (net) do pedido com a <strong>data mais futura</strong> na Programação. Preço vazio ou 0 é ignorado.</small>
             </div>
-            <?php if ($resultadoSyncPreco !== null): ?>
-                <?php if ($resultadoSyncPreco['ok']): ?>
-                    <div class="alert alert-success py-2 mt-3 mb-0">
-                        ✅ <?php echo (int) $resultadoSyncPreco['componentes']; ?> componente(s) com preço na Programação conferido(s) —
-                        <?php echo count($resultadoSyncPreco['mudancas']); ?> com valor novo
-                        (<?php echo (int) $resultadoSyncPreco['linhas']; ?> linha(s) da BOM alterada(s)).
-                        <?php if (!empty($resultadoSyncPreco['mudancas'])): ?>
-                            <details class="mt-2">
-                                <summary>Ver o que mudou</summary>
-                                <table class="table table-sm mt-2 mb-0">
-                                    <thead><tr><th>Componente</th><th class="text-end">Net Price antes</th><th class="text-end">Net Price agora</th><th>Moeda</th><th>Pedido de</th></tr></thead>
-                                    <tbody>
-                                        <?php foreach ($resultadoSyncPreco['mudancas'] as $m): ?>
-                                            <tr>
-                                                <td><?php echo htmlspecialchars($m['comp']); ?></td>
-                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao($m['net_antigo'] ?? null, BOMNOVA_CASAS_DECIMAIS['net_price']) ?: '—'); ?></td>
-                                                <td class="text-end"><?php echo htmlspecialchars(formatarNumeroBomnovaTaxExibicao((string) $m['preco'], BOMNOVA_CASAS_DECIMAIS['net_price'])); ?></td>
-                                                <td><?php echo htmlspecialchars(($m['moeda_antiga'] !== '' && $m['moeda_antiga'] !== $m['moeda'] ? $m['moeda_antiga'] . ' → ' : '') . $m['moeda']); ?></td>
-                                                <td><?php echo $m['data'] ? htmlspecialchars((new DateTimeImmutable($m['data']))->format('d/m/Y')) : ''; ?></td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </details>
-                        <?php endif; ?>
-                    </div>
-                <?php else: ?>
-                    <div class="alert alert-danger py-2 mt-3 mb-0">❌ Não foi possível sincronizar: <?php echo htmlspecialchars($resultadoSyncPreco['erro']); ?></div>
-                <?php endif; ?>
-            <?php endif; ?>
-        </div>
+            <div class="painel-bom px-2 pb-2" data-painel="excluir" hidden>
+                <div class="small fw-bold text-danger mt-2">⚠️ Excluir projeto inteiro da BOM</div>
 
-        <div class="card p-3 mb-4 border-danger">
-            <details <?php echo (isset($_GET['projeto_excluido']) || isset($_GET['projeto_excluir_erro'])) ? 'open' : ''; ?>>
-                <summary class="text-danger">⚠️ Atualização em massa — excluir projeto inteiro da BOM</summary>
                 <div class="mt-3">
                     <form method="POST" class="row g-2 align-items-end" id="form-excluir-projeto">
                         <input type="hidden" name="acao" value="excluir_projeto_bomnova">
@@ -1629,10 +1632,22 @@ if ($codigosPaginaBom) {
                         });
                     })();
                 </script>
-            </details>
+            </div>
         </div>
-
-        <div class="card p-3 mb-4">
+        <script>
+            (function () {
+                const barra = document.querySelector('.barra-acoes-bom');
+                const abrir = (nome) => {
+                    barra.querySelectorAll('.painel-bom').forEach((p) => { p.hidden = p.dataset.painel !== nome; });
+                    barra.querySelectorAll('.btn-painel').forEach((b) => b.classList.toggle('active', b.dataset.painel === nome));
+                };
+                barra.querySelectorAll('.btn-painel').forEach((b) => b.addEventListener('click', () => {
+                    abrir(b.classList.contains('active') ? '' : b.dataset.painel);
+                }));
+                if (barra.dataset.aberto) abrir(barra.dataset.aberto);
+            })();
+        </script>
+        <div class="card p-2 mb-3">
             <form method="GET" class="row g-2 align-items-end">
                 <div class="col-12 col-md flex-grow-1">
                     <label class="form-label small text-muted mb-1">Busca livre</label>
