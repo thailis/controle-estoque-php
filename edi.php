@@ -238,6 +238,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
     //  - Histórico: guarda uma "foto" desses materiais ANTES (com os ajustes
     //    manuais) e DEPOIS da importação, pra janela Histórico EDI comparar.
     $substituirPendentes = isset($_POST['substituir_pendentes']);
+    // Projeto escolhido: só as linhas desse projeto (pela BOM) entram — dá pra
+    // subir a mesma planilha do cliente um projeto de cada vez.
+    $projetoImportacao = trim((string) ($_POST['projeto_importacao'] ?? ''));
+    // Modelos escolhidos (vários: separados por ;): só as linhas deles entram e só
+    // os pendentes deles são substituídos — o resto do EDI fica como está.
+    $modelosImportacao = [];
+    foreach (preg_split('/[;,\n]+/', (string) ($_POST['modelos_importacao'] ?? '')) as $mi) {
+        $mi = normalizarModeloEdi($mi);
+        if ($mi !== '') { $modelosImportacao[$mi] = true; }
+    }
     $nomeArquivo = (string) ($_FILES['arquivo_csv']['name'] ?? '');
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
@@ -259,12 +269,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
             $cMaterial = $acharColuna(['material']);
             $cQtd = $acharColuna(['quantidade', 'qtde', 'qtd']);
             $cData = $acharColuna(['data', 'data coleta', 'data da coleta']);
+            // Se a Data Coleta vier vazia (algumas planilhas só preenchem a de entrega), usa a Data Entrega
+            $cDataEntrega = $acharColuna(['data entrega', 'data da entrega']);
             $cEvento = $acharColuna(['evento']);
             $cGeracao = $acharColuna(['geracao', 'data geracao']);
             $cPn = $acharColuna(['pn', 'pn2']);
 
-            if (($cModelo === null && $cMaterial === null) || $cQtd === null || $cData === null) {
-                $mensagens[] = "❌ Colunas obrigatórias: modelo (ou item), quantidade (ou qtde) e data (ou data coleta).";
+            if (($cModelo === null && $cMaterial === null) || $cQtd === null || ($cData === null && $cDataEntrega === null)) {
+                $mensagens[] = "❌ Colunas obrigatórias: modelo (ou item), quantidade (ou qtde) e data (ou data coleta / data entrega).";
             } else {
                 $mapaModelos = $cModelo !== null ? mapaModeloMaterialBom($conn) : [];
                 $valor = fn(array $l, ?int $c) => $c === null ? '' : trim((string) ($l[$c] ?? ''));
@@ -281,6 +293,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
 
                 // 1ª passada: valida tudo antes de mexer no banco
                 $entradas = [];
+                $indiceEntrada = []; // material|data|evento => posição (soma as linhas do mesmo dia)
+                $foraDoProjeto = 0;
                 $modelosNaoAchados = [];
                 $cacheDadosBom = [];
                 foreach ($planilha['linhas'] as $i => $l) {
@@ -293,6 +307,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $modeloBom = null;
                     if ($modeloArquivo !== '') {
                         $achado = $mapaModelos[normalizarModeloEdi($modeloArquivo)] ?? null;
+                        if ($achado === null && !empty($modelosImportacao) && !isset($modelosImportacao[normalizarModeloEdi($modeloArquivo)])) {
+                            $foraDoProjeto++;
+                            continue;
+                        }
                         if ($achado === null) {
                             $modelosNaoAchados[trim($modeloArquivo)] = true;
                             $erros++;
@@ -306,28 +324,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         $mensagens[] = "⚠️ Linha $linhaNum ignorada: sem modelo/material.";
                         continue;
                     }
-                    $quantidade = parseQuantidadeEdi($valor($l, $cQtd));
-                    $dataObj = parseDataPlanilhaEdi($valor($l, $cData));
-                    $periodo = $dataObj !== null ? calcularSemanaEAno($dataObj) : null;
-                    if ($quantidade === null || $periodo === null) {
-                        $erros++;
-                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: " . ($quantidade === null ? "quantidade '" . $valor($l, $cQtd) . "' inválida." : "data '" . $valor($l, $cData) . "' inválida (use dd/mm/aaaa).");
-                        continue;
-                    }
                     if (!array_key_exists($material, $cacheDadosBom)) {
                         $cacheDadosBom[$material] = buscarDadosBom($conn, [$material])[$material] ?? ['pn' => null, 'tipo' => null, 'projeto' => null, 'modelo' => null];
                     }
                     $bom = $cacheDadosBom[$material];
+                    if ($projetoImportacao !== '' && mb_strtoupper(trim((string) $bom['projeto'])) !== mb_strtoupper($projetoImportacao)) {
+                        $foraDoProjeto++;
+                        continue;
+                    }
+                    if (!empty($modelosImportacao)) {
+                        $modeloLinha = normalizarModeloEdi($modeloArquivo !== '' ? $modeloArquivo : (string) ($modeloBom ?? $bom['modelo'] ?? ''));
+                        if (!isset($modelosImportacao[$modeloLinha])) {
+                            $foraDoProjeto++;
+                            continue;
+                        }
+                    }
+                    $quantidade = parseQuantidadeEdi($valor($l, $cQtd));
+                    $dataTexto = $valor($l, $cData);
+                    if ($dataTexto === '') {
+                        $dataTexto = $valor($l, $cDataEntrega);
+                    }
+                    $dataObj = parseDataPlanilhaEdi($dataTexto);
+                    $periodo = $dataObj !== null ? calcularSemanaEAno($dataObj) : null;
+                    if ($quantidade === null || $periodo === null) {
+                        $erros++;
+                        $mensagens[] = "⚠️ Linha $linhaNum ignorada: " . ($quantidade === null ? "quantidade '" . $valor($l, $cQtd) . "' inválida." : "data '" . $dataTexto . "' inválida (use dd/mm/aaaa).");
+                        continue;
+                    }
                     $pnCsv = $valor($l, $cPn);
                     $evento = $valor($l, $cEvento);
                     $dataIso = $dataObj->format('Y-m-d');
+                    $eventoLinha = $evento !== '' ? $evento : $eventoPadrao;
+                    // Várias linhas do mesmo dia (horários diferentes) viram uma só, somando a quantidade
+                    $chaveDia = $material . '|' . $dataIso . '|' . $eventoLinha;
+                    if (isset($indiceEntrada[$chaveDia])) {
+                        $pos = $indiceEntrada[$chaveDia];
+                        $entradas[$pos]['quantidade'] = (string) ((float) $entradas[$pos]['quantidade'] + (float) $quantidade);
+                        continue;
+                    }
+                    $indiceEntrada[$chaveDia] = count($entradas);
                     $entradas[] = [
                         'pn2' => $bom['pn'] ?? ($pnCsv !== '' ? $pnCsv : null),
                         'material' => $material,
                         'marca' => $bom['tipo'],
                         'projeto' => $bom['projeto'],
                         'modelo' => $modeloBom ?? $bom['modelo'],
-                        'evento' => $evento !== '' ? $evento : $eventoPadrao,
+                        'evento' => $eventoLinha,
                         'semana' => $periodo['semana'],
                         'ano' => $periodo['ano'],
                         'quantidade' => $quantidade,
@@ -336,6 +378,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     ];
                 }
 
+                if ($foraDoProjeto > 0) {
+                    $mensagens[] = "ℹ️ $foraDoProjeto linha(s) fora do filtro não importadas"
+                        . ($projetoImportacao !== '' ? " (projeto: $projetoImportacao)" : '')
+                        . (!empty($modelosImportacao) ? ' (modelo(s): ' . implode(', ', array_keys($modelosImportacao)) . ')' : '') . '.';
+                }
                 if (!empty($modelosNaoAchados)) {
                     $lista = array_keys($modelosNaoAchados);
                     $mensagens[] = '⚠️ ' . count($lista) . ' modelo(s) não encontrado(s) na BOM (linhas ignoradas): ' . implode(', ', array_slice($lista, 0, 15)) . (count($lista) > 15 ? '…' : '');
@@ -1262,6 +1309,13 @@ if ($resAnos) {
     }
 }
 
+// Projetos da BOM, pro combo "Projeto" da importação
+$projetosBomImportacao = [];
+$resProjBomImp = mysqli_query($conn, "SELECT DISTINCT TRIM(projeto) AS projeto FROM bomnova WHERE projeto IS NOT NULL AND TRIM(projeto) <> '' ORDER BY projeto");
+while ($resProjBomImp && ($lpb = mysqli_fetch_assoc($resProjBomImp))) {
+    $projetosBomImportacao[] = $lpb['projeto'];
+}
+
 // Projetos e modelos disponíveis na base, pra montar os combos de filtro dinamicamente
 $projetosDisponiveis = [];
 $resProjetos = mysqli_query($conn, "SELECT DISTINCT TRIM(projeto) AS projeto FROM edi WHERE projeto IS NOT NULL AND TRIM(projeto) <> '' ORDER BY projeto");
@@ -1568,6 +1622,23 @@ unset($r);
                             <input type="file" name="arquivo_csv" accept=".csv,.xlsx" class="form-control" required>
                         </div>
 
+                        <div class="row g-2 mb-1">
+                        <div class="col-12 col-md-5 mb-2">
+                            <label class="form-label">Só estes modelos <small class="text-muted">(opcional — vários: separe com ;)</small></label>
+                            <input type="text" name="modelos_importacao" class="form-control" placeholder="Ex.: 52183855">
+                            <small class="text-muted">Preenchido, só as linhas desses modelos entram e só os pendentes deles são substituídos. O resto do EDI não muda.</small>
+                        </div>
+                        <div class="col-12 col-md-4 mb-2">
+                            <label class="form-label">Projeto <small class="text-muted">(opcional)</small></label>
+                            <select name="projeto_importacao" class="form-select">
+                                <option value="">Todos os projetos do arquivo</option>
+                                <?php foreach ($projetosBomImportacao as $projetoOpcaoImp): ?>
+                                    <option value="<?php echo htmlspecialchars($projetoOpcaoImp); ?>"><?php echo htmlspecialchars($projetoOpcaoImp); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="text-muted">Escolhendo um projeto, só as linhas dele entram (e só os pendentes dele são substituídos).</small>
+                        </div>
+                        </div>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="substituir_pendentes" id="substituir_pendentes" checked>
                             <label class="form-check-label" for="substituir_pendentes">
@@ -1582,8 +1653,8 @@ unset($r);
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas</strong> (primeira linha = cabeçalho, qualquer ordem) — dá pra subir a planilha do cliente direto:<br>
-                        <code>modelo</code> (ou <code>Item</code>), <code>quantidade</code> (ou <code>Qtde</code>), <code>data</code> (ou <code>Data Coleta</code>); opcionais: <code>evento</code>, <code>Geração</code>.<br>
-                        O <strong>Material</strong> é encontrado na BOM pelo Modelo (espaços e zeros à esquerda são ignorados); Tipo, Projeto e PN também vêm da BOM. Sem a coluna <code>evento</code>, o evento vira <code>EDI dd/mm/aaaa</code> com a data da coluna Geração. Arquivo antigo com a coluna <code>material</code> continua funcionando.<br>
+                        <code>modelo</code> (ou <code>Item</code>), <code>quantidade</code> (ou <code>Qtde</code>), <code>data</code> (ou <code>Data Coleta</code>; se vier vazia, usa a <code>Data Entrega</code>); opcionais: <code>evento</code>, <code>Geração</code>.<br>
+                        Linhas do mesmo modelo no mesmo dia (horários diferentes) viram uma só, com a quantidade somada. O <strong>Material</strong> é encontrado na BOM pelo Modelo (espaços e zeros à esquerda são ignorados); Tipo, Projeto e PN também vêm da BOM. Sem a coluna <code>evento</code>, o evento vira <code>EDI dd/mm/aaaa</code> com a data da coluna Geração. Arquivo antigo com a coluna <code>material</code> continua funcionando.<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
