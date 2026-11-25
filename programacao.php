@@ -1896,17 +1896,28 @@ while ($row = mysqli_fetch_assoc($result)) {
             <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             <a class="btn btn-outline-secondary btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
         </nav>
-        <div class="card bg-primary text-white p-4 mb-4">
-            <h1>📅 Programação de Entradas</h1>
-            <p class="mb-0">
-                <?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base
-                • soma das quantidades: <?php echo number_format($somaProgramacao, 2, ',', '.'); ?>
-            </p>
+        <div class="card bg-primary text-white px-4 py-3 mb-3">
+            <div class="d-flex flex-wrap align-items-baseline gap-3">
+                <h1 class="h4 m-0">📅 Programação de Entradas</h1>
+                <span><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base • soma das quantidades: <?php echo number_format($somaProgramacao, 2, ',', '.'); ?></span>
+            </div>
         </div>
 
-        <div class="card p-3 mb-4">
-            <details <?php echo !empty($mensagens) ? 'open' : ''; ?>>
-                <summary>📥 Importar novo arquivo CSV</summary>
+        <!-- Barra de ações compacta: um botão abre cada painel logo abaixo (um de cada vez) -->
+        <div class="card p-2 mb-3 barra-acoes-prog" data-aberto="<?php echo !empty($mensagens) ? 'importar' : ''; ?>">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary btn-painel" data-painel="importar">📥 Importar CSV</button>
+                <button type="button" class="btn btn-sm btn-outline-success btn-painel" data-painel="lote">✔️ Em lote (Processo/PO)</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-painel" data-painel="novo">➕ Nova programação</button>
+                <div class="ms-auto">
+                <form method="POST" class="m-0" title="Traz da Importação os processos em aberto com Estoque = Sim. Precisa ter Processo e PO. Mesmo componente + processo + PO já na Programação = não duplica, só atualiza quantidade, preço, moeda e planta (linha Atendida não muda). Componente em outro processo/PO = cria linha nova (data = ETA prevista no Follow)." onsubmit="return confirm('Sincronizar com os Processos em aberto (Estoque = Sim)? Linhas que já existem (mesmo componente + processo + PO) não são duplicadas — só atualizadas.');">
+                    <input type="hidden" name="acao" value="sincronizar_processos">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">🔄 Sincronizar com Processos</button>
+                </form>
+                </div>
+            </div>
+            <div class="painel-prog px-2 pb-2" data-painel="importar" hidden>
+
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
                     <div class="mb-3">
@@ -1939,27 +1950,40 @@ while ($row = mysqli_fetch_assoc($result)) {
                         Data em DD/MM/AAAA ou AAAA-MM-DD. Separador: vírgula ou ponto e vírgula (detectado automaticamente).
                     </small>
                 </div>
-            </details>
-        </div>
+            </div>
+            <div class="painel-prog px-2 pb-2" data-painel="lote" hidden>
+                <div class="small fw-bold text-success mt-2 mb-2">✔️ Situação / Data em lote — todos os itens de um Processo ou PO</div>
 
-        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
-            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
-        <?php endif; ?>
-        <?php if (!empty($idsFiltro)): ?>
-            <div class="alert alert-info py-2">🔎 Mostrando só as <?php echo count($idsFiltro); ?> linha(s) da sincronização. <a class="alert-link" href="programacao.php">Ver tudo</a></div>
-        <?php endif; ?>
-        <?php if (isset($_GET['excluido'])): ?>
-            <div class="alert alert-success py-2">✅ Programação excluída.</div>
-        <?php endif; ?>
+            <form method="POST" class="row g-2 align-items-end" onsubmit="if (this.situacao_lote.value === 'excluir') { return confirm('EXCLUIR TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' (pendentes e atendidas)?\n\nAs entradas de estoque geradas pelas linhas atendidas também serão removidas. Essa ação não pode ser desfeita.'); } if (this.situacao_lote.value === 'data') { if (!this.data_lote.value.trim()) { alert('Informe a nova data (dd/mm/aaaa).'); return false; } return confirm('Alterar a DATA de todas as linhas PENDENTES de \'' + this.chave_lote.value.trim() + '\' para ' + this.data_lote.value.trim() + '?'); } return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
+                <input type="hidden" name="acao" value="situacao_em_lote">
+                <div class="col-auto">
+                    <label class="form-label small mb-1">Processo ou PO</label>
+                    <input type="text" name="chave_lote" list="lista-processos" autocomplete="off" class="form-control form-control-sm" placeholder="Ex.: Y26A3P0011 ou 5500157663" required>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label small mb-1">O que alterar</label>
+                    <select name="situacao_lote" class="form-select form-select-sm" onchange="document.getElementById('campo_data_lote').style.display = this.value === 'data' ? '' : 'none';">
+                        <option value="atendido">Situação → Atendido</option>
+                        <option value="pendente">Situação → Pendente (reabrir)</option>
+                        <option value="data">Data (pendentes)</option>
+                        <option value="liberado">Status → ✅ Liberado</option>
+                        <option value="bloqueado">Status → ⛔ Bloqueado</option>
+                        <option value="excluir">🗑️ Excluir todas as linhas</option>
+                    </select>
+                </div>
+                <div class="col-auto" id="campo_data_lote" style="display:none;">
+                    <label class="form-label small mb-1">Nova data</label>
+                    <input type="text" name="data_lote" class="form-control form-control-sm" placeholder="dd/mm/aaaa" autocomplete="off">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
+                </div>
+            </form>
+            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam). "Excluir" apaga todas as linhas do Processo/PO e as entradas de estoque que elas geraram. "Status" Liberado/Bloqueado vale pra todas as linhas (Bloqueado só some da Evolução geral e do Detalhe do componente).</small>
+            </div>
+            <div class="painel-prog px-2 pb-2" data-painel="novo" hidden>
+                <div class="small fw-bold mt-2 mb-2">➕ Nova programação (entrada manual)</div>
 
-        <datalist id="lista_componentes">
-            <?php foreach ($componentesDisponiveis as $c): ?>
-                <option value="<?php echo h($c); ?>">
-            <?php endforeach; ?>
-        </datalist>
-
-        <div class="card p-3 mb-4">
-            <h2 class="h6 mb-3">➕ Nova programação (entrada manual)</h2>
             <form method="POST" class="row g-2 align-items-end">
                 <input type="hidden" name="acao" value="inserir_manual">
                 <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
@@ -2006,49 +2030,39 @@ while ($row = mysqli_fetch_assoc($result)) {
                 </div>
             </form>
             <small class="text-muted d-block mt-2">PN e Descrição vêm automaticamente da BOM pelo código do componente. Data Recebida, Quantidade Recebida e Saldo ficam disponíveis pra editar (duplo clique) depois que o material chegar.</small>
-        </div>
-
-        <div class="card p-3 mb-4">
-            <div class="d-flex flex-wrap align-items-center gap-3">
-                <form method="POST" class="m-0" onsubmit="return confirm('Sincronizar com os Processos em aberto (Estoque = Sim)? Linhas que já existem (mesmo componente + processo + PO) não são duplicadas — só atualizadas.');">
-                    <input type="hidden" name="acao" value="sincronizar_processos">
-                    <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Sincronizar com Processos</button>
-                </form>
-                <small class="text-muted">Traz da Importação os processos <strong>em aberto</strong> com <strong>Estoque = Sim</strong>. Precisa ter <strong>Processo e PO</strong>. Mesmo componente + processo + PO já na Programação = <strong>não duplica, só atualiza</strong> quantidade, preço, moeda e planta (linha Atendida não muda). Componente em outro processo/PO = cria linha nova (data = ETA prevista no Follow).</small>
             </div>
         </div>
+        <script>
+            (function () {
+                const barra = document.querySelector('.barra-acoes-prog');
+                const abrir = (nome) => {
+                    barra.querySelectorAll('.painel-prog').forEach((p) => { p.hidden = p.dataset.painel !== nome; });
+                    barra.querySelectorAll('.btn-painel').forEach((b) => b.classList.toggle('active', b.dataset.painel === nome));
+                };
+                barra.querySelectorAll('.btn-painel').forEach((b) => b.addEventListener('click', () => {
+                    abrir(b.classList.contains('active') ? '' : b.dataset.painel);
+                }));
+                if (barra.dataset.aberto) abrir(barra.dataset.aberto);
+            })();
+        </script>
 
-        <div class="card p-3 mb-4">
-            <h2 class="h6 mb-3">✔️ Situação / Data em lote (todos os itens de um Processo ou PO)</h2>
-            <form method="POST" class="row g-2 align-items-end" onsubmit="if (this.situacao_lote.value === 'excluir') { return confirm('EXCLUIR TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' (pendentes e atendidas)?\n\nAs entradas de estoque geradas pelas linhas atendidas também serão removidas. Essa ação não pode ser desfeita.'); } if (this.situacao_lote.value === 'data') { if (!this.data_lote.value.trim()) { alert('Informe a nova data (dd/mm/aaaa).'); return false; } return confirm('Alterar a DATA de todas as linhas PENDENTES de \'' + this.chave_lote.value.trim() + '\' para ' + this.data_lote.value.trim() + '?'); } return confirm('Alterar a situação de TODAS as linhas de \'' + this.chave_lote.value.trim() + '\' para ' + this.situacao_lote.options[this.situacao_lote.selectedIndex].text + '?');">
-                <input type="hidden" name="acao" value="situacao_em_lote">
-                <div class="col-auto">
-                    <label class="form-label small mb-1">Processo ou PO</label>
-                    <input type="text" name="chave_lote" list="lista-processos" autocomplete="off" class="form-control form-control-sm" placeholder="Ex.: Y26A3P0011 ou 5500157663" required>
-                </div>
-                <div class="col-auto">
-                    <label class="form-label small mb-1">O que alterar</label>
-                    <select name="situacao_lote" class="form-select form-select-sm" onchange="document.getElementById('campo_data_lote').style.display = this.value === 'data' ? '' : 'none';">
-                        <option value="atendido">Situação → Atendido</option>
-                        <option value="pendente">Situação → Pendente (reabrir)</option>
-                        <option value="data">Data (pendentes)</option>
-                        <option value="liberado">Status → ✅ Liberado</option>
-                        <option value="bloqueado">Status → ⛔ Bloqueado</option>
-                        <option value="excluir">🗑️ Excluir todas as linhas</option>
-                    </select>
-                </div>
-                <div class="col-auto" id="campo_data_lote" style="display:none;">
-                    <label class="form-label small mb-1">Nova data</label>
-                    <input type="text" name="data_lote" class="form-control form-control-sm" placeholder="dd/mm/aaaa" autocomplete="off">
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-success btn-sm">Aplicar a todos</button>
-                </div>
-            </form>
-            <small class="text-muted d-block mt-2">Busca exata pelo Processo ou PO. Atendido soma no estoque a Quantidade Recebida de cada linha (vazia entra como 0) — igual ao clique individual. "Data" troca a data de todas as linhas <strong>pendentes</strong> do Processo/PO (as já atendidas não mudam). "Excluir" apaga todas as linhas do Processo/PO e as entradas de estoque que elas geraram. "Status" Liberado/Bloqueado vale pra todas as linhas (Bloqueado só some da Evolução geral e do Detalhe do componente).</small>
-        </div>
+        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
+            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo $flashMap[$flash][1]; ?></div>
+        <?php endif; ?>
+        <?php if (!empty($idsFiltro)): ?>
+            <div class="alert alert-info py-2">🔎 Mostrando só as <?php echo count($idsFiltro); ?> linha(s) da sincronização. <a class="alert-link" href="programacao.php">Ver tudo</a></div>
+        <?php endif; ?>
+        <?php if (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success py-2">✅ Programação excluída.</div>
+        <?php endif; ?>
 
-        <div class="card p-3 mb-4">
+        <datalist id="lista_componentes">
+            <?php foreach ($componentesDisponiveis as $c): ?>
+                <option value="<?php echo h($c); ?>">
+            <?php endforeach; ?>
+        </datalist>
+
+        <div class="card p-2 mb-3">
             <form method="GET" class="row g-2 align-items-center">
                 <div class="col-auto flex-grow-1">
                     <input type="text" name="busca" class="form-control" placeholder="Buscar componente(s) — vários: 12058499; 12058500" value="<?php echo h($busca); ?>">
