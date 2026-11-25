@@ -1043,7 +1043,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                             if ($stmtAtualizaCsv === null) {
                                 $stmtAtualizaCsv = mysqli_prepare($conn, "
                                     UPDATE processos SET solicitacao = ?, categoria = ?, planta = ?, po = ?, modal = ?, projeto = ?,
-                                        descricao = ?, quantidade = ?, hscode = ?, ncm = ?, fornecedor = ?, preco = ?, total = ?,
+                                        descricao = ?, quantidade = ?, hscode = COALESCE(?, hscode), ncm = ?, fornecedor = ?, preco = ?, total = ?,
                                         moeda = ?, tipo = COALESCE(?, tipo), ffw = COALESCE(?, ffw), obs = ?, controla_estoque = IF(? = '1', ?, controla_estoque)
                                     WHERE id = ?
                                 ");
@@ -1559,13 +1559,13 @@ if (isset($_GET['exportar'])) {
     header('Content-Disposition: attachment; filename="processos.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'projeto', 'material', 'codigo_componente', 'descricao', 'quantidade', 'hscode', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs'], ';', '"', '');
+    fputcsv($saida, ['processo', 'status', 'solicitacao', 'categoria', 'planta', 'po', 'modal', 'projeto', 'codigo_componente', 'descricao', 'quantidade', 'ncm', 'fornecedor', 'preco', 'total', 'moeda', 'tipo', 'ffw', 'obs'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         fputcsv($saida, [
             $linha['processo'], $linha['status'], $linha['solicitacao'], $linha['categoria'], $linha['planta'],
-            $linha['po'], $linha['modal'], $linha['projeto'], $linha['material'], $linha['codigo_componente'], $linha['descricao'],
+            $linha['po'], $linha['modal'], $linha['projeto'], $linha['codigo_componente'], $linha['descricao'],
             $linha['quantidade'] !== null ? number_format((float) $linha['quantidade'], 2, ',', '') : '',
-            $linha['hscode'], $linha['ncm'], $linha['fornecedor'],
+            $linha['ncm'], $linha['fornecedor'],
             $linha['preco'] !== null ? number_format((float) $linha['preco'], 2, ',', '') : '',
             $linha['total'] !== null ? number_format((float) $linha['total'], 2, ',', '') : '',
             $linha['moeda'], $linha['tipo'], $linha['ffw'], $linha['obs'],
