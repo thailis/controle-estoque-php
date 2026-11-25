@@ -1532,14 +1532,29 @@ unset($r);
             <a class="btn btn-outline-secondary btn-sm" href="planejamento_compras.php">Planejamento de compras</a>
             <a class="btn btn-outline-secondary btn-sm" href="pedido_compra.php">📄 Pedido de Compra</a>
         </nav>
-        <div class="card bg-primary text-white p-4 mb-4">
-            <h1>📋 EDI</h1>
-            <p class="mb-0"><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</p>
+        <div class="card bg-primary text-white px-4 py-3 mb-3">
+            <div class="d-flex flex-wrap align-items-baseline gap-3">
+                <h1 class="h4 m-0">📋 EDI</h1>
+                <span><?php echo number_format($total, 0, ',', '.'); ?> registro(s) na base</span>
+            </div>
         </div>
 
-        <div class="card p-3 mb-4">
-            <details <?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'open' : ''; ?>>
-                <summary>📥 Importar novo arquivo CSV</summary>
+        <!-- Barra de ações compacta: um botão abre cada painel logo abaixo (um de cada vez) -->
+        <div class="card p-2 mb-3 barra-acoes-edi" data-aberto="<?php echo (!empty($mensagens) || !empty($linhasProcessadas)) ? 'importar' : (($projetoFiltro !== '' || $eventoFiltro !== '') ? 'massa' : ''); ?>">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-primary btn-painel" data-painel="importar">📥 Importar planilha</button>
+                <button type="button" class="btn btn-sm btn-outline-warning btn-painel" data-painel="massa">⚡ Ações em massa</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-painel" data-painel="novo">➕ Novo evento</button>
+                <div class="ms-auto">
+<form method="POST" class="m-0" title="Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos." onsubmit="return confirm('Regravar Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
+                <input type="hidden" name="acao" value="sincronizar_bom_edi">
+                <button type="submit" class="btn btn-outline-secondary btn-sm">🔄 Atualizar Tipo / Projeto / Modelo pela BOM</button>
+                
+            </form>
+                </div>
+            </div>
+            <div class="painel-edi px-2 pb-2" data-painel="importar" hidden>
+
                 <div class="mt-3">
                     <?php if (!empty($mensagens)): ?>
                     <div class="mb-3">
@@ -1658,124 +1673,10 @@ unset($r);
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
-            </details>
-        </div>
+            </div>
+            <div class="painel-edi px-2 pb-2" data-painel="massa" hidden>
+                <div class="small fw-bold text-warning-emphasis mt-2">⚡ Ações em massa — só nos registros PENDENTES filtrados</div>
 
-        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
-            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo htmlspecialchars($flashMap[$flash][1]); ?></div>
-        <?php endif; ?>
-        <?php if (isset($_GET['excluido'])): ?>
-            <div class="alert alert-success py-2">✅ Evento excluído.</div>
-        <?php endif; ?>
-
-        <datalist id="lista_materiais">
-            <?php foreach ($materiaisDisponiveis as $m): ?>
-                <option value="<?php echo htmlspecialchars($m); ?>">
-            <?php endforeach; ?>
-        </datalist>
-
-        <div class="card p-3 mb-4">
-            <form method="POST" class="d-flex flex-wrap align-items-center gap-3 m-0" onsubmit="return confirm('Regravar Tipo, Projeto e Modelo de TODOS os EDIs com os dados da BOM?');">
-                <input type="hidden" name="acao" value="sincronizar_bom_edi">
-                <button type="submit" class="btn btn-outline-primary btn-sm">🔄 Atualizar Tipo / Projeto / Modelo pela BOM</button>
-                <small class="text-muted">Tipo, Projeto e Modelo sempre vêm da BOM pelo material. Use depois de alterar a BOM, ou pra acertar EDIs antigos.</small>
-            </form>
-        </div>
-
-        <div class="card p-3 mb-4">
-            <details>
-                <summary>➕ Novo evento (entrada manual)</summary>
-                <form method="POST" class="row g-2 align-items-end mt-3">
-                    <input type="hidden" name="acao" value="inserir_manual">
-                    <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
-                    <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
-                    <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
-                    <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
-                    <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
-                    <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
-                    <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Material *</label>
-                        <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Evento *</label>
-                        <input type="text" name="evento_manual" class="form-control form-control-sm" style="width:120px" required>
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Data *</label>
-                        <input type="text" name="data_manual" class="form-control form-control-sm" style="width:120px" placeholder="dd/mm/aaaa" required>
-                    </div>
-                    <div class="col-auto">
-                        <label class="form-label small mb-1">Quantidade *</label>
-                        <input type="text" name="quantidade_manual" class="form-control form-control-sm text-end" style="width:110px" required>
-                    </div>
-                    <div class="col-auto">
-                        <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
-                    </div>
-                    <div class="col-12">
-                        <small class="text-muted">Semana e ano são calculados automaticamente a partir da data (rótulo de safra: semana 30–53 = 2026; 1–29 = 2027), igual ao CSV.</small>
-                    </div>
-                </form>
-            </details>
-        </div>
-
-        <div class="card p-3 mb-4">
-            <form method="GET" class="row g-2 align-items-center">
-                <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
-                <div class="col-auto flex-grow-1">
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, projeto ou evento..." value="<?php echo htmlspecialchars($busca); ?>">
-                </div>
-                <div class="col-auto">
-                    <select name="ano" class="form-select" onchange="this.form.submit()">
-                        <option value="">Todos os anos</option>
-                        <?php foreach ($anosDisponiveis as $anoOpcao): ?>
-                            <option value="<?php echo (int) $anoOpcao; ?>" <?php echo ((string) $anoFiltro === (string) $anoOpcao) ? 'selected' : ''; ?>><?php echo (int) $anoOpcao; ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-auto">
-                    <select name="projeto" class="form-select" onchange="this.form.submit()">
-                        <option value="">Todos os projetos</option>
-                        <?php foreach ($projetosDisponiveis as $projetoOpcao): ?>
-                            <option value="<?php echo htmlspecialchars($projetoOpcao); ?>" <?php echo ($projetoFiltro === $projetoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($projetoOpcao); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-auto">
-                    <select name="modelo" class="form-select" onchange="this.form.submit()">
-                        <option value="">Todos os modelos</option>
-                        <?php foreach ($modelosDisponiveis as $modeloOpcao): ?>
-                            <option value="<?php echo htmlspecialchars($modeloOpcao); ?>" <?php echo ($modeloFiltro === $modeloOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($modeloOpcao); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-auto">
-                    <select name="evento" class="form-select" onchange="this.form.submit()">
-                        <option value="">Todos os eventos</option>
-                        <?php foreach ($eventosDisponiveis as $eventoOpcao): ?>
-                            <option value="<?php echo htmlspecialchars($eventoOpcao); ?>" <?php echo ($eventoFiltro === $eventoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($eventoOpcao); ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-auto">
-                    <div class="btn-group" role="group">
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
-                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
-                    </div>
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary">Buscar</button>
-                    <a href="edi.php" class="btn btn-outline-secondary">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
-                </div>
-            </form>
-        </div>
-
-        <div class="card p-3 mb-4 border-warning">
-            <details <?php echo ($projetoFiltro !== '' || $eventoFiltro !== '') ? 'open' : ''; ?>>
-                <summary>⚡ Ações em massa (sobre os registros PENDENTES filtrados)</summary>
                 <?php if ($projetoFiltro === '' && $eventoFiltro === ''): ?>
                     <div class="alert alert-secondary py-2 mt-3 mb-0">
                         Selecione um <strong>Projeto</strong> e/ou um <strong>Evento</strong> nos filtros acima para liberar as ações em massa.
@@ -1849,8 +1750,122 @@ unset($r);
                         })();
                     </script>
                 <?php endif; ?>
-            </details>
+            </div>
+            <div class="painel-edi px-2 pb-2" data-painel="novo" hidden>
+
+                <form method="POST" class="row g-2 align-items-end mt-3">
+                    <input type="hidden" name="acao" value="inserir_manual">
+                    <input type="hidden" name="pagina_atual" value="<?php echo $pagina; ?>">
+                    <input type="hidden" name="busca_atual" value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="hidden" name="ano_atual" value="<?php echo htmlspecialchars($anoFiltro); ?>">
+                    <input type="hidden" name="projeto_atual" value="<?php echo htmlspecialchars($projetoFiltro); ?>">
+                    <input type="hidden" name="modelo_atual" value="<?php echo htmlspecialchars($modeloFiltro); ?>">
+                    <input type="hidden" name="evento_atual" value="<?php echo htmlspecialchars($eventoFiltro); ?>">
+                    <input type="hidden" name="filtro_atual" value="<?php echo htmlspecialchars($filtro); ?>">
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Material *</label>
+                        <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Evento *</label>
+                        <input type="text" name="evento_manual" class="form-control form-control-sm" style="width:120px" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Data *</label>
+                        <input type="text" name="data_manual" class="form-control form-control-sm" style="width:120px" placeholder="dd/mm/aaaa" required>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Quantidade *</label>
+                        <input type="text" name="quantidade_manual" class="form-control form-control-sm text-end" style="width:110px" required>
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
+                    </div>
+                    <div class="col-12">
+                        <small class="text-muted">Semana e ano são calculados automaticamente a partir da data (rótulo de safra: semana 30–53 = 2026; 1–29 = 2027), igual ao CSV.</small>
+                    </div>
+                </form>
+            </div>
         </div>
+        <script>
+            (function () {
+                const barra = document.querySelector('.barra-acoes-edi');
+                const abrir = (nome) => {
+                    barra.querySelectorAll('.painel-edi').forEach((p) => { p.hidden = p.dataset.painel !== nome; });
+                    barra.querySelectorAll('.btn-painel').forEach((b) => b.classList.toggle('active', b.dataset.painel === nome));
+                };
+                barra.querySelectorAll('.btn-painel').forEach((b) => b.addEventListener('click', () => {
+                    abrir(b.classList.contains('active') ? '' : b.dataset.painel);
+                }));
+                if (barra.dataset.aberto) abrir(barra.dataset.aberto);
+            })();
+        </script>
+        <div class="card p-2 mb-3">
+            <form method="GET" class="row g-2 align-items-center">
+                <input type="hidden" name="filtro" value="<?php echo htmlspecialchars($filtro); ?>">
+                <div class="col-auto flex-grow-1">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, projeto ou evento..." value="<?php echo htmlspecialchars($busca); ?>">
+                </div>
+                <div class="col-auto">
+                    <select name="ano" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os anos</option>
+                        <?php foreach ($anosDisponiveis as $anoOpcao): ?>
+                            <option value="<?php echo (int) $anoOpcao; ?>" <?php echo ((string) $anoFiltro === (string) $anoOpcao) ? 'selected' : ''; ?>><?php echo (int) $anoOpcao; ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select name="projeto" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os projetos</option>
+                        <?php foreach ($projetosDisponiveis as $projetoOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($projetoOpcao); ?>" <?php echo ($projetoFiltro === $projetoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($projetoOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select name="modelo" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os modelos</option>
+                        <?php foreach ($modelosDisponiveis as $modeloOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($modeloOpcao); ?>" <?php echo ($modeloFiltro === $modeloOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($modeloOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select name="evento" class="form-select" onchange="this.form.submit()">
+                        <option value="">Todos os eventos</option>
+                        <?php foreach ($eventosDisponiveis as $eventoOpcao): ?>
+                            <option value="<?php echo htmlspecialchars($eventoOpcao); ?>" <?php echo ($eventoFiltro === $eventoOpcao) ? 'selected' : ''; ?>><?php echo htmlspecialchars($eventoOpcao); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <div class="btn-group" role="group">
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=" class="btn btn-outline-secondary btn-sm <?php echo $filtro === '' ? 'active' : ''; ?>">Todos</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=pendente" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'pendente' ? 'active' : ''; ?>">Pendentes</a>
+                        <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=atendido" class="btn btn-outline-secondary btn-sm <?php echo $filtro === 'atendido' ? 'active' : ''; ?>">Atendidos</a>
+                    </div>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">Buscar</button>
+                    <a href="edi.php" class="btn btn-outline-secondary">Limpar</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&ano=<?php echo urlencode($anoFiltro); ?>&projeto=<?php echo urlencode($projetoFiltro); ?>&modelo=<?php echo urlencode($modeloFiltro); ?>&evento=<?php echo urlencode($eventoFiltro); ?>&filtro=<?php echo urlencode($filtro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                </div>
+            </form>
+        </div>
+
+        <?php if ($flash !== '' && isset($flashMap[$flash])): ?>
+            <div class="alert alert-<?php echo $flashMap[$flash][0]; ?> py-2"><?php echo htmlspecialchars($flashMap[$flash][1]); ?></div>
+        <?php endif; ?>
+        <?php if (isset($_GET['excluido'])): ?>
+            <div class="alert alert-success py-2">✅ Evento excluído.</div>
+        <?php endif; ?>
+
+        <datalist id="lista_materiais">
+            <?php foreach ($materiaisDisponiveis as $m): ?>
+                <option value="<?php echo htmlspecialchars($m); ?>">
+            <?php endforeach; ?>
+        </datalist>
+
 
         <div class="card">
             <div class="card-body table-responsive">
