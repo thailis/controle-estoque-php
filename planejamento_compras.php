@@ -509,7 +509,7 @@ try {
                             <th>Fornecedor</th>
                             <th>Projeto</th>
                             <th title="Da BOM">Comprador</th>
-                            <th class="text-center">Estoque hoje</th>
+                            <th class="text-center">Estoque</th>
                             <th class="text-center" title="Quantos dias o estoque de hoje dura contra a demanda (EDI × BOM), contando a demanda em atraso">Dias (estoque)</th>
                             <th class="text-center">Quantidade sugerida</th>
                             <th class="text-center" title="Quantos dias só a compra sugerida dura contra a demanda, a partir da data de entrega (parcelas abaixo de 30 dias são juntadas com a próxima)">Dias (programação)</th>
@@ -541,7 +541,7 @@ try {
                                     <td>
                                         <strong class="component-code"><?php echo h($r['codigo_componente']); ?></strong>
                                         <?php if (!empty($r['antigos'])): ?>
-                                            <span class="badge bg-warning-subtle text-dark border ms-1" title="Substitui <?php echo h(implode(', ', $r['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui e são consumidos primeiro">consome <?php echo h(implode(', ', $r['antigos'])); ?></span>
+                                            <span class="badge bg-warning-subtle text-dark border d-table mt-1" title="Substitui <?php echo h(implode(', ', $r['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui e são consumidos primeiro">consome <?php echo h(implode(', ', $r['antigos'])); ?></span>
                                         <?php endif; ?>
                                     </td>
                                     <td title="<?php echo h($r['descricao']); ?>"><?php echo h($r['descricao']); ?></td>
