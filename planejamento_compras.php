@@ -30,6 +30,12 @@ function opcoesDistintasPlanejamento(mysqli $conn, string $coluna): array
     return $opcoes;
 }
 
+// Texto de "Dias (programação)": null = o saldo não acaba dentro do EDI cadastrado.
+function textoDiasProgramacao(?int $dias): string
+{
+    return $dias === null ? 'cobre todo o EDI' : number_format($dias, 0, ',', '.');
+}
+
 function urlComPlanejamento(array $alteracoes = []): string
 {
     $parametros = $_GET;
@@ -313,10 +319,13 @@ try {
                     'quantidade_base' => $p['quantidade_base'],
                     'setup' => $p['setup'],
                     'moq' => (float) $comp['moq'],
+                    'ajustada_30_dias' => $p['ajustada_30_dias'] ?? false,
                     'estoque_seguranca_qtd' => $segurancaQtd,
                     'dias_estoque' => $diasEstoque,
-                    // Dias de forecast: quanto a compra sugerida dura a partir da chegada
-                    'dias_forecast' => diasDeCobertura($demandaPorComponente[$codigo] ?? [], $p['data_necessidade'], (float) $p['quantidade']),
+                    // Dias (programação): quanto o saldo (sobra + esta compra) dura a partir
+                    // da chegada — calculado na simulação (mrp_calculo.php). null = cobre
+                    // todo o EDI cadastrado.
+                    'dias_forecast' => $p['dias_cobertura'] ?? null,
                     'parcela' => $indice + 1,
                     'total_parcelas' => $totalParcelas,
                 ];
@@ -355,7 +364,7 @@ try {
                 numeroBr($r['estoque_atual'], 0),
                 textoDiasCobertura($r['dias_estoque']),
                 numeroBr($r['quantidade'], 0),
-                textoDiasCobertura($r['dias_forecast']),
+                textoDiasProgramacao($r['dias_forecast']),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
                 // Order date: data pra enviar o pedido (informativa — a importação da Programação usa "Data")
                 $r['data_pedido']->format('d/m/Y'),
@@ -510,7 +519,7 @@ try {
                             <th class="text-center">Estoque hoje</th>
                             <th class="text-center" title="Quantos dias o estoque de hoje dura contra a demanda (EDI × BOM), contando a demanda em atraso">Dias (estoque)</th>
                             <th class="text-center">Quantidade sugerida</th>
-                            <th class="text-center" title="Quantos dias a compra sugerida dura contra a demanda, a partir da data de entrega">Dias (programação)</th>
+                            <th class="text-center" title="Quantos dias o estoque dura depois que esta compra chega (sobra do estoque + programação + esta compra), a partir da data de entrega">Dias (programação)</th>
                             <th class="text-center" title="Quando o material precisa chegar (data de necessidade)">Data de entrega</th>
                             <th class="text-center">Status</th>
                             <th>Evolução</th>
@@ -548,13 +557,13 @@ try {
                                     <td title="<?php echo h($r['compradores'] ?: '—'); ?>"><?php echo h($r['compradores'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
                                     <td class="text-center"><?php echo h(textoDiasCobertura($r['dias_estoque'])); ?></td>
-                                    <td class="text-center" title="Necessidade: <?php echo numeroBr($r['quantidade_base'], 0); ?><?php if ($r['setup'] > 0): ?> + <?php echo numeroBr($r['setup'], 0); ?>% de setup<?php endif; ?><?php if ($r['moq'] > 0): ?> → arredondado pro múltiplo do MOQ (<?php echo numeroBr($r['moq'], 0); ?>)<?php endif; ?>">
+                                    <td class="text-center" title="Necessidade: <?php echo numeroBr($r['quantidade_base'], 0); ?><?php if ($r['setup'] > 0): ?> + <?php echo numeroBr($r['setup'], 0); ?>% de setup<?php endif; ?><?php if ($r['ajustada_30_dias']): ?> (aumentada pra cobrir 30 dias: adiar causaria falta)<?php endif; ?><?php if ($r['moq'] > 0): ?> → arredondado pro múltiplo do MOQ (<?php echo numeroBr($r['moq'], 0); ?>)<?php endif; ?>">
                                         <span class="qtd-sugerida-wrap">
                                             <span class="qtd-sugerida-num"><?php echo numeroBr($r['quantidade'], 0); ?></span>
                                             <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border qtd-sugerida-badge">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
                                         </span>
                                     </td>
-                                    <td class="text-center"><?php echo h(textoDiasCobertura($r['dias_forecast'])); ?></td>
+                                    <td class="text-center"><?php echo h(textoDiasProgramacao($r['dias_forecast'])); ?></td>
                                     <td class="text-center">
                                         <?php echo h($r['data']->format('d/m/Y')); ?>
                                     </td>
