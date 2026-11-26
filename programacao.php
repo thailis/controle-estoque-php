@@ -1878,8 +1878,9 @@ $hojePeriodo = new DateTimeImmutable('today');
         .situacao-toggle.is-pendente { background: #fff3cd; color: #a96600; }
         .situacao-toggle.is-pendente .dot { background: #d88b0b; }
         .situacao-toggle.is-atendido { background: #eaf8f0; color: #247a4d; }
-        .badge-firmado { background: #1f5fbf; color: #fff; font-weight: 700; }
-        .badge-periodo-pendente { background: #fff4e5; color: #a96600; font-weight: 700; }
+        .badge-firmado { background: #4d9be6; color: #fff; font-weight: 700; }
+        .badge-periodo-pendente { background: #f28c28; color: #fff; font-weight: 700; }
+        .badge-periodo-checar { background: #ffd43b; color: #5c4400; font-weight: 700; }
         .situacao-toggle.is-atendido .dot { background: #247a4d; }
 
         .text-truncate-cell {
@@ -2141,7 +2142,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                     <thead>
                         <tr>
                             <th>Situação</th>
-                            <th title="Frozen Zone (Parâmetros): entrega até hoje + Frozen Zone = Firmado (congelado); depois = Pendente">Período</th>
+                            <th title="Frozen Zone (Parâmetros): entrega até hoje + Frozen Zone = Firmado (congelado); nos 5 dias seguintes = Checar (congela em breve); depois = Pendente">Período</th>
                             <th>PO</th>
                             <th title="Processo do site de Importação (ex.: Y26A3P0011)">Processo</th>
                             <th title="Onde o material vai ser recebido">Planta</th>
@@ -2209,11 +2210,15 @@ $hojePeriodo = new DateTimeImmutable('today');
                                         $periodoTexto = null;
                                         if (!$estaAtendido && $congLinha !== null && !empty($row['data'])) {
                                             $limiteFrozen = $hojePeriodo->modify('+' . $congLinha . ' days');
-                                            $periodoTexto = (new DateTimeImmutable($row['data'])) <= $limiteFrozen ? 'Firmado' : 'Pendente';
+                                            $dataEntregaLinha = new DateTimeImmutable($row['data']);
+                                            // Checar = entra no Frozen Zone nos próximos 5 dias (última chance de alterar)
+                                            $periodoTexto = $dataEntregaLinha <= $limiteFrozen ? 'Firmado'
+                                                : ($dataEntregaLinha <= $limiteFrozen->modify('+5 days') ? 'Checar' : 'Pendente');
                                         }
                                     ?>
                                     <td class="col-periodo" title="<?php echo $congLinha !== null ? 'Frozen Zone: ' . $congLinha . ' dias (congelado até ' . $hojePeriodo->modify('+' . $congLinha . ' days')->format('d/m/Y') . ')' : 'Sem Frozen Zone cadastrado em Parâmetros'; ?>">
                                         <?php if ($periodoTexto === 'Firmado'): ?><span class="badge badge-firmado">Firmado</span>
+                                        <?php elseif ($periodoTexto === 'Checar'): ?><span class="badge badge-periodo-checar" title="Entra no Frozen Zone em até 5 dias — última chance de alterar">Checar</span>
                                         <?php elseif ($periodoTexto === 'Pendente'): ?><span class="badge badge-periodo-pendente">Pendente</span>
                                         <?php else: ?>—<?php endif; ?>
                                     </td>
