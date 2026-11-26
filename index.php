@@ -733,21 +733,20 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
         /* Tela larga, igual ao Estoque (98% da largura da janela) */
         .dashboard-container { max-width: 98vw !important; }
 
-        /* Espaçamento da tabela: respiro igual entre as colunas e larguras
-           controladas (Descrição não estica mais a tabela toda). */
-        .mrp-table th, .mrp-table td { padding: 12px 16px !important; vertical-align: middle; }
-        .mrp-table td { white-space: nowrap; }
-        .mrp-table td.col-descricao { white-space: normal; min-width: 260px; max-width: 360px; }
-        .mrp-table td.col-descricao .description-cell { display: block; }
-        /* Projetos: quebra em até 2 linhas; o que passar disso vira "..." (lista
-           completa aparece ao passar o mouse). */
+        /* Espaçamento da tabela: todas as colunas ficam do tamanho do conteúdo
+           (width:1% = encolhe até o conteúdo) e a sobra de largura vai SÓ para a
+           Descrição — assim não sobra espaço vazio entre as colunas e os projetos
+           cabem em menos linhas. */
+        .mrp-table { min-width: 0 !important; }
+        .mrp-table th, .mrp-table td { padding: 10px 14px !important; vertical-align: middle; width: 1%; white-space: nowrap; }
+        .mrp-table th.col-descricao, .mrp-table td.col-descricao { width: auto; white-space: normal; min-width: 280px; }
+        .mrp-table td.col-descricao .description-cell { display: block; min-width: 0; max-width: none; }
+        /* Projetos: até 2 linhas; o que passar vira "..." (lista completa no mouse). */
         .mrp-table .projetos-cell {
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
             overflow: hidden; white-space: normal; line-height: 1.3; margin-top: 2px;
         }
-        .mrp-table td.col-fornecedor { white-space: normal; min-width: 110px; max-width: 160px; }
-        .mrp-table td.col-itens { max-width: 240px; }
-        .mrp-table td.col-itens .materials-cell { display: block; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td.col-itens .materials-cell { display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
@@ -906,7 +905,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                     <thead>
                         <tr>
                             <th><?php echo cabecalhoOrdenavel('Código do componente', 'codigo', $ordenacao, $direcao); ?></th>
-                            <th><?php echo cabecalhoOrdenavel('Descrição', 'descricao', $ordenacao, $direcao); ?></th>
+                            <th class="col-descricao"><?php echo cabecalhoOrdenavel('Descrição', 'descricao', $ordenacao, $direcao); ?></th>
                             <th><?php echo cabecalhoOrdenavel('Fornecedor', 'fornecedores', $ordenacao, $direcao); ?></th>
                             <th>Itens atendidos</th>
                             <th class="text-start"><?php echo cabecalhoOrdenavel('Qtd. itens', 'materiais', $ordenacao, $direcao); ?></th>
