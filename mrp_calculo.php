@@ -469,22 +469,18 @@ function calcularParcelasCompraPlanejamento(
             ? max($moq, ceil(round($quantidadeComSetup / $moq, 6)) * $moq)
             : $quantidadeComSetup;
 
-        // REGRA DOS 30 DIAS: não sugere parcela que cubra menos de
-        // MRP_DIAS_COBERTURA_MINIMA_PARCELA dias depois de chegar (mesmo abaixo do
-        // Estoque Mínimo). $necessidadeMinima = quanto precisa chegar pra o saldo não
-        // ficar negativo nesses dias (sobra de estoque + programação já entram no saldo).
+        // REGRA DOS 30 DIAS: não sugere parcela que dure menos de
+        // MRP_DIAS_COBERTURA_MINIMA_PARCELA dias contando SÓ a quantidade da compra contra
+        // a demanda a partir da data de entrega (mesma conta da coluna "Dias (programação)"
+        // da tela), mesmo que o saldo esteja abaixo do Estoque Mínimo.
+        // $necessidadeMinima = demanda dos 30 dias a partir da entrega.
         //  - Se adiar NÃO causa falta (saldo continua >= 0 até a próxima compra poder
         //    chegar): pula esta revisão — a próxima parcela absorve a necessidade.
-        //  - Se adiar causa falta: aumenta ESTA parcela pra cobrir os 30 dias (acresce a
-        //    próxima demanda nela), passando do Máximo se for preciso.
+        //  - Se adiar causa falta: aumenta ESTA parcela pra cobrir os 30 dias de demanda
+        //    (acresce a próxima demanda nela), passando do Máximo se for preciso.
         $ajustada30Dias = false;
-        $fimCoberturaMinima = min($n - 1, $iDisponibilidade + MRP_DIAS_COBERTURA_MINIMA_PARCELA - 1);
-        $necessidadeMinima = 0.0;
-        for ($k = $iDisponibilidade; $k <= $fimCoberturaMinima; $k++) {
-            if (-$saldoPorDia[$k] > $necessidadeMinima) {
-                $necessidadeMinima = -$saldoPorDia[$k];
-            }
-        }
+        $necessidadeMinima = $prefixoDemanda[min($n, $iDisponibilidade + MRP_DIAS_COBERTURA_MINIMA_PARCELA)]
+            - $prefixoDemanda[$iDisponibilidade];
         if ($quantidadeFinal + 0.0001 < $necessidadeMinima) {
             $faltaSeAdiar = false;
             for ($k = $iDisponibilidade; $k <= $iProximaChegada; $k++) {
@@ -539,21 +535,6 @@ function calcularParcelasCompraPlanejamento(
         for ($k = $iDisponibilidade; $k < $n; $k++) {
             $saldoPorDia[$k] += $quantidadeFinal;
         }
-
-        // Dias (programação): quanto tempo o SALDO dura depois que esta compra chega —
-        // sobra do estoque + programação + parcelas anteriores + esta compra (as parcelas
-        // seguintes ainda não entraram na simulação neste ponto). Antes a tela media só a
-        // quantidade da compra contra toda a demanda a partir da entrega, ignorando a sobra
-        // de estoque — por isso aparecia "5 dias" em compras que são só complemento.
-        // null = o saldo não acaba até o fim do horizonte (cobre todo o EDI).
-        $diasCoberturaParcela = null;
-        for ($k = $iDisponibilidade; $k < $n; $k++) {
-            if ($saldoPorDia[$k] < -0.0001) {
-                $diasCoberturaParcela = $k - $iDisponibilidade;
-                break;
-            }
-        }
-        $parcelas[count($parcelas) - 1]['dias_cobertura'] = $diasCoberturaParcela;
     }
 
     $saldoPorDiaChave = [];
