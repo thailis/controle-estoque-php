@@ -128,8 +128,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $mensagens[] = "❌ Não encontrei a coluna do componente. Use 'codigo_componente' no cabeçalho.";
                 } else {
                 if (isset($_POST['limpar_tabela'])) {
-                    mysqli_query($conn, "TRUNCATE TABLE estoque");
-                    $mensagens[] = "🗑️ Tabela 'estoque' esvaziada antes da importação.";
+                    // Limpa o estoque, mas MANTÉM as baixas dos EDIs atendidos (coluna
+                    // "Atendidos") — elas não vêm no CSV e não podem sumir.
+                    mysqli_query($conn, "DELETE FROM estoque WHERE COALESCE(origem, '') NOT IN ('demanda_edi', 'reversao_edi')");
+                    $mensagens[] = "🗑️ Estoque limpo antes da importação (baixas dos EDIs atendidos mantidas).";
                 }
 
                 $tamanhoLote = 200;
@@ -837,7 +839,7 @@ if (!empty($componentes)) {
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" name="limpar_tabela" id="limpar_tabela">
                                 <label class="form-check-label" for="limpar_tabela">
-                                    Limpar tabela antes de importar
+                                    Limpar tabela antes de importar <small class="text-muted">(mantém a coluna Atendidos)</small>
                                 </label>
                             </div>
                         </div>
