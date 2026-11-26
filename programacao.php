@@ -1518,6 +1518,11 @@ if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $mesFiltro)) {
 }
 // Filtro "Sincronização": carimbo exato (aaaa-mm-dd hh:mm:ss) de uma sincronização
 $syncFiltro = trim((string) ($_GET['sync'] ?? ''));
+// Filtro de Período (Frozen Zone de Parâmetros): firmado | checar | pendente
+$periodoFiltro = trim((string) ($_GET['periodo'] ?? ''));
+if (!in_array($periodoFiltro, ['firmado', 'checar', 'pendente'], true)) {
+    $periodoFiltro = '';
+}
 if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $syncFiltro) || !programacaoTemColunasSync($conn)) {
     $syncFiltro = '';
 }
@@ -1658,6 +1663,26 @@ if ($processoFiltro !== '') {
     $params[] = '%' . $processoFiltro . '%';
     $params[] = '%' . $processoFiltro . '%';
     $tipos .= 'ss';
+}
+
+if ($periodoFiltro !== '') {
+    // Mesma regra da coluna Período: só linhas pendentes de componente com Frozen Zone.
+    //   firmado = entrega até hoje + Frozen Zone
+    //   checar  = hoje já está nos 5 dias antes do congelamento (entrega entre hoje + FZ e hoje + FZ + 5)
+    //   pendente = entrega depois de hoje + FZ + 5
+    $exprLimite = "DATE_ADD(?, INTERVAL pcf.congelamento_dias DAY)";
+    $condPeriodo = [
+        'firmado'  => "p.data <= $exprLimite",
+        'checar'   => "p.data > $exprLimite AND p.data <= DATE_ADD(?, INTERVAL pcf.congelamento_dias + 5 DAY)",
+        'pendente' => "p.data > DATE_ADD(?, INTERVAL pcf.congelamento_dias + 5 DAY)",
+    ][$periodoFiltro];
+    $condicoes[] = "COALESCE(p.atendido, 0) = 0 AND EXISTS (SELECT 1 FROM parametros_compra pcf WHERE TRIM(pcf.codigo_componente) = TRIM(p.codigo_componente) AND pcf.congelamento_dias IS NOT NULL AND $condPeriodo)";
+    $hojeFiltroPeriodo = (new DateTimeImmutable('today'))->format('Y-m-d');
+    $qtdDatas = $periodoFiltro === 'checar' ? 2 : 1;
+    for ($iPer = 0; $iPer < $qtdDatas; $iPer++) {
+        $params[] = $hojeFiltroPeriodo;
+        $tipos .= 's';
+    }
 }
 
 if ($syncFiltro !== '') {
@@ -2122,6 +2147,14 @@ $hojePeriodo = new DateTimeImmutable('today');
                 </div>
                 <?php endif; ?>
                 <div class="col-auto">
+                    <select name="periodo" class="form-select form-select-sm" onchange="this.form.submit()" title="Período (Frozen Zone de Parâmetros) — só linhas pendentes">
+                        <option value="" <?php echo $periodoFiltro === '' ? 'selected' : ''; ?>>Todos os períodos</option>
+                        <option value="firmado" <?php echo $periodoFiltro === 'firmado' ? 'selected' : ''; ?>>🔵 Firmado</option>
+                        <option value="checar" <?php echo $periodoFiltro === 'checar' ? 'selected' : ''; ?>>🟡 Checar</option>
+                        <option value="pendente" <?php echo $periodoFiltro === 'pendente' ? 'selected' : ''; ?>>🟠 Pendente</option>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <select name="filtro" class="form-select form-select-sm" onchange="this.form.submit()" title="Situação">
                         <option value="" <?php echo $filtro === '' ? 'selected' : ''; ?>>Todas as situações</option>
                         <option value="pendente" <?php echo $filtro === 'pendente' ? 'selected' : ''; ?>>Pendente</option>
@@ -2131,7 +2164,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Buscar</button>
                     <a href="programacao.php?filtro=&mes=" class="btn btn-outline-secondary" title="Tira todos os filtros (todas as situações e todos os meses)">Limpar</a>
-                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
+                    <a href="?busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>&periodo=<?php echo urlencode($periodoFiltro); ?>&exportar=csv" class="btn btn-outline-primary">Exportar CSV</a>
                 </div>
             </form>
         </div>
@@ -2329,13 +2362,13 @@ $hojePeriodo = new DateTimeImmutable('today');
         <div class="d-flex justify-content-between align-items-center mt-3">
             <div>
                 <?php if ($pagina > 1): ?>
-                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
+                    <a href="?pagina=<?php echo $pagina - 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>&periodo=<?php echo urlencode($periodoFiltro); ?>" class="btn btn-outline-primary btn-sm">← Anterior</a>
                 <?php endif; ?>
             </div>
             <div class="text-muted">Página <?php echo $pagina; ?> de <?php echo $totalPaginas; ?></div>
             <div>
                 <?php if ($pagina < $totalPaginas): ?>
-                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
+                    <a href="?pagina=<?php echo $pagina + 1; ?>&busca=<?php echo urlencode($busca); ?>&filtro=<?php echo urlencode($filtro); ?>&processo=<?php echo urlencode($processoFiltro); ?>&fornecedor=<?php echo urlencode($fornecedorFiltro); ?>&mes=<?php echo urlencode($mesFiltro); ?>&sync=<?php echo urlencode($syncFiltro); ?>&periodo=<?php echo urlencode($periodoFiltro); ?>" class="btn btn-outline-primary btn-sm">Próxima →</a>
                 <?php endif; ?>
             </div>
         </div>
