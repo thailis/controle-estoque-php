@@ -347,7 +347,8 @@ if ($erroDetalhe === null) {
         .evolucao-table td.entrada-alteravel { background: #ffb366 !important; font-weight: 750; color: #4a2600; }
         /* Compra sugerida: colunas juntas à esquerda, com espaço fixo entre elas */
         .tabela-compra-sugerida { width: auto; }
-        .tabela-compra-sugerida th, .tabela-compra-sugerida td { padding: 6px 28px 6px 12px; white-space: nowrap; vertical-align: middle; }
+        .tabela-compra-sugerida th, .tabela-compra-sugerida td { padding: 10px 56px 10px 18px; white-space: nowrap; vertical-align: middle; }
+        .tabela-compra-sugerida th:last-child, .tabela-compra-sugerida td:last-child { padding-right: 24px; }
         .tabela-compra-sugerida th:nth-child(4), .tabela-compra-sugerida td:nth-child(4),
         .tabela-compra-sugerida th:nth-child(5), .tabela-compra-sugerida td:nth-child(5) { text-align: right; }
         .legenda-frozen span { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin: 0 4px 0 12px; }
