@@ -480,6 +480,7 @@ if ($erroDetalhe === null) {
                                 <th>Data sugerida do pedido</th>
                                 <th>Data de necessidade (recebimento)</th>
                                 <th>Quantidade</th>
+                                <th title="Quantos dias a compra dura contra a demanda, a partir da data de necessidade (recebimento)">Dias de forecast</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -495,6 +496,7 @@ if ($erroDetalhe === null) {
                                     <td><?php echo h($p['data']->format('d/m/Y')); ?></td>
                                     <td><?php echo h($p['data_necessidade']->format('d/m/Y')); ?></td>
                                     <td><?php echo numeroBr($p['quantidade'], 0); ?></td>
+                                    <td><?php echo h(textoDiasCobertura(diasDeCobertura($demandaPorData, $p['data_necessidade'], (float) $p['quantidade']))); ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>

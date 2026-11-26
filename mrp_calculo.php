@@ -48,6 +48,58 @@ function calcularEstoqueSegurancaQtd(
     return MRP_Z_NIVEL_SERVICO * $desvioPadrao * sqrt($leadTimeSemanas);
 }
 
+// Dias de cobertura: quantos dias uma quantidade dura contra a demanda, a partir
+// de $inicio (dia a dia, até a demanda acumulada passar da quantidade).
+//  - $incluirAtrasada = true: demanda com data antes de $inicio entra no 1º dia
+//    (é o caso do estoque de hoje, que já precisa cobrir o que está em atraso).
+//  - Retorna null quando não existe demanda nenhuma no período (não dá pra medir)
+//    e $limiteDias + 1 quando a quantidade dura mais que o limite.
+// Usado em "Dias de estoque" (estoque de hoje) e "Dias de forecast" (quanto dura
+// a compra sugerida a partir da data em que ela chega).
+function diasDeCobertura(array $demandaPorData, DateTimeImmutable $inicio, float $quantidade, bool $incluirAtrasada = false, int $limiteDias = 365): ?int
+{
+    $inicioChave = $inicio->format('Y-m-d');
+    $fimChave = $inicio->modify("+{$limiteDias} days")->format('Y-m-d');
+    $atrasada = 0.0;
+    $temDemanda = false;
+    foreach ($demandaPorData as $d => $q) {
+        if ($q <= 0) { continue; }
+        if ($d < $inicioChave) {
+            if ($incluirAtrasada) { $atrasada += $q; $temDemanda = true; }
+        } elseif ($d <= $fimChave) {
+            $temDemanda = true;
+        }
+    }
+    if (!$temDemanda) {
+        return null;
+    }
+    if ($quantidade <= 0) {
+        return 0;
+    }
+    $acumulado = $atrasada;
+    if ($acumulado > $quantidade) {
+        return 0;
+    }
+    $dia = $inicio;
+    for ($k = 0; $k <= $limiteDias; $k++) {
+        $acumulado += (float) ($demandaPorData[$dia->format('Y-m-d')] ?? 0.0);
+        if ($acumulado > $quantidade + 0.0001) {
+            return $k;
+        }
+        $dia = $dia->modify('+1 day');
+    }
+    return $limiteDias + 1;
+}
+
+// Texto da célula de dias de cobertura (null = sem demanda; acima do limite = "> 365")
+function textoDiasCobertura(?int $dias, int $limiteDias = 365): string
+{
+    if ($dias === null) {
+        return 'sem demanda';
+    }
+    return $dias > $limiteDias ? '> ' . $limiteDias : number_format($dias, 0, ',', '.');
+}
+
 // Simula o saldo dia a dia (estoque + programação − demanda) e revisa a situação MÊS A MÊS
 // (hoje, +1 mês, +2 meses...) em vez de tentar cobrir tudo de uma vez com uma única compra
 // gigante — isso evita concentrar o pagamento de meses de estoque numa parcela só quando o

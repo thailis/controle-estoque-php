@@ -262,6 +262,8 @@ try {
             }
 
             $totalParcelas = count($parcelas);
+            // Dias de estoque: quanto o estoque de hoje dura contra a demanda (inclui a atrasada)
+            $diasEstoque = diasDeCobertura($demandaPorComponente[$codigo] ?? [], $hoje, (float) $comp['estoque_atual'], true);
 
             // Só entra na lista a parcela que precisa de ação dentro da janela de meses
             // escolhida (urgente sempre entra, mesmo com data "sugerida" = hoje). O número
@@ -312,6 +314,9 @@ try {
                     'setup' => $p['setup'],
                     'moq' => (float) $comp['moq'],
                     'estoque_seguranca_qtd' => $segurancaQtd,
+                    'dias_estoque' => $diasEstoque,
+                    // Dias de forecast: quanto a compra sugerida dura a partir da chegada
+                    'dias_forecast' => diasDeCobertura($demandaPorComponente[$codigo] ?? [], $p['data_necessidade'], (float) $p['quantidade']),
                     'parcela' => $indice + 1,
                     'total_parcelas' => $totalParcelas,
                 ];
@@ -339,7 +344,7 @@ try {
         // As demais colunas são só informativas e a importação ignora.
         // Só pode haver UMA coluna com "Quantidade" no nome (a importação pareia
         // a quantidade com a coluna "Data").
-        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Buyer', 'Current Stock', 'Quantidade', 'Setup (%)', 'Order date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
+        fputcsv($saida, ['Componente', 'Description', 'Supplier', 'Project name', 'Buyer', 'Current Stock', 'Stock days', 'Quantidade', 'Forecast days', 'Setup (%)', 'Order date', 'Data', 'PO', 'Processo', 'Planta', 'Status'], ';', '"', '');
         foreach ($resultados as $r) {
             fputcsv($saida, [
                 $r['codigo_componente'],
@@ -348,7 +353,9 @@ try {
                 $r['projetos'],
                 $r['compradores'],
                 numeroBr($r['estoque_atual'], 0),
+                textoDiasCobertura($r['dias_estoque']),
                 numeroBr($r['quantidade'], 0),
+                textoDiasCobertura($r['dias_forecast']),
                 $r['setup'] > 0 ? numeroBr($r['setup'], 0) : '',
                 // Order date: data pra enviar o pedido (informativa — a importação da Programação usa "Data")
                 $r['data_pedido']->format('d/m/Y'),
@@ -501,7 +508,9 @@ try {
                             <th>Projeto</th>
                             <th title="Da BOM">Comprador</th>
                             <th class="text-center">Estoque hoje</th>
+                            <th class="text-center" title="Quantos dias o estoque de hoje dura contra a demanda (EDI × BOM), contando a demanda em atraso">Dias de estoque</th>
                             <th class="text-center">Quantidade sugerida</th>
+                            <th class="text-center" title="Quantos dias a compra sugerida dura contra a demanda, a partir da data de entrega">Dias de forecast</th>
                             <th class="text-center" title="Quando o material precisa chegar (data de necessidade)">Data de entrega</th>
                             <th class="text-center">Status</th>
                             <th>Evolução</th>
@@ -509,7 +518,7 @@ try {
                     </thead>
                     <tbody>
                         <?php if (empty($resultados)): ?>
-                            <tr><td colspan="11" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
+                            <tr><td colspan="13" class="empty-state">Nenhuma compra necessária no período — ou nenhum componente com parâmetros cadastrados ainda.</td></tr>
                         <?php else: ?>
                             <?php $mesAtual = null; ?>
                             <?php foreach ($resultados as $r): ?>
@@ -518,7 +527,7 @@ try {
                                     if ($mesLabel !== $mesAtual):
                                         $mesAtual = $mesLabel;
                                 ?>
-                                    <tr class="mes-divisor"><td colspan="11"><?php echo h($mesLabel); ?></td></tr>
+                                    <tr class="mes-divisor"><td colspan="13"><?php echo h($mesLabel); ?></td></tr>
                                 <?php endif; ?>
                                 <tr>
                                     <?php /* Sempre mostra a data de necessidade, mesmo quando "urgente" — o badge de Status já
@@ -532,21 +541,20 @@ try {
                                         <?php if (!empty($r['antigos'])): ?>
                                             <span class="badge bg-warning-subtle text-dark border ms-1" title="Substitui <?php echo h(implode(', ', $r['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui e são consumidos primeiro">consome <?php echo h(implode(', ', $r['antigos'])); ?></span>
                                         <?php endif; ?>
-                                        <?php if ($r['total_parcelas'] > 1): ?>
-                                            <span class="badge bg-light text-secondary border ms-1" title="Este componente tem <?php echo $r['total_parcelas']; ?> pedidos escalonados no período calculado">parcela <?php echo $r['parcela']; ?>/<?php echo $r['total_parcelas']; ?></span>
-                                        <?php endif; ?>
                                     </td>
                                     <td title="<?php echo h($r['descricao']); ?>"><?php echo h($r['descricao']); ?></td>
                                     <td title="<?php echo h($r['fornecedores'] ?: 'Não informado'); ?>"><?php echo h($r['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td title="<?php echo h($r['projetos'] ?: '—'); ?>"><?php echo h($r['projetos'] ?: '—'); ?></td>
                                     <td title="<?php echo h($r['compradores'] ?: '—'); ?>"><?php echo h($r['compradores'] ?: '—'); ?></td>
                                     <td class="text-center"><?php echo numeroBr($r['estoque_atual'], 0); ?></td>
+                                    <td class="text-center"><?php echo h(textoDiasCobertura($r['dias_estoque'])); ?></td>
                                     <td class="text-center" title="Necessidade: <?php echo numeroBr($r['quantidade_base'], 0); ?><?php if ($r['setup'] > 0): ?> + <?php echo numeroBr($r['setup'], 0); ?>% de setup<?php endif; ?><?php if ($r['moq'] > 0): ?> → arredondado pro múltiplo do MOQ (<?php echo numeroBr($r['moq'], 0); ?>)<?php endif; ?>">
                                         <span class="qtd-sugerida-wrap">
                                             <span class="qtd-sugerida-num"><?php echo numeroBr($r['quantidade'], 0); ?></span>
                                             <?php if ($r['setup'] > 0): ?><span class="badge bg-light text-secondary border qtd-sugerida-badge">+<?php echo numeroBr($r['setup'], 0); ?>%</span><?php endif; ?>
                                         </span>
                                     </td>
+                                    <td class="text-center"><?php echo h(textoDiasCobertura($r['dias_forecast'])); ?></td>
                                     <td class="text-center">
                                         <?php echo h($r['data']->format('d/m/Y')); ?>
                                     </td>
