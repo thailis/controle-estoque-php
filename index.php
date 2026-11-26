@@ -932,7 +932,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                             <th class="text-end"><?php echo cabecalhoOrdenavel('Demanda', 'demanda', $ordenacao, $direcao); ?></th>
                             <th class="text-end"><?php echo cabecalhoOrdenavel('Comprar', 'necessidade', $ordenacao, $direcao); ?></th>
                             <th class="text-end"><?php echo cabecalhoOrdenavel('Saldo', 'saldo', $ordenacao, $direcao); ?></th>
-                            <th><?php echo cabecalhoOrdenavel('Status', 'status', $ordenacao, $direcao); ?></th>
+                            <th class="text-center"><?php echo cabecalhoOrdenavel('Status', 'status', $ordenacao, $direcao); ?></th>
                             <th>Evolução</th>
                         </tr>
                     </thead>
@@ -966,7 +966,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                                     <td class="text-end"><?php echo numeroBr($linha['demanda_total']); ?></td>
                                     <td class="text-end purchase-value"><?php echo numeroBr($linha['necessidade_compra']); ?></td>
                                     <td class="text-end <?php echo $linha['saldo_final'] < 0 ? 'negative-balance' : ''; ?>"><?php echo numeroBr($linha['saldo_final']); ?></td>
-                                    <td class="col-status">
+                                    <td class="col-status text-center">
                                         <?php if ($linha['status'] === 'planejar' && ($linha['mrp_data_sugerida'] ?? null)): ?>
                                             <span class="status-badge status-planejar" title="Comprar em <?php echo h($linha['mrp_data_sugerida']->format('d/m/Y')); ?> • Quantidade sugerida: <?php echo numeroBr($linha['mrp_quantidade_sugerida']); ?>">Planejar</span>
                                         <?php else: ?>
