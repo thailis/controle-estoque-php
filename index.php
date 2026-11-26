@@ -733,20 +733,24 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
         /* Tela larga, igual ao Estoque (98% da largura da janela) */
         .dashboard-container { max-width: 98vw !important; }
 
-        /* Espaçamento da tabela: todas as colunas ficam do tamanho do conteúdo
-           (width:1% = encolhe até o conteúdo) e a sobra de largura vai SÓ para a
-           Descrição — assim não sobra espaço vazio entre as colunas e os projetos
-           cabem em menos linhas. */
-        .mrp-table { min-width: 0 !important; }
-        .mrp-table th, .mrp-table td { padding: 10px 14px !important; vertical-align: middle; width: 1%; white-space: nowrap; }
-        .mrp-table th.col-descricao, .mrp-table td.col-descricao { width: auto; white-space: normal; min-width: 280px; }
+        /* Espaçamento da tabela: largura de cada coluna definida em % (colgroup
+           abaixo), assim o espaço fica distribuído — nenhuma coluna gigante nem
+           apertada. Textos longos quebram (Descrição/Projetos/Fornecedor) ou
+           viram "..." (Itens atendidos). */
+        .mrp-table { min-width: 1300px !important; table-layout: fixed; width: 100%; }
+        .mrp-table th, .mrp-table td { padding: 10px 12px !important; vertical-align: middle; }
+        .mrp-table thead th { white-space: normal; }
+        .mrp-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td.col-descricao, .mrp-table td.col-fornecedor, .mrp-table td.col-status { white-space: normal; }
         .mrp-table td.col-descricao .description-cell { display: block; min-width: 0; max-width: none; }
         /* Projetos: até 2 linhas; o que passar vira "..." (lista completa no mouse). */
         .mrp-table .projetos-cell {
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
             overflow: hidden; white-space: normal; line-height: 1.3; margin-top: 2px;
         }
-        .mrp-table td.col-itens .materials-cell { display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td.col-itens .materials-cell { display: block; overflow: hidden; text-overflow: ellipsis; }
+        .mrp-table td.col-status .status-badge { white-space: normal; line-height: 1.25; }
+        .mrp-table td.col-evolucao { overflow: visible; }
     </style>
 </head>
 <body>
@@ -902,10 +906,24 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
 
             <div class="table-responsive">
                 <table class="table mrp-table align-middle mb-0">
+                    <colgroup>
+                        <col style="width:8%"><!-- Código -->
+                        <col style="width:20%"><!-- Descrição -->
+                        <col style="width:9%"><!-- Fornecedor -->
+                        <col style="width:12%"><!-- Itens atendidos -->
+                        <col style="width:5%"><!-- Qtd. itens -->
+                        <col style="width:4%"><!-- U.M. -->
+                        <col style="width:6.5%"><!-- Estoque -->
+                        <col style="width:6.5%"><!-- Demanda -->
+                        <col style="width:6.5%"><!-- Comprar -->
+                        <col style="width:6.5%"><!-- Saldo -->
+                        <col style="width:9%"><!-- Status -->
+                        <col style="width:7%"><!-- Evolução -->
+                    </colgroup>
                     <thead>
                         <tr>
                             <th><?php echo cabecalhoOrdenavel('Código do componente', 'codigo', $ordenacao, $direcao); ?></th>
-                            <th class="col-descricao"><?php echo cabecalhoOrdenavel('Descrição', 'descricao', $ordenacao, $direcao); ?></th>
+                            <th><?php echo cabecalhoOrdenavel('Descrição', 'descricao', $ordenacao, $direcao); ?></th>
                             <th><?php echo cabecalhoOrdenavel('Fornecedor', 'fornecedores', $ordenacao, $direcao); ?></th>
                             <th>Itens atendidos</th>
                             <th class="text-start"><?php echo cabecalhoOrdenavel('Qtd. itens', 'materiais', $ordenacao, $direcao); ?></th>
@@ -948,14 +966,14 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                                     <td class="text-end"><?php echo numeroBr($linha['demanda_total']); ?></td>
                                     <td class="text-end purchase-value"><?php echo numeroBr($linha['necessidade_compra']); ?></td>
                                     <td class="text-end <?php echo $linha['saldo_final'] < 0 ? 'negative-balance' : ''; ?>"><?php echo numeroBr($linha['saldo_final']); ?></td>
-                                    <td>
+                                    <td class="col-status">
                                         <?php if ($linha['status'] === 'planejar' && ($linha['mrp_data_sugerida'] ?? null)): ?>
                                             <span class="status-badge status-planejar" title="Comprar em <?php echo h($linha['mrp_data_sugerida']->format('d/m/Y')); ?> • Quantidade sugerida: <?php echo numeroBr($linha['mrp_quantidade_sugerida']); ?>">Planejar</span>
                                         <?php else: ?>
                                             <span class="status-badge status-<?php echo h($linha['status']); ?>"><?php echo h(rotuloBadge($linha, $rotulosStatus)); ?></span>
                                         <?php endif; ?>
                                     </td>
-                                    <td><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($linha['codigo_componente']); ?>">Ver evolução</a></td>
+                                    <td class="col-evolucao"><a class="btn btn-outline-primary btn-sm" href="detalhe_componente.php?codigo=<?php echo urlencode($linha['codigo_componente']); ?>">Ver evolução</a></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
