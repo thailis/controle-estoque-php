@@ -508,9 +508,9 @@ try {
                             <th>Projeto</th>
                             <th title="Da BOM">Comprador</th>
                             <th class="text-center">Estoque hoje</th>
-                            <th class="text-center" title="Quantos dias o estoque de hoje dura contra a demanda (EDI × BOM), contando a demanda em atraso">Dias de estoque</th>
+                            <th class="text-center" title="Quantos dias o estoque de hoje dura contra a demanda (EDI × BOM), contando a demanda em atraso">Dias (estoque)</th>
                             <th class="text-center">Quantidade sugerida</th>
-                            <th class="text-center" title="Quantos dias a compra sugerida dura contra a demanda, a partir da data de entrega">Dias de forecast</th>
+                            <th class="text-center" title="Quantos dias a compra sugerida dura contra a demanda, a partir da data de entrega">Dias (programação)</th>
                             <th class="text-center" title="Quando o material precisa chegar (data de necessidade)">Data de entrega</th>
                             <th class="text-center">Status</th>
                             <th>Evolução</th>
