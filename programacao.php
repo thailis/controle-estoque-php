@@ -1808,6 +1808,23 @@ $rows = [];
 while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
 }
+
+// Período (Frozen Zone): Frozen Zone (dias) cadastrado em Parâmetros de Compra.
+// Linha pendente com entrega até hoje + Frozen Zone = FIRMADO (pedido congelado,
+// não dá mais pra alterar); depois disso = PENDENTE. Sem Frozen Zone cadastrado: "—".
+$congelamentoPorComponente = [];
+$codigosPeriodo = array_values(array_unique(array_filter(array_map(fn($r) => trim((string) ($r['codigo_componente'] ?? '')), $rows))));
+if (!empty($codigosPeriodo)) {
+    $phPeriodo = implode(',', array_fill(0, count($codigosPeriodo), '?'));
+    $stmtPeriodo = mysqli_prepare($conn, "SELECT TRIM(codigo_componente) AS c, MAX(congelamento_dias) AS d FROM parametros_compra WHERE TRIM(codigo_componente) IN ($phPeriodo) AND congelamento_dias IS NOT NULL GROUP BY TRIM(codigo_componente)");
+    mysqli_stmt_bind_param($stmtPeriodo, str_repeat('s', count($codigosPeriodo)), ...$codigosPeriodo);
+    mysqli_stmt_execute($stmtPeriodo);
+    foreach (mysqli_fetch_all(mysqli_stmt_get_result($stmtPeriodo), MYSQLI_ASSOC) as $lp) {
+        $congelamentoPorComponente[$lp['c']] = (int) $lp['d'];
+    }
+    mysqli_stmt_close($stmtPeriodo);
+}
+$hojePeriodo = new DateTimeImmutable('today');
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1861,6 +1878,8 @@ while ($row = mysqli_fetch_assoc($result)) {
         .situacao-toggle.is-pendente { background: #fff3cd; color: #a96600; }
         .situacao-toggle.is-pendente .dot { background: #d88b0b; }
         .situacao-toggle.is-atendido { background: #eaf8f0; color: #247a4d; }
+        .badge-firmado { background: #1f5fbf; color: #fff; font-weight: 700; }
+        .badge-periodo-pendente { background: #fff4e5; color: #a96600; font-weight: 700; }
         .situacao-toggle.is-atendido .dot { background: #247a4d; }
 
         .text-truncate-cell {
@@ -2122,6 +2141,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     <thead>
                         <tr>
                             <th>Situação</th>
+                            <th title="Frozen Zone (Parâmetros): entrega até hoje + Frozen Zone = Firmado (congelado); depois = Pendente">Período</th>
                             <th>PO</th>
                             <th title="Processo do site de Importação (ex.: Y26A3P0011)">Processo</th>
                             <th title="Onde o material vai ser recebido">Planta</th>
@@ -2143,7 +2163,7 @@ while ($row = mysqli_fetch_assoc($result)) {
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="18" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -2183,6 +2203,19 @@ while ($row = mysqli_fetch_assoc($result)) {
                                                 <?php echo $seloSync[0]; ?> · <?php echo h($quandoSyncLinha); ?>
                                             </div>
                                         <?php endif; ?>
+                                    </td>
+                                    <?php
+                                        $congLinha = $congelamentoPorComponente[trim((string) ($row['codigo_componente'] ?? ''))] ?? null;
+                                        $periodoTexto = null;
+                                        if (!$estaAtendido && $congLinha !== null && !empty($row['data'])) {
+                                            $limiteFrozen = $hojePeriodo->modify('+' . $congLinha . ' days');
+                                            $periodoTexto = (new DateTimeImmutable($row['data'])) <= $limiteFrozen ? 'Firmado' : 'Pendente';
+                                        }
+                                    ?>
+                                    <td class="col-periodo" title="<?php echo $congLinha !== null ? 'Frozen Zone: ' . $congLinha . ' dias (congelado até ' . $hojePeriodo->modify('+' . $congLinha . ' days')->format('d/m/Y') . ')' : 'Sem Frozen Zone cadastrado em Parâmetros'; ?>">
+                                        <?php if ($periodoTexto === 'Firmado'): ?><span class="badge badge-firmado">Firmado</span>
+                                        <?php elseif ($periodoTexto === 'Pendente'): ?><span class="badge badge-periodo-pendente">Pendente</span>
+                                        <?php else: ?>—<?php endif; ?>
                                     </td>
                                     <?php $podeEditarLinha = !$estaAtendido; ?>
                                     <td class="<?php echo $podeEditarLinha ? 'celula-editavel' : ''; ?>"
@@ -2351,14 +2384,14 @@ while ($row = mysqli_fetch_assoc($result)) {
                     }
 
                     const idLinha = form.querySelector('input[name="id"]').value;
-                    const celulaPo = linha.children[1];
-                    const celulaProcesso = linha.children[2];
-                    // Ordem atual das colunas: 0 Situação, 1 PO, 2 Processo, 3 Planta, 4 Componente,
-                    // 5 PN, 6 Descrição, 7 Fornecedor, 8 Preço, 9 Moeda, 10 Data, 11 Quantidade,
-                    // 12 Total Pedido, 13 Data Recebida, 14 Quantidade Recebida,
-                    // 15 Saldo, 16 Status, 17 Excluir.
-                    const celulaData = linha.children[10];
-                    const celulaQtd = linha.children[11];
+                    const celulaPo = linha.children[2];
+                    const celulaProcesso = linha.children[3];
+                    // Ordem atual das colunas: 0 Situação, 1 Período, 2 PO, 3 Processo, 4 Planta, 5 Componente,
+                    // 6 PN, 7 Descrição, 8 Fornecedor, 9 Preço, 10 Moeda, 11 Data, 12 Quantidade,
+                    // 13 Total Pedido, 14 Data Recebida, 15 Quantidade Recebida,
+                    // 16 Saldo, 17 Status, 18 Excluir.
+                    const celulaData = linha.children[11];
+                    const celulaQtd = linha.children[12];
                     if (celulaPo && celulaProcesso && celulaData && celulaQtd) {
                         if (json.atendido) {
                             celulaPo.className = '';
@@ -2494,7 +2527,7 @@ while ($row = mysqli_fetch_assoc($result)) {
 
             document.querySelectorAll('tbody tr[id^="linha-"]').forEach(function (linha) {
                 const celulaPreco = linha.querySelector('td[data-campo="preco"]');
-                const celulaQtd = linha.querySelector('td[data-campo="quantidade"]') || linha.children[10];
+                const celulaQtd = linha.querySelector('td[data-campo="quantidade"]') || linha.children[12];
                 const celulaQtdRecebida = linha.querySelector('td[data-campo="quantidade_recebida"]');
                 const celulaTotal = linha.querySelector('td.js-total-pedido');
                 const celulaSaldo = linha.querySelector('td.js-saldo');
