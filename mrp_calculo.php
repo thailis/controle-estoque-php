@@ -168,6 +168,7 @@ function calcularParcelasCompraPlanejamento(
     $saldoPorDia = [];
     $demandaPorDia = [];
     $saldoAnterior = $estoqueAtual + $entradaAtrasada - $saidaAtrasada;
+    $saldoInicialPlanejamento = $saldoAnterior;
     foreach ($dias as $i => $dia) {
         $chave = $dia->format('Y-m-d');
         $entrada = $programacaoPorData[$chave] ?? 0.0;
@@ -379,6 +380,32 @@ function calcularParcelasCompraPlanejamento(
         $maxQtdNoDia = $maxDias > 0
             ? ($prefixoDemanda[min($n, $iDisponibilidade + $maxDias)] - $prefixoDemanda[$iDisponibilidade])
             : 0.0;
+
+        // ATRASO NÃO É REPOSTO: se o saldo já está negativo no dia anterior à chegada
+        // (demanda que ficou descoberta antes desta compra poder chegar), essa falta NÃO
+        // entra na compra — a compra cobre só a demanda a partir da chegada, limitada ao
+        // Estoque Máximo. A demanda descoberta é "baixada" da simulação a partir da chegada
+        // (senão o saldo seguiria negativo e as revisões seguintes comprariam esse atraso).
+        $saldoAntesChegada = $iDisponibilidade > 0 ? $saldoPorDia[$iDisponibilidade - 1] : $saldoInicialPlanejamento;
+        $atrasoNaoReposto = max(0.0, -$saldoAntesChegada);
+        if ($atrasoNaoReposto > 0) {
+            for ($k = $iDisponibilidade; $k < $n; $k++) {
+                $saldoPorDia[$k] += $atrasoNaoReposto;
+            }
+            // Recalcula o déficit (já sem o atraso) pra dimensionar a compra.
+            $piorDeficit = null;
+            for ($k = $iDisponibilidade; $k <= $fimQuantidade; $k++) {
+                $deficitK = $pisoNoDia($k) - $saldoPorDia[$k];
+                if ($piorDeficit === null || $deficitK > $piorDeficit) {
+                    $piorDeficit = $deficitK;
+                    $iPior = $k;
+                }
+            }
+            $quantidadeAlvo = (float) ($piorDeficit ?? 0.0);
+            if ($quantidadeAlvo <= 0) {
+                continue;
+            }
+        }
         $tetoCompra = max(0.0, $maxQtdNoDia - $saldoPorDia[$iDisponibilidade]);
 
         // O Estoque Máximo nunca pode CAUSAR falta: a compra tem que ser no mínimo o
