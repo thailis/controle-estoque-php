@@ -2249,7 +2249,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                                                 : ($dataEntregaLinha <= $limiteFrozen->modify('+5 days') ? 'Checar' : 'Pendente');
                                         }
                                     ?>
-                                    <td class="col-periodo" title="<?php echo $congLinha !== null ? 'Frozen Zone: ' . $congLinha . ' dias (congelado até ' . $hojePeriodo->modify('+' . $congLinha . ' days')->format('d/m/Y') . ')' : 'Sem Frozen Zone cadastrado em Parâmetros'; ?>">
+                                    <td class="col-periodo" data-congelamento="<?php echo $congLinha !== null && !$estaAtendido ? (int) $congLinha : ''; ?>" title="<?php echo $congLinha !== null ? 'Frozen Zone: ' . $congLinha . ' dias (congelado até ' . $hojePeriodo->modify('+' . $congLinha . ' days')->format('d/m/Y') . ')' : 'Sem Frozen Zone cadastrado em Parâmetros'; ?>">
                                         <?php if ($periodoTexto === 'Firmado'): ?><span class="badge badge-firmado">Firmado</span>
                                         <?php elseif ($periodoTexto === 'Checar'): ?><span class="badge badge-periodo-checar" title="Entra no Frozen Zone em até 5 dias — última chance de alterar">Checar</span>
                                         <?php elseif ($periodoTexto === 'Pendente'): ?><span class="badge badge-periodo-pendente">Pendente</span>
@@ -2594,6 +2594,29 @@ $hojePeriodo = new DateTimeImmutable('today');
                     });
                 });
             });
+        });
+    </script>
+    <script>
+        // Período: ao mudar a Data da linha com duplo clique, recalcula o badge na hora
+        // (mesma regra do servidor: Firmado / Checar / Pendente pelo Frozen Zone).
+        document.addEventListener('inline-edit:salvo', function (evento) {
+            if (!evento.detail || evento.detail.campo !== 'data') return;
+            const linha = evento.target.closest('tr');
+            const celPeriodo = linha ? linha.querySelector('td.col-periodo') : null;
+            if (!celPeriodo || celPeriodo.dataset.congelamento === '') return;
+            const m = String(evento.detail.valorBruto || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+            if (!m) return;
+            const ano = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+            const entrega = new Date(ano, parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+            const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+            const fz = parseInt(celPeriodo.dataset.congelamento, 10);
+            const limite = new Date(hoje); limite.setDate(limite.getDate() + fz);
+            const limiteChecar = new Date(limite); limiteChecar.setDate(limiteChecar.getDate() + 5);
+            let html;
+            if (entrega <= limite) html = '<span class="badge badge-firmado">Firmado</span>';
+            else if (entrega <= limiteChecar) html = '<span class="badge badge-periodo-checar" title="Entra no Frozen Zone em até 5 dias — última chance de alterar">Checar</span>';
+            else html = '<span class="badge badge-periodo-pendente">Pendente</span>';
+            celPeriodo.innerHTML = html;
         });
     </script>
 </body>
