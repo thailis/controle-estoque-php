@@ -345,12 +345,10 @@ if ($erroDetalhe === null) {
         /* Frozen Zone na linha "Entrada programada" (vence o amarelo-claro de hoje / verde de EDI) */
         .evolucao-table td.entrada-congelada { background: #ffe600 !important; font-weight: 750; color: #3d3500; }
         .evolucao-table td.entrada-alteravel { background: #ffb366 !important; font-weight: 750; color: #4a2600; }
-        /* Compra sugerida: linhas ocupam a largura toda; as 4 primeiras colunas ficam do
-           tamanho do conteúdo e a coluna Dias (programação) fica com o resto, centralizada. */
-        .tabela-compra-sugerida { width: 100%; }
-        .tabela-compra-sugerida th, .tabela-compra-sugerida td { padding: 10px 56px 10px 18px; white-space: nowrap; vertical-align: middle; width: 1%; }
-        .tabela-compra-sugerida th:nth-child(4), .tabela-compra-sugerida td:nth-child(4) { text-align: right; }
-        .tabela-compra-sugerida th:last-child, .tabela-compra-sugerida td:last-child { width: auto; text-align: center; padding-right: 18px; }
+        /* Compra sugerida: largura toda, espaço dividido igualmente entre as 5 colunas
+           (20% cada), cabeçalho e conteúdo centralizados em cada coluna. */
+        .tabela-compra-sugerida { width: 100%; table-layout: fixed; }
+        .tabela-compra-sugerida th, .tabela-compra-sugerida td { width: 20%; padding: 10px 12px; text-align: center; white-space: nowrap; vertical-align: middle; }
         .legenda-frozen span { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin: 0 4px 0 12px; }
     </style>
 </head>
