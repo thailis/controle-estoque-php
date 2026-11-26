@@ -732,6 +732,22 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
     <style>
         /* Tela larga, igual ao Estoque (98% da largura da janela) */
         .dashboard-container { max-width: 98vw !important; }
+
+        /* Espaçamento da tabela: respiro igual entre as colunas e larguras
+           controladas (Descrição não estica mais a tabela toda). */
+        .mrp-table th, .mrp-table td { padding: 12px 16px !important; vertical-align: middle; }
+        .mrp-table td { white-space: nowrap; }
+        .mrp-table td.col-descricao { white-space: normal; min-width: 260px; max-width: 360px; }
+        .mrp-table td.col-descricao .description-cell { display: block; }
+        /* Projetos: quebra em até 2 linhas; o que passar disso vira "..." (lista
+           completa aparece ao passar o mouse). */
+        .mrp-table .projetos-cell {
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; white-space: normal; line-height: 1.3; margin-top: 2px;
+        }
+        .mrp-table td.col-fornecedor { white-space: normal; min-width: 110px; max-width: 160px; }
+        .mrp-table td.col-itens { max-width: 240px; }
+        .mrp-table td.col-itens .materials-cell { display: block; overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
@@ -915,12 +931,12 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                                         <strong class="component-code"><?php echo h($linha['codigo_componente']); ?></strong>
                                         <?php if (!empty($linha['antigos'])): ?><span class="badge bg-warning-subtle text-dark border ms-1" title="Substitui <?php echo h(implode(', ', $linha['antigos'])); ?>: o estoque e as entradas do código antigo já estão somados aqui">↺ <?php echo h(implode(', ', $linha['antigos'])); ?></span><?php endif; ?>
                                     </td>
-                                    <td>
+                                    <td class="col-descricao">
                                         <span class="description-cell"><?php echo h($linha['descricao']); ?></span>
-                                        <?php if (!empty($linha['projetos'])): ?><small class="d-block text-muted">Projeto: <?php echo h($linha['projetos']); ?></small><?php endif; ?>
+                                        <?php if (!empty($linha['projetos'])): ?><small class="projetos-cell text-muted" title="<?php echo h($linha['projetos']); ?>">Projeto: <?php echo h($linha['projetos']); ?></small><?php endif; ?>
                                     </td>
-                                    <td><?php echo h($linha['fornecedores'] ?: 'Não informado'); ?></td>
-                                    <td><span class="materials-cell" title="<?php echo h($linha['materiais']); ?>"><?php echo h($linha['materiais'] ?: 'Não informado'); ?></span></td>
+                                    <td class="col-fornecedor"><?php echo h($linha['fornecedores'] ?: 'Não informado'); ?></td>
+                                    <td class="col-itens"><span class="materials-cell" title="<?php echo h($linha['materiais']); ?>"><?php echo h($linha['materiais'] ?: 'Não informado'); ?></span></td>
                                     <td class="text-end"><?php echo numeroBr($linha['materiais_atendidos'], 0); ?></td>
                                     <td><?php echo h($linha['unidades'] ?: '-'); ?></td>
                                     <td class="text-end">
