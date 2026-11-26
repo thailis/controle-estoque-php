@@ -909,7 +909,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                             <th><?php echo cabecalhoOrdenavel('Descrição', 'descricao', $ordenacao, $direcao); ?></th>
                             <th><?php echo cabecalhoOrdenavel('Fornecedor', 'fornecedores', $ordenacao, $direcao); ?></th>
                             <th>Itens atendidos</th>
-                            <th class="text-end"><?php echo cabecalhoOrdenavel('Qtd. itens', 'materiais', $ordenacao, $direcao); ?></th>
+                            <th class="text-start"><?php echo cabecalhoOrdenavel('Qtd. itens', 'materiais', $ordenacao, $direcao); ?></th>
                             <th>U.M.</th>
                             <th class="text-end"><?php echo cabecalhoOrdenavel('Estoque', 'estoque', $ordenacao, $direcao); ?></th>
                             <th class="text-end"><?php echo cabecalhoOrdenavel('Demanda', 'demanda', $ordenacao, $direcao); ?></th>
@@ -937,7 +937,7 @@ function cabecalhoOrdenavel(string $rotulo, string $coluna, string $ordenacaoAtu
                                     </td>
                                     <td class="col-fornecedor"><?php echo h($linha['fornecedores'] ?: 'Não informado'); ?></td>
                                     <td class="col-itens"><span class="materials-cell" title="<?php echo h($linha['materiais']); ?>"><?php echo h($linha['materiais'] ?: 'Não informado'); ?></span></td>
-                                    <td class="text-end"><?php echo numeroBr($linha['materiais_atendidos'], 0); ?></td>
+                                    <td class="text-start"><?php echo numeroBr($linha['materiais_atendidos'], 0); ?></td>
                                     <td><?php echo h($linha['unidades'] ?: '-'); ?></td>
                                     <td class="text-end">
                                         <?php if ($linha['estoque_cadastrado']): ?>
