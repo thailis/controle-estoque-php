@@ -473,15 +473,16 @@ function calcularParcelasCompraPlanejamento(
         // MRP_DIAS_COBERTURA_MINIMA_PARCELA dias contando SÓ a quantidade da compra contra
         // a demanda a partir da data de entrega (mesma conta da coluna "Dias (programação)"
         // da tela), mesmo que o saldo esteja abaixo do Estoque Mínimo.
-        // $necessidadeMinima = demanda dos 30 dias a partir da entrega.
         //  - Se adiar NÃO causa falta (saldo continua >= 0 até a próxima compra poder
         //    chegar): pula esta revisão — a próxima parcela absorve a necessidade.
-        //  - Se adiar causa falta: aumenta ESTA parcela pra cobrir os 30 dias de demanda
-        //    (acresce a próxima demanda nela), passando do Máximo se for preciso.
+        //  - Se adiar causa falta: aumenta ESTA parcela o suficiente pra que ESTOQUE +
+        //    COMPRA cubram os 30 dias a partir da entrega (saldo >= 0). Antes a regra
+        //    exigia que a compra SOZINHA cobrisse os 30 dias, ignorando o estoque que já
+        //    existia — inflava a compra (ex.: 12008619 precisava de ~92 e pedia 4.000).
         $ajustada30Dias = false;
-        $necessidadeMinima = $prefixoDemanda[min($n, $iDisponibilidade + MRP_DIAS_COBERTURA_MINIMA_PARCELA)]
+        $demanda30Dias = $prefixoDemanda[min($n, $iDisponibilidade + MRP_DIAS_COBERTURA_MINIMA_PARCELA)]
             - $prefixoDemanda[$iDisponibilidade];
-        if ($quantidadeFinal + 0.0001 < $necessidadeMinima) {
+        if ($quantidadeFinal + 0.0001 < $demanda30Dias) {
             $faltaSeAdiar = false;
             for ($k = $iDisponibilidade; $k <= $iProximaChegada; $k++) {
                 if ($saldoPorDia[$k] < -0.0001) {
@@ -492,14 +493,25 @@ function calcularParcelasCompraPlanejamento(
             if (!$faltaSeAdiar) {
                 continue; // adia: a próxima revisão compra junto
             }
-            $quantidadeComSetup = $necessidadeMinima;
-            $quantidadeBase = $setupPercentual > 0
-                ? $necessidadeMinima / (1 + $setupPercentual / 100)
-                : $necessidadeMinima;
-            $quantidadeFinal = $moq > 0
-                ? max($moq, ceil(round($quantidadeComSetup / $moq, 6)) * $moq)
-                : $quantidadeComSetup;
-            $ajustada30Dias = true;
+            // Quanto precisa chegar pra o saldo (estoque + programação + esta compra) não
+            // ficar negativo nos 30 dias a partir da entrega.
+            $fimCoberturaMinima = min($n - 1, $iDisponibilidade + MRP_DIAS_COBERTURA_MINIMA_PARCELA - 1);
+            $necessidadeMinima = 0.0;
+            for ($k = $iDisponibilidade; $k <= $fimCoberturaMinima; $k++) {
+                if (-$saldoPorDia[$k] > $necessidadeMinima) {
+                    $necessidadeMinima = -$saldoPorDia[$k];
+                }
+            }
+            if ($quantidadeFinal + 0.0001 < $necessidadeMinima) {
+                $quantidadeComSetup = $necessidadeMinima;
+                $quantidadeBase = $setupPercentual > 0
+                    ? $necessidadeMinima / (1 + $setupPercentual / 100)
+                    : $necessidadeMinima;
+                $quantidadeFinal = $moq > 0
+                    ? max($moq, ceil(round($quantidadeComSetup / $moq, 6)) * $moq)
+                    : $quantidadeComSetup;
+                $ajustada30Dias = true;
+            }
         }
 
         // Urgente =a data sugerida já passou OU cai dentro dos próximos 7 dias (ainda dá
