@@ -1717,6 +1717,29 @@ if ($mesFiltro !== '') {
 
 $where = $condicoes ? ('WHERE ' . implode(' AND ', $condicoes)) : '';
 
+// Comprador de cada componente, direto da BOM (coluna comprador). Se o componente
+// tiver mais de um comprador na BOM, mostra todos separados por vírgula.
+function compradoresBomProgramacao(mysqli $conn): array
+{
+    $mapa = [];
+    try {
+        $res = mysqli_query($conn, "
+            SELECT TRIM(codigo_componente) AS c,
+                   GROUP_CONCAT(DISTINCT NULLIF(TRIM(comprador), '') ORDER BY TRIM(comprador) SEPARATOR ', ') AS comprador
+            FROM bomnova
+            WHERE codigo_componente IS NOT NULL AND TRIM(codigo_componente) <> ''
+            GROUP BY TRIM(codigo_componente)
+        ");
+        while ($res && ($l = mysqli_fetch_assoc($res))) {
+            $mapa[$l['c']] = (string) ($l['comprador'] ?? '');
+        }
+    } catch (Throwable $e) {
+        // coluna comprador ainda não existe na BOM: fica tudo em branco
+    }
+    return $mapa;
+}
+$compradoresBom = compradoresBomProgramacao($conn);
+
 $sqlTotal = "SELECT COUNT(*) AS total FROM programacao p $where";
 if (!empty($params)) {
     $stmtTotal = mysqli_prepare($conn, $sqlTotal);
@@ -1764,7 +1787,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="programacao-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Componente', 'PN', 'PO', 'Processo', 'Planta', 'Preço', 'Moeda', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Componente', 'PN', 'PO', 'Processo', 'Planta', 'Preço', 'Moeda', 'Data', 'Quantidade', 'Importado', 'Total Pedido', 'Comprador', 'Data Recebida', 'Quantidade Recebida', 'Saldo', 'Atendido'], ';', '"', '');
     while ($linha = mysqli_fetch_assoc($resultExport)) {
         $data = $linha['data'] ? (new DateTimeImmutable($linha['data']))->format('d/m/Y') : '';
         $dataRecebidaExportada = $linha['data_recebida'] ? (new DateTimeImmutable($linha['data_recebida']))->format('d/m/Y') : '';
@@ -1791,7 +1814,8 @@ if (($_GET['exportar'] ?? '') === 'csv') {
             $saida,
             [
                 $linha['codigo_componente'], $linha['pn'] ?? '', $linha['po'] ?? '', $linha['processo'] ?? '', $linha['planta'] ?? '', $precoExportado, $linha['moeda'] ?? '', $data,
-                $quantidadeExportada, $importadoExportado, $totalPedidoExportado, $dataRecebidaExportada,
+                $quantidadeExportada, $importadoExportado, $totalPedidoExportado,
+                $compradoresBom[trim((string) $linha['codigo_componente'])] ?? '', $dataRecebidaExportada,
                 $quantidadeRecebidaExportada, $saldoExportado, ((int) ($linha['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
             ],
             ';',
@@ -2188,6 +2212,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                             <th class="text-center">Data</th>
                             <th class="text-end">Quantidade</th>
                             <th class="text-end" title="Preço × Quantidade">Total Pedido</th>
+                            <th title="Da BOM">Comprador</th>
                             <th>Data Recebida</th>
                             <th class="text-end">Quantidade Recebida</th>
                             <th class="text-end" title="Quantidade Recebida − Quantidade">Saldo</th>
@@ -2197,7 +2222,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="19" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="20" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -2318,6 +2343,8 @@ $hojePeriodo = new DateTimeImmutable('today');
                                     <td class="text-end text-muted js-total-pedido" data-total-id="<?php echo $idLinha; ?>" title="Calculado automaticamente: Preço × Quantidade">
                                         <?php echo $totalPedidoLinha !== null ? number_format($totalPedidoLinha, 2, ',', '.') : '—'; ?>
                                     </td>
+                                    <?php $compradorLinha = $compradoresBom[trim((string) ($row['codigo_componente'] ?? ''))] ?? ''; ?>
+                                    <td title="<?php echo h($compradorLinha); ?>"><?php echo $compradorLinha !== '' ? h($compradorLinha) : '—'; ?></td>
                                     <td class="text-center celula-editavel"
                                         data-id="<?php echo $idLinha; ?>" data-campo="data_recebida"
                                         data-valor-bruto="<?php echo h(formatarDataBrProgramacao($row['data_recebida'] ?? null)); ?>"
@@ -2426,8 +2453,8 @@ $hojePeriodo = new DateTimeImmutable('today');
                     const celulaProcesso = linha.children[3];
                     // Ordem atual das colunas: 0 Situação, 1 Período, 2 PO, 3 Processo, 4 Planta, 5 Componente,
                     // 6 PN, 7 Descrição, 8 Fornecedor, 9 Preço, 10 Moeda, 11 Data, 12 Quantidade,
-                    // 13 Total Pedido, 14 Data Recebida, 15 Quantidade Recebida,
-                    // 16 Saldo, 17 Status, 18 Excluir.
+                    // 13 Total Pedido, 14 Comprador, 15 Data Recebida, 16 Quantidade Recebida,
+                    // 17 Saldo, 18 Status, 19 Excluir.
                     const celulaData = linha.children[11];
                     const celulaQtd = linha.children[12];
                     if (celulaPo && celulaProcesso && celulaData && celulaQtd) {
