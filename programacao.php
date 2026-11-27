@@ -583,8 +583,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_al
         'texto' => $novoAtendido ? 'Atendido' : 'Pendente',
         'classe' => $novoAtendido ? 'is-atendido' : 'is-pendente',
         'title' => $novoAtendido
-            ? 'Clique para reabrir (remove a entrada do estoque)'
-            : 'Clique para marcar como atendido (soma no estoque da planta)',
+            ? 'Atendido — clique para reabrir (remove a entrada do estoque)'
+            : 'Pendente — clique para marcar como atendido (soma no estoque da planta)',
         'dataFormatada' => $itemProg['data'] ? (new DateTimeImmutable($itemProg['data']))->format('d/m/Y') : '',
         'quantidadeFormatada' => number_format((float) $itemProg['quantidade'], 2, ',', ''),
     ]);
@@ -1907,26 +1907,25 @@ $hojePeriodo = new DateTimeImmutable('today');
         .form-check:hover { background: #f8f9fa; }
         summary { cursor: pointer; font-weight: 700; color: #405164; }
 
+        /* Situação = só uma bolinha (laranja = Pendente, verde = Atendido). O texto
+           continua no title (passar o mouse) e escondido pra leitores de tela. */
         .situacao-toggle {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 5px 12px;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            padding: 0;
             border: none;
-            border-radius: 999px;
-            font-size: .74rem;
-            font-weight: 700;
-            line-height: 1.2;
+            border-radius: 50%;
+            background: transparent;
             cursor: pointer;
-            white-space: nowrap;
-            transition: filter .15s ease, transform .05s ease;
+            transition: background .15s ease, transform .05s ease;
         }
-        .situacao-toggle:hover { filter: brightness(0.94); }
-        .situacao-toggle:active { transform: scale(0.97); }
-        .situacao-toggle .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
-        .situacao-toggle.is-pendente { background: #fff3cd; color: #a96600; }
+        .situacao-toggle:hover { background: #eef1f5; }
+        .situacao-toggle:active { transform: scale(0.9); }
+        .situacao-toggle .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
         .situacao-toggle.is-pendente .dot { background: #d88b0b; }
-        .situacao-toggle.is-atendido { background: #eaf8f0; color: #247a4d; }
         .badge-firmado { background: #4d9be6; color: #fff; font-weight: 700; }
         .badge-periodo-pendente { background: #f28c28; color: #fff; font-weight: 700; }
         .badge-periodo-checar { background: #ffd43b; color: #5c4400; font-weight: 700; }
@@ -2245,9 +2244,9 @@ $hojePeriodo = new DateTimeImmutable('today');
                                             <input type="hidden" name="sync_atual" value="<?php echo h($syncFiltro); ?>">
                                             <button type="submit"
                                                     class="situacao-toggle <?php echo $estaAtendido ? 'is-atendido' : 'is-pendente'; ?>"
-                                                    title="<?php echo $estaAtendido ? 'Clique para reabrir (remove a entrada do estoque)' : 'Clique para marcar como atendido (soma no estoque da planta)'; ?>">
+                                                    title="<?php echo $estaAtendido ? 'Atendido — clique para reabrir (remove a entrada do estoque)' : 'Pendente — clique para marcar como atendido (soma no estoque da planta)'; ?>">
                                                 <span class="dot"></span>
-                                                <?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?>
+                                                <span class="visually-hidden"><?php echo $estaAtendido ? 'Atendido' : 'Pendente'; ?></span>
                                             </button>
                                         </form>
                                         <?php
@@ -2445,7 +2444,7 @@ $hojePeriodo = new DateTimeImmutable('today');
                         botao.classList.remove('is-atendido', 'is-pendente');
                         botao.classList.add(json.classe);
                         botao.title = json.title;
-                        botao.innerHTML = '<span class="dot"></span> ' + json.texto;
+                        botao.innerHTML = '<span class="dot"></span><span class="visually-hidden">' + json.texto + '</span>';
                     }
 
                     const idLinha = form.querySelector('input[name="id"]').value;
