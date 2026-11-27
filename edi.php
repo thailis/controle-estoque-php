@@ -1416,7 +1416,12 @@ $pagina = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $offset = ($pagina - 1) * $porPagina;
 
 $busca  = isset($_GET['busca']) ? trim($_GET['busca']) : '';
-$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : ''; // '', 'pendente', 'atendido'
+// Ao abrir a página (sem "filtro" na URL) mostra só os PENDENTES. O botão "Todos"
+// manda filtro= vazio, então continua dando pra ver tudo.
+$filtro = isset($_GET['filtro']) ? trim($_GET['filtro']) : 'pendente'; // '', 'pendente', 'atendido'
+if (!in_array($filtro, ['', 'pendente', 'atendido'], true)) {
+    $filtro = 'pendente';
+}
 $anoFiltro = isset($_GET['ano']) ? trim($_GET['ano']) : ''; // '', ou um ano específico
 $projetoFiltro = isset($_GET['projeto']) ? trim($_GET['projeto']) : ''; // '', ou um projeto específico
 $modeloFiltro = isset($_GET['modelo']) ? trim($_GET['modelo']) : ''; // '', ou um modelo específico
