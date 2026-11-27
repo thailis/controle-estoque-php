@@ -5,6 +5,9 @@ require_once 'substituicoes.php';
 
 require_once 'auth.php';
 exigirLogin();
+// EDI x BOM pela planta (2401/2402) — ver condicaoPlantaEdiBomSql() em mrp_calculo.php
+$condPlantaEdi = condicaoPlantaEdiBomSql($conn);
+
 function h(mixed $valor): string
 {
     return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
@@ -286,7 +289,7 @@ try {
                     ) AS demanda_total
                 FROM bomnova b
                 LEFT JOIN edi e
-                    ON TRIM(b.material) = TRIM(e.material)
+                    ON TRIM(b.material) = TRIM(e.material){$condPlantaEdi}
                     AND " . implode(' AND ', $condicoesEdi) . "
                 WHERE " . implode(' AND ', $condicoesBom) . "
                 GROUP BY TRIM(b.codigo_componente)
@@ -440,7 +443,7 @@ try {
                            * COALESCE(CAST(NULLIF(REPLACE(TRIM(b.consumo), ',', '.'), '') AS DECIMAL(18,6)), 0)
                        ) AS quantidade
                 FROM bomnova b
-                JOIN edi e ON TRIM(b.material) = TRIM(e.material)
+                JOIN edi e ON TRIM(b.material) = TRIM(e.material){$condPlantaEdi}
                 WHERE TRIM(b.codigo_componente) IN ($placeholdersP) AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N') AND (b.planejamento IS NULL OR UPPER(TRIM(b.planejamento)) <> 'N')
                   AND (e.atendido = 0 OR e.atendido IS NULL)
                 GROUP BY TRIM(b.codigo_componente), e.data_inicio

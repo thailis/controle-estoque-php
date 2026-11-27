@@ -54,6 +54,20 @@ if (!function_exists('tabelaTemColunaMrp')) {
     }
 }
 
+// Filtro de PLANTA entre EDI e BOM (pra usar logo depois de
+// "JOIN edi e ON TRIM(b.material) = TRIM(e.material)"): EDI da 2401 só gera demanda
+// pras linhas da BOM da 2401 (e pras linhas da BOM sem planta); EDI sem planta vale
+// pra todas. Retorna '' se a tabela edi ou bomnova ainda não tiver a coluna planta.
+if (!function_exists('condicaoPlantaEdiBomSql')) {
+    function condicaoPlantaEdiBomSql(mysqli $conn, string $aliasBom = 'b', string $aliasEdi = 'e'): string
+    {
+        if (!tabelaTemColunaMrp($conn, 'edi', 'planta') || !tabelaTemColunaMrp($conn, 'bomnova', 'planta')) {
+            return '';
+        }
+        return " AND (NULLIF(TRIM({$aliasEdi}.planta), '') IS NULL OR NULLIF(TRIM({$aliasBom}.planta), '') IS NULL OR TRIM({$aliasBom}.planta) = TRIM({$aliasEdi}.planta))";
+    }
+}
+
 // Funções de cálculo do MRP compartilhadas entre telas (Planejamento de Compras e
 // Evolução do Estoque). Ficam num arquivo só pra qualquer ajuste na lógica (piso,
 // MOQ, Estoque Máximo, timing de disponibilização etc.) valer pras duas telas ao

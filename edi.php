@@ -592,13 +592,21 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
         if ($quantidadeEdi <= 0) {
             return;
         }
+        // EDI com planta só baixa as linhas da BOM da mesma planta (ou sem planta)
+        $filtroPlantaBom = ($plantaEdi !== null && tabelaTemColunaMrp($conn, 'bomnova', 'planta'))
+            ? " AND (NULLIF(TRIM(b.planta), '') IS NULL OR TRIM(b.planta) = ?)" : '';
         $stmtBom = mysqli_prepare($conn, "
             SELECT TRIM(b.codigo_componente) AS codigo_componente,
                    COALESCE(CAST(NULLIF(REPLACE(TRIM(b.consumo), ',', '.'), '') AS DECIMAL(18,6)), 0) AS consumo
             FROM bomnova b
-            WHERE TRIM(b.material) = ? AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')
+            WHERE TRIM(b.material) = ? AND (b.mrp IS NULL OR UPPER(TRIM(b.mrp)) <> 'N')" . $filtroPlantaBom . "
         ");
-        mysqli_stmt_bind_param($stmtBom, 's', $material);
+        if ($filtroPlantaBom !== '') {
+            $plantaEdiNorm = normalizarPlantaMrp($plantaEdi);
+            mysqli_stmt_bind_param($stmtBom, 'ss', $material, $plantaEdiNorm);
+        } else {
+            mysqli_stmt_bind_param($stmtBom, 's', $material);
+        }
         mysqli_stmt_execute($stmtBom);
         $resBom = mysqli_stmt_get_result($stmtBom);
         $itensBom = mysqli_fetch_all($resBom, MYSQLI_ASSOC);

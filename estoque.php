@@ -1,5 +1,6 @@
 <?php
 require_once 'conexao.php';
+require_once __DIR__ . '/mrp_calculo.php'; // condicaoPlantaEdiBomSql()
 
 require_once 'auth.php';
 exigirLogin();
@@ -570,6 +571,9 @@ function demandaPendentePorComponente(mysqli $conn, array $codigos): array
         return [];
     }
     $placeholders = implode(',', array_fill(0, count($codigosTrim), '?'));
+    // EDI x BOM pela planta (2401/2402): EDI da 2401 só soma na linha da BOM da 2401
+    $condPlantaEdi = condicaoPlantaEdiBomSql($conn);
+    $plantaSel = $condPlantaEdi !== '' ? "COALESCE(TRIM(planta), '')" : "''";
     $stmt = mysqli_prepare($conn, "
         SELECT b.codigo_componente,
                SUM(COALESCE(CAST(e.quantidade AS DECIMAL(18,4)), 0) * b.consumo) AS demanda
@@ -577,12 +581,13 @@ function demandaPendentePorComponente(mysqli $conn, array $codigos): array
         JOIN (
             SELECT TRIM(material) AS material,
                    TRIM(codigo_componente) AS codigo_componente,
+                   {$plantaSel} AS planta,
                    MAX(COALESCE(CAST(NULLIF(REPLACE(TRIM(consumo), ',', '.'), '') AS DECIMAL(18,6)), 0)) AS consumo
             FROM bomnova
             WHERE (mrp IS NULL OR UPPER(TRIM(mrp)) <> 'N')
               AND TRIM(codigo_componente) IN ($placeholders)
-            GROUP BY TRIM(material), TRIM(codigo_componente)
-        ) b ON b.material = TRIM(e.material)
+            GROUP BY TRIM(material), TRIM(codigo_componente), {$plantaSel}
+        ) b ON b.material = TRIM(e.material){$condPlantaEdi}
         WHERE (e.atendido = 0 OR e.atendido IS NULL)
           AND b.consumo > 0
         GROUP BY b.codigo_componente
