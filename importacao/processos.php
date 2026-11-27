@@ -1618,6 +1618,45 @@ mysqli_stmt_execute($stmt);
 $result = mysqli_stmt_get_result($stmt);
 $rows = [];
 while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
+
+// Comprador de cada componente, direto da BOM do MRP (outro banco — mesma conexão
+// MRP_DB_* usada na busca de descrição). Só busca os componentes desta página.
+// Se o componente tiver mais de um comprador na BOM, mostra todos separados por
+// vírgula. Se o MRP estiver fora (ou a coluna não existir), a coluna fica "—".
+$compradoresBom = [];
+$codigosPagina = array_values(array_unique(array_filter(array_map(fn($r) => trim((string) ($r['codigo_componente'] ?? '')), $rows))));
+if (!empty($codigosPagina)) {
+    try {
+        $hostMrp = getenv('MRP_DB_HOST') ?: '';
+        $userMrp = getenv('MRP_DB_USER') ?: '';
+        $passMrp = getenv('MRP_DB_PASSWORD') ?: '';
+        if ($hostMrp !== '' && $userMrp !== '' && $passMrp !== '') {
+            $connMrpComp = mysqli_init();
+            mysqli_options($connMrpComp, MYSQLI_OPT_CONNECT_TIMEOUT, 8);
+            mysqli_ssl_set($connMrpComp, null, null, getenv('MRP_DB_SSL_CA') ?: '/etc/ssl/certs/ca-certificates.crt', null, null);
+            mysqli_real_connect($connMrpComp, $hostMrp, $userMrp, $passMrp, getenv('MRP_DB_NAME') ?: 'controle_mrp', (int) (getenv('MRP_DB_PORT') ?: 4000), null, MYSQLI_CLIENT_SSL);
+            mysqli_set_charset($connMrpComp, 'utf8mb4');
+            $phComp = implode(',', array_fill(0, count($codigosPagina), '?'));
+            $stmtComp = mysqli_prepare($connMrpComp, "
+                SELECT TRIM(codigo_componente) AS codigo,
+                       GROUP_CONCAT(DISTINCT NULLIF(TRIM(comprador), '') ORDER BY TRIM(comprador) SEPARATOR ', ') AS comprador
+                FROM bomnova
+                WHERE TRIM(codigo_componente) IN ($phComp)
+                GROUP BY TRIM(codigo_componente)
+            ");
+            mysqli_stmt_bind_param($stmtComp, str_repeat('s', count($codigosPagina)), ...$codigosPagina);
+            mysqli_stmt_execute($stmtComp);
+            $resComp = mysqli_stmt_get_result($stmtComp);
+            while ($lc = mysqli_fetch_assoc($resComp)) {
+                $compradoresBom[$lc['codigo']] = (string) ($lc['comprador'] ?? '');
+            }
+            mysqli_stmt_close($stmtComp);
+            mysqli_close($connMrpComp);
+        }
+    } catch (Throwable $erroComp) {
+        error_log('Busca de comprador na BOM do MRP falhou: ' . $erroComp->getMessage());
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1993,7 +2032,7 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                 </div>
             </div>
             <div class="table-responsive">
-                <table class="table mrp-table mb-0" id="tabela-processos" style="min-width: 2050px;">
+                <table class="table mrp-table mb-0" id="tabela-processos" style="min-width: 2150px;">
                     <thead>
                         <tr>
                             <th>Status</th>
@@ -2013,14 +2052,15 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                             <th>Preço</th>
                             <th>Total</th>
                             <th>Moeda</th>
-                            <th title="Sim = processo já cadastrado no Follow; Não = ainda falta cadastrar">Follow</th>
+                            <th title="Da BOM do MRP (pelo código do componente)">Comprador</th>
+                            <th class="text-center" title="Sim = processo já cadastrado no Follow; Não = ainda falta cadastrar">Follow</th>
                             <th>Obs</th>
                             <th class="no-print">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="20" class="empty-state">Nenhum processo encontrado.</td></tr>
+                            <tr><td colspan="21" class="empty-state">Nenhum processo encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $r): ?>
                                 <?php
@@ -2088,7 +2128,9 @@ while ($row = mysqli_fetch_assoc($result)) { $rows[] = $row; }
                                     <td class="celula-editavel col-preco" data-id="<?php echo $id; ?>" data-campo="preco" data-valor-bruto="<?php echo $r['preco'] !== null ? numeroBr($r['preco']) : ''; ?>"><?php echo numeroBr($r['preco']); ?></td>
                                     <td class="col-total"><?php echo numeroBr($r['total']); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $id; ?>" data-campo="moeda" data-valor-bruto="<?php echo h($r['moeda'] ?? ''); ?>"><?php echo h($r['moeda'] ?: '—'); ?></td>
-                                    <td>
+                                    <?php $compradorRow = $compradoresBom[trim((string) ($r['codigo_componente'] ?? ''))] ?? ''; ?>
+                                    <td title="<?php echo h($compradorRow); ?>"><?php echo $compradorRow !== '' ? h($compradorRow) : '—'; ?></td>
+                                    <td class="text-center">
                                         <?php if (!empty($r['tem_follow'])): ?>
                                             <span class="status-badge status-ok" title="Processo já cadastrado no Follow">Sim</span>
                                         <?php else: ?>
