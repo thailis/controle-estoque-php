@@ -3,6 +3,12 @@ require_once 'conexao.php';
 
 require_once 'auth.php';
 require_once __DIR__ . '/edi_historico_lib.php';
+require_once __DIR__ . '/mrp_calculo.php'; // normalizarPlantaMrp(), tabelaTemColunaMrp()
+
+// EDI por planta (2401 GVT / 2402 GUA). Funciona antes do ALTER TABLE: sem a
+// coluna "planta" na tabela edi, tudo continua como era (sem planta).
+$ediTemPlanta = tabelaTemColunaMrp($conn, 'edi', 'planta');
+$plantasEdiOpcoes = ['2401' => '2401 — GVT', '2402' => '2402 — GUA'];
 exigirLogin();
 set_time_limit(300);
 
@@ -249,6 +255,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
         if ($mi !== '') { $modelosImportacao[$mi] = true; }
     }
     $nomeArquivo = (string) ($_FILES['arquivo_csv']['name'] ?? '');
+    // Planta do arquivo (o EDI vem separado por planta). Se a planilha tiver a
+    // coluna "Planta", ela manda; senão vale a escolhida aqui.
+    $plantaImportacao = $ediTemPlanta ? normalizarPlantaMrp((string) ($_POST['planta_importacao'] ?? '')) : '';
 
     if ($_FILES['arquivo_csv']['error'] !== UPLOAD_ERR_OK) {
         $mensagens[] = "❌ Erro no upload do arquivo.";
@@ -274,11 +283,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
             $cEvento = $acharColuna(['evento']);
             $cGeracao = $acharColuna(['geracao', 'data geracao']);
             $cPn = $acharColuna(['pn', 'pn2']);
+            $cPlanta = $ediTemPlanta ? $acharColuna(['planta', 'centro', 'plant']) : null;
 
             if (($cModelo === null && $cMaterial === null) || $cQtd === null || ($cData === null && $cDataEntrega === null)) {
                 $mensagens[] = "❌ Colunas obrigatórias: modelo (ou item), quantidade (ou qtde) e data (ou data coleta / data entrega).";
             } else {
                 $mapaModelos = $cModelo !== null ? mapaModeloMaterialBom($conn) : [];
+                // Se o código da coluna Modelo não for um modelo da BOM, tenta como
+                // MATERIAL (planilha que traz o código do material na coluna "modelo")
+                $mapaMateriaisBom = [];
+                if ($cModelo !== null) {
+                    foreach (mapaMaterialModeloBom($conn) as $matBom => $infoMat) {
+                        $mapaMateriaisBom[normalizarModeloEdi((string) $matBom)] = ['material' => (string) $matBom, 'modelo' => $infoMat['modelo'] !== '' ? $infoMat['modelo'] : null];
+                    }
+                }
                 $valor = fn(array $l, ?int $c) => $c === null ? '' : trim((string) ($l[$c] ?? ''));
 
                 // Data de geração da planilha (vira a data da versão no histórico)
@@ -306,7 +324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $material = $valor($l, $cMaterial);
                     $modeloBom = null;
                     if ($modeloArquivo !== '') {
-                        $achado = $mapaModelos[normalizarModeloEdi($modeloArquivo)] ?? null;
+                        $achado = $mapaModelos[normalizarModeloEdi($modeloArquivo)] ?? $mapaMateriaisBom[normalizarModeloEdi($modeloArquivo)] ?? null;
                         if ($achado === null && !empty($modelosImportacao) && !isset($modelosImportacao[normalizarModeloEdi($modeloArquivo)])) {
                             $foraDoProjeto++;
                             continue;
@@ -355,8 +373,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                     $evento = $valor($l, $cEvento);
                     $dataIso = $dataObj->format('Y-m-d');
                     $eventoLinha = $evento !== '' ? $evento : $eventoPadrao;
+                    $plantaLinha = $cPlanta !== null && $valor($l, $cPlanta) !== '' ? normalizarPlantaMrp($valor($l, $cPlanta)) : $plantaImportacao;
                     // Várias linhas do mesmo dia (horários diferentes) viram uma só, somando a quantidade
-                    $chaveDia = $material . '|' . $dataIso . '|' . $eventoLinha;
+                    $chaveDia = $material . '|' . $plantaLinha . '|' . $dataIso . '|' . $eventoLinha;
                     if (isset($indiceEntrada[$chaveDia])) {
                         $pos = $indiceEntrada[$chaveDia];
                         $entradas[$pos]['quantidade'] = (string) ((float) $entradas[$pos]['quantidade'] + (float) $quantidade);
@@ -375,6 +394,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         'quantidade' => $quantidade,
                         'data_inicio' => $dataIso,
                         'data_fim' => $dataIso,
+                        'planta' => $plantaLinha,
                     ];
                 }
 
@@ -400,39 +420,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         fotografarEdi($conn, $versaoId, 'antes', $materiaisArquivo);
 
                         $atendidosChave = [];
-                        foreach (array_chunk($materiaisArquivo, 400) as $bloco) {
-                            $ph = implode(',', array_fill(0, count($bloco), '?'));
-                            $tiposBloco = str_repeat('s', count($bloco));
-                            if ($substituirPendentes) {
-                                $stmtDel = mysqli_prepare($conn, "DELETE FROM edi WHERE COALESCE(atendido, 0) = 0 AND TRIM(material) IN ($ph)");
-                                mysqli_stmt_bind_param($stmtDel, $tiposBloco, ...$bloco);
+                        // Substitui os pendentes POR PLANTA: importar o EDI da 2401 só troca
+                        // os pendentes da 2401 (e os antigos sem planta) — a 2402 fica intacta.
+                        // Arquivo sem planta: troca todos os pendentes do material (como antes).
+                        $materiaisPorPlanta = [];
+                        foreach ($entradas as $eImp) {
+                            $materiaisPorPlanta[$eImp['planta']][$eImp['material']] = true;
+                        }
+                        foreach ($materiaisPorPlanta as $plantaDel => $matsPlanta) {
+                            foreach (array_chunk(array_keys($matsPlanta), 400) as $bloco) {
+                                $ph = implode(',', array_fill(0, count($bloco), '?'));
+                                $tiposBloco = str_repeat('s', count($bloco));
+                                if (!$substituirPendentes) {
+                                    continue;
+                                }
+                                $filtroPlanta = '';
+                                $paramsDel = $bloco;
+                                if ($ediTemPlanta && $plantaDel !== '') {
+                                    $filtroPlanta = " AND (planta IS NULL OR TRIM(planta) = '' OR TRIM(planta) = ?)";
+                                    $paramsDel[] = $plantaDel;
+                                }
+                                $stmtDel = mysqli_prepare($conn, "DELETE FROM edi WHERE COALESCE(atendido, 0) = 0 AND TRIM(material) IN ($ph)" . $filtroPlanta);
+                                mysqli_stmt_bind_param($stmtDel, str_repeat('s', count($paramsDel)), ...$paramsDel);
                                 mysqli_stmt_execute($stmtDel);
                                 $pendentesApagados += max(0, mysqli_stmt_affected_rows($stmtDel));
                                 mysqli_stmt_close($stmtDel);
 
-                                $stmtAt = mysqli_prepare($conn, "SELECT TRIM(material) AS material, data_inicio FROM edi WHERE COALESCE(atendido, 0) = 1 AND TRIM(material) IN ($ph)");
+                                $colPlantaAt = $ediTemPlanta ? "TRIM(COALESCE(planta, ''))" : "''";
+                                $stmtAt = mysqli_prepare($conn, "SELECT TRIM(material) AS material, $colPlantaAt AS planta, data_inicio FROM edi WHERE COALESCE(atendido, 0) = 1 AND TRIM(material) IN ($ph)");
                                 mysqli_stmt_bind_param($stmtAt, $tiposBloco, ...$bloco);
                                 mysqli_stmt_execute($stmtAt);
                                 foreach (mysqli_fetch_all(mysqli_stmt_get_result($stmtAt), MYSQLI_ASSOC) as $a) {
-                                    $atendidosChave[$a['material'] . '|' . $a['data_inicio']] = true;
+                                    $atendidosChave[$a['material'] . '|' . normalizarPlantaMrp($a['planta']) . '|' . $a['data_inicio']] = true;
                                 }
                                 mysqli_stmt_close($stmtAt);
                             }
                         }
+                        // Já consumido = Atendido na mesma data: da mesma planta ou antigo sem planta.
+                        // Linha do arquivo sem planta: qualquer Atendido do material na data.
+                        $atendidoQualquerPlanta = [];
+                        foreach (array_keys($atendidosChave) as $k) {
+                            [$mK, , $dK] = explode('|', $k);
+                            $atendidoQualquerPlanta[$mK . '|' . $dK] = true;
+                        }
+                        $jaAtendido = function (array $e) use ($atendidosChave, $atendidoQualquerPlanta): bool {
+                            if ($e['planta'] === '') {
+                                return isset($atendidoQualquerPlanta[$e['material'] . '|' . $e['data_inicio']]);
+                            }
+                            return isset($atendidosChave[$e['material'] . '|' . $e['planta'] . '|' . $e['data_inicio']])
+                                || isset($atendidosChave[$e['material'] . '||' . $e['data_inicio']]);
+                        };
 
-                        $stmtInsert = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmtInsert = $ediTemPlanta
+                            ? mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))")
+                            : mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                         foreach ($entradas as $e) {
-                            if ($substituirPendentes && isset($atendidosChave[$e['material'] . '|' . $e['data_inicio']])) {
+                            if ($substituirPendentes && $jaAtendido($e)) {
                                 $puladosAtendidos++;
                                 $ignorados++;
                                 registrarLinhaProcessada($linhasProcessadas, $totalProcessadas, $limiteExibicao, $e, 'ignorado');
                                 continue;
                             }
-                            mysqli_stmt_bind_param(
-                                $stmtInsert, "ssssssssiss",
-                                $e['pn2'], $e['material'], $e['marca'], $e['projeto'], $e['modelo'], $e['evento'],
-                                $e['semana'], $e['quantidade'], $e['ano'], $e['data_fim'], $e['data_inicio']
-                            );
+                            if ($ediTemPlanta) {
+                                mysqli_stmt_bind_param(
+                                    $stmtInsert, "ssssssssisss",
+                                    $e['pn2'], $e['material'], $e['marca'], $e['projeto'], $e['modelo'], $e['evento'],
+                                    $e['semana'], $e['quantidade'], $e['ano'], $e['data_fim'], $e['data_inicio'], $e['planta']
+                                );
+                            } else {
+                                mysqli_stmt_bind_param(
+                                    $stmtInsert, "ssssssssiss",
+                                    $e['pn2'], $e['material'], $e['marca'], $e['projeto'], $e['modelo'], $e['evento'],
+                                    $e['semana'], $e['quantidade'], $e['ano'], $e['data_fim'], $e['data_inicio']
+                                );
+                            }
                             mysqli_stmt_execute($stmtInsert);
                             $importados++;
                             registrarLinhaProcessada($linhasProcessadas, $totalProcessadas, $limiteExibicao, $e, 'inserido');
@@ -448,7 +509,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['arquivo_csv'])) {
                         if ($puladosAtendidos > 0) {
                             $mensagens[] = "↪️ $puladosAtendidos linha(s) do arquivo puladas: mesma data de um EDI já Atendido.";
                         }
+                        $plantasArquivo = array_values(array_filter(array_keys($materiaisPorPlanta), fn($pl) => $pl !== ''));
                         $mensagens[] = "✅ Importação concluída: $importados inserida(s), $erros erro(s)."
+                            . ($plantasArquivo ? ' Planta: ' . implode(', ', $plantasArquivo) . '.' : ($ediTemPlanta ? ' (sem planta)' : ''))
                             . ($versaoId ? ' Versão guardada no Histórico EDI.' : (historicoEdiDisponivel($conn) ? '' : ' (Histórico EDI ainda não ativado — rode o SQL das tabelas.)'));
                     } catch (Throwable $erroImport) {
                         mysqli_rollback($conn);
@@ -514,6 +577,17 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
         return;
     }
 
+    // Planta do evento EDI: a baixa no estoque vai pra mesma planta
+    $plantaEdi = null;
+    if (tabelaTemColunaMrp($conn, 'edi', 'planta')) {
+        $stmtPl = mysqli_prepare($conn, "SELECT NULLIF(TRIM(planta), '') AS planta FROM edi WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtPl, 'i', $idEdi);
+        mysqli_stmt_execute($stmtPl);
+        $plantaEdi = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtPl))['planta'] ?? null;
+        mysqli_stmt_close($stmtPl);
+    }
+    $plantaSql = $plantaEdi === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, normalizarPlantaMrp($plantaEdi)) . "'";
+
     if ($tornandoAtendido) {
         if ($quantidadeEdi <= 0) {
             return;
@@ -559,7 +633,7 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
             $descricao = $descricoes[$codigoComponente] ?? null;
             $descricaoSql = $descricao === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, (string) $descricao) . "'";
             $partes[] = "('" . mysqli_real_escape_string($conn, (string) $codigoComponente) . "', "
-                . $descricaoSql . ", " . (float) $estoqueNegativo . ", NULL, 'demanda_edi', " . $idEdi . ")";
+                . $descricaoSql . ", " . (float) $estoqueNegativo . ", " . $plantaSql . ", 'demanda_edi', " . $idEdi . ")";
         }
 
         $sqlInsereLote = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id) VALUES "
@@ -567,10 +641,10 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
         mysqli_query($conn, $sqlInsereLote);
     } else {
         $stmtNet = mysqli_prepare($conn, "
-            SELECT codigo_componente, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS saldo
+            SELECT codigo_componente, NULLIF(TRIM(COALESCE(planta, '')), '') AS planta, SUM(COALESCE(CAST(estoque AS DECIMAL(18,4)), 0)) AS saldo
             FROM estoque
             WHERE origem_edi_id = ? AND origem IN ('demanda_edi', 'reversao_edi')
-            GROUP BY codigo_componente
+            GROUP BY codigo_componente, NULLIF(TRIM(COALESCE(planta, '')), '')
         ");
         mysqli_stmt_bind_param($stmtNet, 'i', $idEdi);
         mysqli_stmt_execute($stmtNet);
@@ -585,21 +659,23 @@ function aplicarDemandaEdiNoEstoque(mysqli $conn, int $idEdi, string $material, 
             if ($saldo >= -0.0001) {
                 continue;
             }
-            $devolucoes[$codigoComponente] = -$saldo;
+            $devolucoes[] = ['codigo' => $codigoComponente, 'planta' => $linhaPendente['planta'], 'qtd' => -$saldo];
         }
 
         if (empty($devolucoes)) {
             return;
         }
 
-        $descricoes = buscarDescricoesEstoque($conn, array_keys($devolucoes));
+        $descricoes = buscarDescricoesEstoque($conn, array_column($devolucoes, 'codigo'));
 
         $partes = [];
-        foreach ($devolucoes as $codigoComponente => $devolver) {
+        foreach ($devolucoes as $dev) {
+            $codigoComponente = $dev['codigo'];
             $descricao = $descricoes[$codigoComponente] ?? null;
             $descricaoSql = $descricao === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, (string) $descricao) . "'";
+            $plantaDevSql = $dev['planta'] === null ? 'NULL' : "'" . mysqli_real_escape_string($conn, (string) $dev['planta']) . "'";
             $partes[] = "('" . mysqli_real_escape_string($conn, (string) $codigoComponente) . "', "
-                . $descricaoSql . ", " . (float) $devolver . ", NULL, 'reversao_edi', " . $idEdi . ")";
+                . $descricaoSql . ", " . (float) $dev['qtd'] . ", " . $plantaDevSql . ", 'reversao_edi', " . $idEdi . ")";
         }
 
         $sqlInsereLote = "INSERT INTO estoque (codigo_componente, descricao, estoque, planta, origem, origem_edi_id) VALUES "
@@ -838,6 +914,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $projetoManual = $dadosBomManual['projeto'];
     $modeloManual = $dadosBomManual['modelo']; // Modelo vem da BOM
     $eventoManual = trim($_POST['evento_manual'] ?? '');
+    $plantaManual = $ediTemPlanta ? normalizarPlantaMrp((string) ($_POST['planta_manual'] ?? '')) : '';
     $dataManualTexto = trim($_POST['data_manual'] ?? '');
     $quantidadeManual = parseQuantidadeEdi(trim($_POST['quantidade_manual'] ?? ''));
     $dataManualObj = $dataManualTexto !== '' ? parseDataEdi($dataManualTexto) : null;
@@ -846,12 +923,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'inserir
     $flash = 'erro_dados';
     if ($materialManual !== '' && $eventoManual !== '' && $quantidadeManual !== null && $periodoManual !== null) {
         $dataInicioManual = $dataManualObj->format('Y-m-d');
-        $stmtInsManual = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        mysqli_stmt_bind_param(
-            $stmtInsManual, "ssssssidiss",
-            $pn2Manual, $materialManual, $marcaManual, $projetoManual, $modeloManual, $eventoManual,
-            $periodoManual['semana'], $quantidadeManual, $periodoManual['ano'], $dataInicioManual, $dataInicioManual
-        );
+        if ($ediTemPlanta) {
+            $stmtInsManual = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio, planta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))");
+            mysqli_stmt_bind_param(
+                $stmtInsManual, "ssssssidisss",
+                $pn2Manual, $materialManual, $marcaManual, $projetoManual, $modeloManual, $eventoManual,
+                $periodoManual['semana'], $quantidadeManual, $periodoManual['ano'], $dataInicioManual, $dataInicioManual, $plantaManual
+            );
+        } else {
+            $stmtInsManual = mysqli_prepare($conn, "INSERT INTO edi (pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_fim, data_inicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            mysqli_stmt_bind_param(
+                $stmtInsManual, "ssssssidiss",
+                $pn2Manual, $materialManual, $marcaManual, $projetoManual, $modeloManual, $eventoManual,
+                $periodoManual['semana'], $quantidadeManual, $periodoManual['ano'], $dataInicioManual, $dataInicioManual
+            );
+        }
         mysqli_stmt_execute($stmtInsManual);
         mysqli_stmt_close($stmtInsManual);
         registrarAjusteEdi($conn, [
@@ -890,7 +976,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
     $campo = (string) ($_POST['campo'] ?? '');
     $valor = trim((string) ($_POST['valor'] ?? ''));
 
-    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo', 'evento', 'material'], true)) {
+    if ($id <= 0 || !in_array($campo, ['data', 'quantidade', 'modelo', 'evento', 'material', 'planta'], true) || ($campo === 'planta' && !$ediTemPlanta)) {
         echo json_encode(['ok' => false, 'erro' => 'Requisição inválida.']);
         exit;
     }
@@ -925,6 +1011,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ajax_ed
         mysqli_stmt_close($stmt);
         registrarAjusteEdi($conn, $linhaHist, 'edicao', 'material', $linhaHist['material'] ?? null, $materialEditado);
         echo json_encode(['ok' => true, 'exibido' => $materialEditado]);
+        exit;
+    }
+
+    if ($campo === 'planta') {
+        // Trocar a planta (duplo clique). Atendido já baixou o estoque na planta
+        // antiga — só deixa trocar depois de voltar pra Pendente.
+        $stmtAt = mysqli_prepare($conn, "SELECT COALESCE(atendido, 0) AS atendido FROM edi WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmtAt, 'i', $id);
+        mysqli_stmt_execute($stmtAt);
+        $linhaAt = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtAt));
+        mysqli_stmt_close($stmtAt);
+        if (!$linhaAt) {
+            echo json_encode(['ok' => false, 'erro' => 'Linha não encontrada.']);
+            exit;
+        }
+        if ((int) $linhaAt['atendido'] === 1) {
+            echo json_encode(['ok' => false, 'erro' => 'Este EDI está Atendido (o estoque já foi baixado na planta atual). Volte para Pendente antes de trocar a planta.']);
+            exit;
+        }
+        $plantaEditada = mb_substr(normalizarPlantaMrp($valor), 0, 10);
+        $stmt = mysqli_prepare($conn, "UPDATE edi SET planta = NULLIF(?, '') WHERE _tidb_rowid = ?");
+        mysqli_stmt_bind_param($stmt, 'si', $plantaEditada, $id);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        echo json_encode(['ok' => true, 'exibido' => $plantaEditada]);
         exit;
     }
 
@@ -1045,6 +1156,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'editar_
     exit;
 }
 
+// Projeto que aparece na tela pra cada material do EDI: o da BOM (fonte oficial);
+// se a BOM não tiver, o gravado no EDI. Usado no combo "Projeto" e no filtro —
+// assim, renomeou o projeto na BOM, o nome novo já aparece e filtra (sem precisar
+// do botão "Atualizar pela BOM").
+function projetoExibidoPorMaterialEdi(mysqli $conn): array
+{
+    static $mapa = null;
+    if ($mapa !== null) {
+        return $mapa;
+    }
+    $gravado = [];
+    $res = mysqli_query($conn, "SELECT TRIM(material) AS material, MAX(TRIM(projeto)) AS projeto FROM edi WHERE material IS NOT NULL AND TRIM(material) <> '' GROUP BY TRIM(material)");
+    while ($res && ($l = mysqli_fetch_assoc($res))) {
+        $gravado[$l['material']] = (string) ($l['projeto'] ?? '');
+    }
+    $dadosBom = buscarDadosBom($conn, array_keys($gravado));
+    $mapa = [];
+    foreach ($gravado as $mat => $projetoGravado) {
+        $projeto = trim((string) ($dadosBom[$mat]['projeto'] ?? ''));
+        $mapa[(string) $mat] = $projeto !== '' ? $projeto : $projetoGravado;
+    }
+    return $mapa;
+}
+
 // Monta o WHERE da tabela edi a partir dos filtros da tela. Usado tanto na
 // listagem quanto nas ações em massa — assim a ação em massa pega exatamente
 // as mesmas linhas que aparecem filtradas na tela.
@@ -1055,10 +1190,16 @@ function montarFiltroEdi(string $busca, string $filtro, string $anoFiltro, strin
     $tipos = '';
 
     if ($busca !== '') {
-        $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ? OR evento LIKE ?)";
         $buscaLike = "%$busca%";
-        array_push($params, $buscaLike, $buscaLike, $buscaLike, $buscaLike);
-        $tipos .= 'ssss';
+        if ($GLOBALS['ediTemPlanta'] ?? false) {
+            $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ? OR evento LIKE ? OR planta LIKE ?)";
+            array_push($params, $buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike);
+            $tipos .= 'sssss';
+        } else {
+            $condicoes[] = "(material LIKE ? OR pn2 LIKE ? OR projeto LIKE ? OR evento LIKE ?)";
+            array_push($params, $buscaLike, $buscaLike, $buscaLike, $buscaLike);
+            $tipos .= 'ssss';
+        }
     }
 
     if ($filtro === 'pendente') {
@@ -1074,9 +1215,20 @@ function montarFiltroEdi(string $busca, string $filtro, string $anoFiltro, strin
     }
 
     if ($projetoFiltro !== '') {
-        $condicoes[] = "TRIM(projeto) = ?";
-        $params[] = $projetoFiltro;
-        $tipos .= 's';
+        // Filtra pelo projeto EXIBIDO (o da BOM), não pelo nome antigo gravado no EDI
+        $materiaisProjeto = array_keys(array_filter(
+            projetoExibidoPorMaterialEdi($GLOBALS['conn']),
+            fn($pj) => mb_strtoupper($pj) === mb_strtoupper($projetoFiltro)
+        ));
+        if (empty($materiaisProjeto)) {
+            $condicoes[] = "1 = 0";
+        } else {
+            $condicoes[] = "TRIM(material) IN (" . implode(',', array_fill(0, count($materiaisProjeto), '?')) . ")";
+            foreach ($materiaisProjeto as $matProj) {
+                $params[] = (string) $matProj;
+                $tipos .= 's';
+            }
+        }
     }
 
     if ($modeloFiltro !== '') {
@@ -1317,12 +1469,11 @@ while ($resProjBomImp && ($lpb = mysqli_fetch_assoc($resProjBomImp))) {
 }
 
 // Projetos e modelos disponíveis na base, pra montar os combos de filtro dinamicamente
-$projetosDisponiveis = [];
-$resProjetos = mysqli_query($conn, "SELECT DISTINCT TRIM(projeto) AS projeto FROM edi WHERE projeto IS NOT NULL AND TRIM(projeto) <> '' ORDER BY projeto");
-if ($resProjetos) {
-    while ($linhaProjeto = mysqli_fetch_assoc($resProjetos)) {
-        $projetosDisponiveis[] = $linhaProjeto['projeto'];
-    }
+// Projetos do combo = os que aparecem na tabela (da BOM; nome antigo gravado no EDI não entra mais)
+$projetosDisponiveis = array_values(array_unique(array_filter(projetoExibidoPorMaterialEdi($conn), fn($pj) => $pj !== '')));
+sort($projetosDisponiveis, SORT_NATURAL | SORT_FLAG_CASE);
+if ($projetoFiltro !== '' && !in_array($projetoFiltro, $projetosDisponiveis, true)) {
+    $projetosDisponiveis[] = $projetoFiltro;
 }
 
 $eventosDisponiveis = [];
@@ -1375,7 +1526,7 @@ if ($projetoFiltro !== '' || $eventoFiltro !== '') {
 
 // Exportação CSV: traz TODOS os registros filtrados (ignora a paginação da tela)
 if (($_GET['exportar'] ?? '') === 'csv') {
-    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, atendido
+    $sqlExport = "SELECT pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, atendido" . ($ediTemPlanta ? ", planta" : ", NULL AS planta") . "
                   FROM edi $where
                   ORDER BY data_inicio ASC";
     if (!empty($params)) {
@@ -1391,7 +1542,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="edi-' . date('Y-m-d-His') . '.csv"');
     echo "\xEF\xBB\xBF";
     $saida = fopen('php://output', 'w');
-    fputcsv($saida, ['Material', 'Tipo', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
+    fputcsv($saida, ['Material', 'Planta', 'Tipo', 'Projeto', 'Modelo', 'Evento', 'Semana', 'Quantidade', 'Ano', 'Data', 'Atendido'], ';', '"', '');
     $linhasExport = mysqli_fetch_all($resultExport, MYSQLI_ASSOC);
     $dadosBomExport = buscarDadosBom($conn, array_map(fn($l) => $l['material'], $linhasExport));
     foreach ($linhasExport as $linhaExport) {
@@ -1401,7 +1552,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
         $linhaExport['projeto'] = $dExp['projeto'] ?? $linhaExport['projeto'];
         $linhaExport['modelo'] = trim((string) ($linhaExport['modelo'] ?? '')) !== '' ? $linhaExport['modelo'] : ($dExp['modelo'] ?? $linhaExport['modelo']);
         fputcsv($saida, [
-            $linhaExport['material'], $linhaExport['marca'], $linhaExport['projeto'],
+            $linhaExport['material'], (string) ($linhaExport['planta'] ?? ''), $linhaExport['marca'], $linhaExport['projeto'],
             $linhaExport['modelo'], $linhaExport['evento'], $linhaExport['semana'], $linhaExport['quantidade'],
             $linhaExport['ano'], formatarDataBr($linhaExport['data_inicio']),
             ((int) ($linhaExport['atendido'] ?? 0) === 1) ? 'Sim' : 'Não',
@@ -1415,7 +1566,7 @@ if (($_GET['exportar'] ?? '') === 'csv') {
 // mais antiga primeiro, mais recente por último), não mais pelos rótulos de
 // ano/semana (que ainda
 // existem, mas hoje são só derivados da data, não a fonte da ordenação).
-$sql = "SELECT _tidb_rowid AS id, pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido 
+$sql = "SELECT _tidb_rowid AS id, pn2, material, marca, projeto, modelo, evento, semana, quantidade, ano, data_inicio, data_fim, atendido" . ($ediTemPlanta ? ", planta" : ", NULL AS planta") . "
         FROM edi $where 
         ORDER BY data_inicio ASC 
         LIMIT ? OFFSET ?";
@@ -1643,6 +1794,18 @@ unset($r);
                             <input type="text" name="modelos_importacao" class="form-control" placeholder="Ex.: 52183855">
                             <small class="text-muted">Preenchido, só as linhas desses modelos entram e só os pendentes deles são substituídos. O resto do EDI não muda.</small>
                         </div>
+                        <?php if ($ediTemPlanta): ?>
+                        <div class="col-12 col-md-3 mb-2">
+                            <label class="form-label">Planta do arquivo</label>
+                            <select name="planta_importacao" class="form-select">
+                                <option value="">Sem planta / coluna "Planta" do arquivo</option>
+                                <?php foreach ($plantasEdiOpcoes as $codPlanta => $nomePlanta): ?>
+                                    <option value="<?php echo htmlspecialchars($codPlanta); ?>"><?php echo htmlspecialchars($nomePlanta); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <small class="text-muted">Só os pendentes desta planta (e os antigos sem planta) são substituídos. Se a planilha tiver a coluna <code>Planta</code>, ela vale.</small>
+                        </div>
+                        <?php endif; ?>
                         <div class="col-12 col-md-4 mb-2">
                             <label class="form-label">Projeto <small class="text-muted">(opcional)</small></label>
                             <select name="projeto_importacao" class="form-select">
@@ -1668,8 +1831,8 @@ unset($r);
                     <hr>
                     <small class="text-muted">
                         <strong>Colunas</strong> (primeira linha = cabeçalho, qualquer ordem) — dá pra subir a planilha do cliente direto:<br>
-                        <code>modelo</code> (ou <code>Item</code>), <code>quantidade</code> (ou <code>Qtde</code>), <code>data</code> (ou <code>Data Coleta</code>; se vier vazia, usa a <code>Data Entrega</code>); opcionais: <code>evento</code>, <code>Geração</code>.<br>
-                        Linhas do mesmo modelo no mesmo dia (horários diferentes) viram uma só, com a quantidade somada. O <strong>Material</strong> é encontrado na BOM pelo Modelo (espaços e zeros à esquerda são ignorados); Tipo, Projeto e PN também vêm da BOM. Sem a coluna <code>evento</code>, o evento vira <code>EDI dd/mm/aaaa</code> com a data da coluna Geração. Arquivo antigo com a coluna <code>material</code> continua funcionando.<br>
+                        <code>modelo</code> (ou <code>Item</code>), <code>quantidade</code> (ou <code>Qtde</code>), <code>data</code> (ou <code>Data Coleta</code>; se vier vazia, usa a <code>Data Entrega</code>); opcionais: <code>evento</code>, <code>Geração</code>, <code>Planta</code>.<br>
+                        Linhas do mesmo modelo no mesmo dia (horários diferentes) viram uma só, com a quantidade somada. O <strong>Material</strong> é encontrado na BOM pelo Modelo (espaços e zeros à esquerda são ignorados) — se o código não for um modelo da BOM, é aceito como código de material; Tipo, Projeto e PN também vêm da BOM. Sem a coluna <code>evento</code>, o evento vira <code>EDI dd/mm/aaaa</code> com a data da coluna Geração. Arquivo antigo com a coluna <code>material</code> continua funcionando.<br>
                         A coluna é <code>data</code> (formato dd/mm/aaaa), não mais "semana" — o site calcula sozinho o número da semana ISO e o "ano" (rótulo de safra: semanas 30–53 = 2026; semanas 1–29 = 2027) a partir da data digitada. Separador: vírgula ou ponto e vírgula.
                     </small>
                 </div>
@@ -1766,6 +1929,17 @@ unset($r);
                         <label class="form-label small mb-1">Material *</label>
                         <input type="text" name="material_manual" list="lista_materiais" class="form-control form-control-sm" style="width:140px" required>
                     </div>
+                    <?php if ($ediTemPlanta): ?>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1">Planta</label>
+                        <select name="planta_manual" class="form-select form-select-sm" style="width:130px">
+                            <option value="">—</option>
+                            <?php foreach ($plantasEdiOpcoes as $codPlanta => $nomePlanta): ?>
+                                <option value="<?php echo htmlspecialchars($codPlanta); ?>"><?php echo htmlspecialchars($nomePlanta); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <?php endif; ?>
                     <div class="col-auto">
                         <label class="form-label small mb-1">Evento *</label>
                         <input type="text" name="evento_manual" class="form-control form-control-sm" style="width:120px" required>
@@ -1874,6 +2048,7 @@ unset($r);
                         <tr>
                             <th>Situação</th>
                             <th>Material</th>
+                            <?php if ($ediTemPlanta): ?><th class="text-center">Planta</th><?php endif; ?>
                             <th>Tipo</th>
                             <th>Projeto</th>
                             <th>Modelo</th>
@@ -1886,7 +2061,7 @@ unset($r);
                     </thead>
                     <tbody>
                         <?php if (empty($rows)): ?>
-                            <tr><td colspan="10" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
+                            <tr><td colspan="<?php echo $ediTemPlanta ? 11 : 10; ?>" class="text-center text-muted">Nenhum registro encontrado.</td></tr>
                         <?php else: ?>
                             <?php foreach ($rows as $row): ?>
                                 <?php
@@ -1916,6 +2091,9 @@ unset($r);
                                         </form>
                                     </td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="material" data-valor-bruto="<?php echo htmlspecialchars($row['material'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['material'] ?? ''); ?></td>
+                                    <?php if ($ediTemPlanta): ?>
+                                    <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" title="Duplo clique para editar (2401 = GVT, 2402 = GUA)"><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
+                                    <?php endif; ?>
                                     <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" title="Duplo clique para editar — <?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
