@@ -1044,12 +1044,19 @@ if ($busca !== '') {
             $termosBusca = $partesEspaco;
         }
     }
+    // Busca livre SEM diferenciar maiúscula/minúscula (o banco compara com
+    // diferença por padrão — "7341-144b-00" não achava "7341-144B-00") e em
+    // TODAS as colunas de texto da tela, inclusive PN, Tipo, Planta, Comprador,
+    // Substitui e NCM (antes o PN nem entrava na busca).
+    $colunasBuscaLivre = ['material', 'codigo_componente', 'pn', 'descricao', 'fornecedor', 'projeto', 'modelo', 'tipo', 'planta', 'comprador', 'substitui', 'ncm'];
     $condicoesBusca = [];
     foreach ($termosBusca as $termoBusca) {
-        $condicoesBusca[] = "(material LIKE ? OR codigo_componente LIKE ? OR descricao LIKE ? OR fornecedor LIKE ? OR projeto LIKE ? OR modelo LIKE ?)";
-        $buscaLike = "%$termoBusca%";
-        $params = array_merge($params, [$buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike, $buscaLike]);
-        $tipos .= 'ssssss';
+        $condicoesBusca[] = '(' . implode(' OR ', array_map(fn($c) => "LOWER(COALESCE($c, '')) LIKE ?", $colunasBuscaLivre)) . ')';
+        $buscaLike = '%' . mb_strtolower($termoBusca, 'UTF-8') . '%';
+        foreach ($colunasBuscaLivre as $_c) {
+            $params[] = $buscaLike;
+            $tipos .= 's';
+        }
     }
     if (!empty($condicoesBusca)) {
         $condicoesWhere[] = '(' . implode(' OR ', $condicoesBusca) . ')';
@@ -1348,6 +1355,11 @@ if ($codigosPaginaBom) {
         .tabela-bom td:first-child { padding-left: 0.5rem; }
         .tabela-bom .inline-edit-input { font-size: 0.8rem; }
         .tabela-bom .mrp-toggle-btn { font-size: 0.75rem; }
+        /* Larguras fixas por coluna (no <colgroup> da tabela), pra o espaço ficar
+           distribuído por igual. Texto maior que a coluna vira "…" e aparece
+           inteiro passando o mouse. */
+        .tabela-bom { table-layout: fixed; width: 100%; min-width: 2164px; }
+        .tabela-bom th, .tabela-bom td { overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
@@ -1651,7 +1663,7 @@ if ($codigosPaginaBom) {
             <form method="GET" class="row g-2 align-items-end">
                 <div class="col-12 col-md flex-grow-1">
                     <label class="form-label small text-muted mb-1">Busca livre</label>
-                    <input type="text" name="busca" class="form-control" placeholder="Buscar por material, componente, descrição, fornecedor ou projeto (vários: separe com ;)" value="<?php echo htmlspecialchars($busca); ?>">
+                    <input type="text" name="busca" class="form-control" placeholder="Buscar por qualquer coluna: material, componente, PN, descrição, fornecedor, projeto, modelo, comprador... (vários: separe com ;)" value="<?php echo htmlspecialchars($busca); ?>">
                 </div>
                 <div class="col-12 col-md-auto" style="min-width: 200px;">
                     <label class="form-label small text-muted mb-1">Projeto</label>
@@ -1691,6 +1703,33 @@ if ($codigosPaginaBom) {
         <div class="card">
             <div class="card-body table-responsive">
                 <table class="table table-hover table-sm tabela-bom">
+                    <colgroup>
+                        <col style="width: 85px"> <!-- Status -->
+                        <col style="width: 60px"> <!-- Planta -->
+                        <col style="width: 120px"> <!-- Projeto -->
+                        <col style="width: 90px"> <!-- Material -->
+                        <col style="width: 110px"> <!-- Modelo -->
+                        <col style="width: 170px"> <!-- Tipo -->
+                        <col style="width: 120px"> <!-- Fornecedor -->
+                        <col style="width: 95px"> <!-- Componente -->
+                        <col style="width: 85px"> <!-- Substitui -->
+                        <col style="width: 105px"> <!-- PN -->
+                        <col style="width: 200px"> <!-- Descrição -->
+                        <col style="width: 70px"> <!-- Consumo -->
+                        <col style="width: 50px"> <!-- U.M. -->
+                        <col style="width: 85px"> <!-- Comprador -->
+                        <col style="width: 80px"> <!-- Net Price -->
+                        <col style="width: 60px"> <!-- IPI % -->
+                        <col style="width: 60px"> <!-- PIS % -->
+                        <col style="width: 72px"> <!-- COFINS % -->
+                        <col style="width: 62px"> <!-- ICMS % -->
+                        <col style="width: 75px"> <!-- Preço -->
+                        <col style="width: 60px"> <!-- Moeda -->
+                        <col style="width: 50px"> <!-- MRP -->
+                        <col style="width: 50px"> <!-- Plan -->
+                        <col style="width: 95px"> <!-- Parâmetros -->
+                        <col style="width: 55px"> <!-- Excluir -->
+                    </colgroup>
                     <thead>
                         <tr>
                             <th title="Clique no botão da linha pra alternar Project ⇄ Handover">Status</th>
@@ -2057,6 +2096,17 @@ if ($codigosPaginaBom) {
         window.INLINE_EDIT_ACAO = 'ajax_editar_campo';
     </script>
     <script src="assets/inline-edit.js"></script>
+    <script>
+        // Célula com texto cortado ("…"): mostra o texto inteiro ao passar o mouse
+        // (só nas que não têm title próprio).
+        window.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('.tabela-bom tbody td').forEach(function (td) {
+                if (!td.hasAttribute('title') && td.scrollWidth > td.clientWidth) {
+                    td.title = td.textContent.trim();
+                }
+            });
+        });
+    </script>
     <script>
         // A BOM não tem coluna id: cada linha é achada no banco pela combinação
         // de Planta, Projeto, Material, Tipo, Fornecedor, Componente, PN,
