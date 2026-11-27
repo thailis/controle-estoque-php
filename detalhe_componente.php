@@ -654,25 +654,37 @@ if ($erroDetalhe === null) {
                         </tr>
                         <?php endif; ?>
                         <?php
-                            // Dias cobertos: em cada dia, quantos dias o saldo (estoque + entradas
-                            // programadas + compras sugeridas − EDI) aguenta a demanda a partir do
-                            // dia seguinte, sem contar nenhuma entrada futura. Vermelho = abaixo do
-                            // Estoque Mínimo (dias) cadastrado.
+                            // Dias cobertos — mesma regra da planilha:
+                            //   =ARREDONDAR.PARA.BAIXO(Estoque / (MÉDIA(EDI das próximas 5 semanas) / 5))
+                            // ou seja, saldo do dia ÷ consumo médio por DIA ÚTIL das 5 semanas seguintes
+                            // (soma da demanda dos próximos 35 dias ÷ 5 semanas ÷ 5 dias úteis).
+                            // Saldo = "Saldo com compra sugerida" (ou "Saldo projetado" se não houver
+                            // sugestão). Sem demanda nas 5 semanas seguintes = "—" (SEERRO da planilha).
+                            // Vermelho = abaixo do Estoque Mínimo (dias) cadastrado.
                             $minDiasCobertura = $parametrosCompra !== null ? (int) $parametrosCompra['estoque_min_dias'] : 0;
                         ?>
-                        <tr class="linha-dias-cobertos" title="Quantos dias o saldo do dia (com a compra sugerida, se houver) cobre a demanda EDI dali pra frente, sem novas entradas">
+                        <tr class="linha-dias-cobertos" title="Saldo do dia ÷ consumo médio por dia útil das 5 semanas seguintes (mesma fórmula da planilha)">
                             <td>Dias cobertos</td>
                             <?php foreach ($dias as $dia): ?>
                                 <?php
                                     $chaveDia = $dia['data']->format('Y-m-d');
-                                    $saldoBase = $saldoComSugestaoPorData[$chaveDia] ?? $dia['saldo'];
-                                    $diasCob = $saldoBase <= 0 ? 0 : diasDeCobertura($demandaPorData, $dia['data']->modify('+1 day'), (float) $saldoBase);
+                                    $saldoBase = (float) ($saldoComSugestaoPorData[$chaveDia] ?? $dia['saldo']);
+                                    $iniJanela = $dia['data']->modify('+1 day')->format('Y-m-d');
+                                    $fimJanela = $dia['data']->modify('+35 days')->format('Y-m-d');
+                                    $demanda5Semanas = 0.0;
+                                    foreach ($demandaPorData as $dataDem => $qtdDem) {
+                                        if ($dataDem >= $iniJanela && $dataDem <= $fimJanela) {
+                                            $demanda5Semanas += $qtdDem;
+                                        }
+                                    }
+                                    $consumoDiaUtil = $demanda5Semanas / 5 / 5;
+                                    $diasCob = $consumoDiaUtil > 0 ? (int) ($saldoBase / $consumoDiaUtil) : null; // (int) = arredonda pra baixo (em direção ao zero)
                                     $classes = [];
                                     if ($dia['saida'] > 0) { $classes[] = 'col-evento'; }
                                     if ($chaveDia === $hoje->format('Y-m-d')) { $classes[] = 'col-hoje'; }
                                     if ($diasCob !== null && $minDiasCobertura > 0 && $diasCob < $minDiasCobertura) { $classes[] = 'dias-abaixo-min'; }
                                 ?>
-                                <td class="<?php echo h(implode(' ', $classes)); ?>"><?php echo $diasCob === null ? '<span class="valor-vazio">—</span>' : h(textoDiasCobertura($diasCob)); ?></td>
+                                <td class="<?php echo h(implode(' ', $classes)); ?>"><?php echo $diasCob === null ? '<span class="valor-vazio">—</span>' : number_format($diasCob, 0, ',', '.'); ?></td>
                             <?php endforeach; ?>
                         </tr>
                     </tbody>
