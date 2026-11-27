@@ -1653,6 +1653,9 @@ unset($r);
         .edi-table { table-layout: fixed; width: 100%; min-width: 1100px; }
         .edi-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
         .edi-table td:first-child { overflow: visible; }
+        /* Tudo centralizado (cabeçalho e conteúdo): com colunas mistas (esquerda/centro)
+           o vão visual entre elas ficava irregular. */
+        .edi-table th, .edi-table td { text-align: center !important; }
         .edi-table th { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: #536578; }
         .text-truncate-cell {
             display: inline-block;
