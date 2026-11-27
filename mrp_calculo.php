@@ -14,6 +14,46 @@ if (!defined('MRP_DIAS_COBERTURA_MINIMA_PARCELA')) {
     define('MRP_DIAS_COBERTURA_MINIMA_PARCELA', 30);
 }
 
+// ---------- Planta (EDI por planta: 2401 GVT / 2402 GUA) ----------
+// Normaliza o texto da planta vindo de planilha/formulário: "2401", "2401 — GVT",
+// "GVT", "gvt" → "2401"; "2402", "GUA" → "2402". Outros valores voltam só sem espaços.
+if (!function_exists('normalizarPlantaMrp')) {
+    function normalizarPlantaMrp(?string $planta): string
+    {
+        $p = strtoupper(trim((string) $planta));
+        if ($p === '') {
+            return '';
+        }
+        if (preg_match('/\b(24\d{2})\b/', $p, $m)) {
+            return $m[1];
+        }
+        $porSigla = ['GVT' => '2401', 'GUA' => '2402'];
+        return $porSigla[$p] ?? trim((string) $planta);
+    }
+}
+
+// true se a coluna existe na tabela (resultado guardado por requisição). Usado pra
+// telas funcionarem antes e depois de um ALTER TABLE (ex.: coluna "planta" no EDI).
+if (!function_exists('tabelaTemColunaMrp')) {
+    function tabelaTemColunaMrp(mysqli $conn, string $tabela, string $coluna): bool
+    {
+        static $cache = [];
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $tabela) || !preg_match('/^[A-Za-z0-9_]+$/', $coluna)) {
+            return false;
+        }
+        $chave = $tabela . '.' . $coluna;
+        if (!array_key_exists($chave, $cache)) {
+            try {
+                $res = mysqli_query($conn, "SHOW COLUMNS FROM `$tabela` LIKE '" . mysqli_real_escape_string($conn, $coluna) . "'");
+                $cache[$chave] = $res !== false && mysqli_num_rows($res) > 0;
+            } catch (Throwable $e) {
+                $cache[$chave] = false;
+            }
+        }
+        return $cache[$chave];
+    }
+}
+
 // Funções de cálculo do MRP compartilhadas entre telas (Planejamento de Compras e
 // Evolução do Estoque). Ficam num arquivo só pra qualquer ajuste na lógica (piso,
 // MOQ, Estoque Máximo, timing de disponibilização etc.) valer pras duas telas ao
