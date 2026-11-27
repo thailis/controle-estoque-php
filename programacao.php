@@ -1936,6 +1936,14 @@ $hojePeriodo = new DateTimeImmutable('today');
         .badge-periodo-checar { background: #ffd43b; color: #5c4400; font-weight: 700; }
         .situacao-toggle.is-atendido .dot { background: radial-gradient(circle at 32% 30%, #b6ffe0 0%, #3fe0a0 35%, #12a86e 100%); }
 
+        /* Larguras fixas por coluna (definidas no <colgroup> da tabela): antes o
+           navegador distribuía sozinho e algumas colunas ficavam largas demais
+           (PO, Descrição) e outras espremidas. Texto maior que a coluna vira "…"
+           e aparece inteiro passando o mouse. */
+        .tabela-programacao { table-layout: fixed; width: 100%; min-width: 2135px; }
+        .tabela-programacao > tbody > tr > td { overflow: hidden; text-overflow: ellipsis; }
+        .tabela-programacao .text-truncate-cell { max-width: 100%; }
+
         .text-truncate-cell {
             display: inline-block;
             max-width: 220px;
@@ -2200,6 +2208,28 @@ $hojePeriodo = new DateTimeImmutable('today');
         <div class="card">
             <div class="card-body table-responsive">
                 <table class="table table-hover table-sm tabela-programacao">
+                    <colgroup>
+                        <col style="width: 95px"> <!-- Situação -->
+                        <col style="width: 90px"> <!-- Período -->
+                        <col style="width: 125px"> <!-- PO -->
+                        <col style="width: 115px"> <!-- Processo -->
+                        <col style="width: 70px"> <!-- Planta -->
+                        <col style="width: 105px"> <!-- Componente -->
+                        <col style="width: 115px"> <!-- PN -->
+                        <col style="width: 210px"> <!-- Descrição -->
+                        <col style="width: 140px"> <!-- Fornecedor -->
+                        <col style="width: 95px"> <!-- Preço -->
+                        <col style="width: 70px"> <!-- Moeda -->
+                        <col style="width: 100px"> <!-- Data -->
+                        <col style="width: 105px"> <!-- Quantidade -->
+                        <col style="width: 115px"> <!-- Total Pedido -->
+                        <col style="width: 100px"> <!-- Comprador -->
+                        <col style="width: 100px"> <!-- Data Recebida -->
+                        <col style="width: 110px"> <!-- Quantidade Recebida -->
+                        <col style="width: 100px"> <!-- Saldo -->
+                        <col style="width: 110px"> <!-- Status -->
+                        <col style="width: 65px"> <!-- Excluir -->
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>Situação</th>
