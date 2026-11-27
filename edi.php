@@ -1648,6 +1648,11 @@ unset($r);
         .edi-table { font-size: .8rem; }
         .edi-table th,
         .edi-table td { padding: 8px 10px; }
+        /* Largura das colunas em % (colgroup): espaço distribuído por igual, sem
+           coluna gigante; texto longo vira "..." (completo ao passar o mouse). */
+        .edi-table { table-layout: fixed; width: 100%; min-width: 1100px; }
+        .edi-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+        .edi-table td:first-child { overflow: visible; }
         .edi-table th { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: #536578; }
         .text-truncate-cell {
             display: inline-block;
@@ -2044,6 +2049,19 @@ unset($r);
         <div class="card">
             <div class="card-body table-responsive">
                 <table class="table table-hover table-sm edi-table">
+                    <colgroup>
+                        <col style="width:9%"><!-- Situação -->
+                        <col style="width:8%"><!-- Material -->
+                        <?php if ($ediTemPlanta): ?><col style="width:6%"><!-- Planta --><?php endif; ?>
+                        <col style="width:<?php echo $ediTemPlanta ? 17 : 20; ?>%"><!-- Tipo -->
+                        <col style="width:<?php echo $ediTemPlanta ? 11 : 12; ?>%"><!-- Projeto -->
+                        <col style="width:10%"><!-- Modelo -->
+                        <col style="width:<?php echo $ediTemPlanta ? 12 : 14; ?>%"><!-- Evento -->
+                        <col style="width:6%"><!-- Semana -->
+                        <col style="width:7%"><!-- Quantidade -->
+                        <col style="width:8%"><!-- Data -->
+                        <col style="width:6%"><!-- Excluir -->
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>Situação</th>
@@ -2055,8 +2073,8 @@ unset($r);
                             <th>Evento</th>
                             <th class="text-center">Semana</th>
                             <th class="text-center">Quantidade</th>
-                            <th>Data</th>
-                            <th title="Excluir">Excluir</th>
+                            <th class="text-center">Data</th>
+                            <th class="text-center" title="Excluir">Excluir</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -2094,15 +2112,15 @@ unset($r);
                                     <?php if ($ediTemPlanta): ?>
                                     <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="planta" data-valor-bruto="<?php echo htmlspecialchars($row['planta'] ?? ''); ?>" title="Duplo clique para editar (2401 = GVT, 2402 = GUA)"><?php echo htmlspecialchars($row['planta'] ?? ''); ?></td>
                                     <?php endif; ?>
-                                    <td><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
+                                    <td title="<?php echo htmlspecialchars($row['marca'] ?? ''); ?>"><?php echo htmlspecialchars($row['marca'] ?? ''); ?></td>
                                     <td title="<?php echo htmlspecialchars($row['projeto'] ?? ''); ?>"><span class="text-truncate-cell"><?php echo htmlspecialchars($row['projeto'] ?? ''); ?></span></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="modelo" data-valor-bruto="<?php echo htmlspecialchars($row['modelo'] ?? ''); ?>" title="Duplo clique para editar — <?php echo htmlspecialchars($row['modelo'] ?? ''); ?>"><?php echo htmlspecialchars($row['modelo'] ?? ''); ?></td>
                                     <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="evento" data-valor-bruto="<?php echo htmlspecialchars($row['evento'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['evento'] ?? ''); ?></td>
                                     <td class="text-center"><?php echo htmlspecialchars($row['semana'] ?? ''); ?></td>
 
                                     <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="quantidade" data-valor-bruto="<?php echo htmlspecialchars($row['quantidade'] ?? ''); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars($row['quantidade'] ?? ''); ?></td>
-                                    <td class="celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="data" data-valor-bruto="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
-                                    <td>
+                                    <td class="text-center celula-editavel" data-id="<?php echo $idLinha; ?>" data-campo="data" data-valor-bruto="<?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?>" title="Duplo clique para editar"><?php echo htmlspecialchars(formatarDataBr($row['data_inicio'] ?? null)); ?></td>
+                                    <td class="text-center">
                                         <form method="POST" class="m-0" onsubmit="return confirm('Excluir este evento EDI? Essa ação não pode ser desfeita.');">
                                             <input type="hidden" name="acao" value="excluir_evento_edi">
                                             <input type="hidden" name="id" value="<?php echo $idLinha; ?>">
