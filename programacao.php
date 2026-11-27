@@ -1913,8 +1913,8 @@ $hojePeriodo = new DateTimeImmutable('today');
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 24px;
-            height: 24px;
+            width: 28px;
+            height: 28px;
             padding: 0;
             border: none;
             border-radius: 50%;
@@ -1924,12 +1924,17 @@ $hojePeriodo = new DateTimeImmutable('today');
         }
         .situacao-toggle:hover { background: #eef1f5; }
         .situacao-toggle:active { transform: scale(0.9); }
-        .situacao-toggle .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; }
-        .situacao-toggle.is-pendente .dot { background: #d88b0b; }
+        /* Bolinha com efeito 3D: brilho no canto superior esquerdo (radial-gradient)
+           + sombra embaixo (box-shadow) */
+        .situacao-toggle .dot {
+            width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, .25), inset 0 -2px 3px rgba(0, 0, 0, .15);
+        }
+        .situacao-toggle.is-pendente .dot { background: radial-gradient(circle at 32% 30%, #ffd2a6 0%, #ff9a52 35%, #f0602a 100%); }
         .badge-firmado { background: #4d9be6; color: #fff; font-weight: 700; }
         .badge-periodo-pendente { background: #f28c28; color: #fff; font-weight: 700; }
         .badge-periodo-checar { background: #ffd43b; color: #5c4400; font-weight: 700; }
-        .situacao-toggle.is-atendido .dot { background: #247a4d; }
+        .situacao-toggle.is-atendido .dot { background: radial-gradient(circle at 32% 30%, #b6ffe0 0%, #3fe0a0 35%, #12a86e 100%); }
 
         .text-truncate-cell {
             display: inline-block;
